@@ -1,0 +1,5 @@
+# Every text file keeps LF line endings in every checkout, whatever core.autocrlf says (Git for Windows sets it to
+# true by default). The kit is mostly bash, many of its scripts have no extension (the hooks, bin/kit-pin, the stub),
+# and bash can't run a line that ends in CR; patterns/local-spawn.md's procedure block is run as a script too.
+# git archive reads this file from the tree it archives, so an install built on such a machine is LF as well.
+* text=auto eol=lf

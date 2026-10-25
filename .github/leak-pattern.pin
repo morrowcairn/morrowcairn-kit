@@ -1,0 +1,3 @@
+# The ci list's pin, written by bin/kit-pin repin: its rows and the SHA-256 of its value.
+rows=4
+sha256=768820197ff73142784d82d87bd45600eca304f4db696aab840255c147287ba6

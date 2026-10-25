@@ -1,0 +1,6 @@
+#!/bin/sh
+# it-hook: what an org's IT might put in a managed hooks folder, for the stand-in machine (tests/standin/entry.sh copies
+# it in as pre-commit and pre-push). It logs that it ran and lets git go on, so a run shows whether the kit's own hooks
+# ran beside it, instead of it, or not at all.
+echo "it-hook: $(basename "$0") ran in $(pwd)" >> /tmp/it-hook.log
+exit 0

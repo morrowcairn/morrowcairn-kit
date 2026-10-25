@@ -1,0 +1,297 @@
+name: cross-platform
+
+# The kit's four suites on macOS and Windows; Linux runs them in gitleaks.yml. macOS gets the GNU tools a
+# maintainer installs there (Homebrew's bash, coreutils, gnu-sed, findutils), and its /bin/bash, which is 3.2, runs
+# the install suite's V3 cases (KIT_TEST_BASH3). Windows runs everything under Git Bash.
+#
+# And the user's path, end to end (tests/smoke_test.sh), on all three: on macOS with Homebrew's folders taken off
+# PATH, which is what a stock Mac has.
+#
+# These jobs alert, so they are gates: they were shown to go red on a planted failing case, on a scratch branch,
+# before they were relied on (decisions log §98). When each runs:
+# - Linux's smoke job, on every push to main.
+# - macOS's suites and smoke, by dispatch and once a week, never on a push: a macOS minute is billed as ten (§120,
+#   which replaces §103's code pushes). A release dispatches them on its final commit before the tag.
+# - Windows', by hand only, until its suites are green (§99, §102).
+# A dispatch runs one OS's jobs, named by its os input: macos (the default), windows or linux. A Windows suites job
+# takes about 30 to 45 minutes, so checking macOS never starts it (§100, §102).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 7 * * 1'             # Mondays, 07:23 UTC: macOS
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Whose jobs run: macos (suites and smoke), windows (suites and smoke, about 45 minutes) or linux (smoke)"
+        type: choice
+        options: [macos, windows, linux]
+        default: macos
+
+permissions:
+  contents: read
+
+jobs:
+  # Monday's macOS run is skipped when main hasn't changed since the last green macOS run (the owner's ruling of 10-24,
+  # decisions log §310 (f)): this job reads this workflow's recent successful runs and takes, newest first, the first
+  # whose macOS suites job succeeded; when its commit is main's, both macOS jobs skip, and this job says why. Anything it
+  # can't read means they run, and they run unless it says exactly false, so a gate that didn't run skips nothing
+  # (kit_docs MS1 to MS6 test the decision and the wiring). It runs on the schedule only, reading the Actions API.
+  mac-gate:
+    name: macOS weekly gate
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Has main changed since the last green macOS run?
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.sha }}
+        run: |
+          # mac-gate: begin
+          mac_gate_decide() {  # MAIN-SHA, then "COMMIT CONCLUSION" lines newest first on stdin: run=true or false, and why
+              local main=$1 sha concl
+              if [[ ! "$main" =~ ^[0-9a-f]{40}$ ]]; then echo "run=true"; echo "why: main's commit could not be read"; return 0; fi
+              while read -r sha concl; do
+                  [[ "$sha" =~ ^[0-9a-f]{40}$ && "$concl" == success ]] || continue
+                  if [[ "$sha" == "$main" ]]; then
+                      echo "run=false"; echo "why: the last green macOS run was on main's commit, ${main:0:12}"
+                  else
+                      echo "run=true"; echo "why: main (${main:0:12}) has changed since the last green macOS run (${sha:0:12})"
+                  fi
+                  return 0
+              done
+              echo "run=true"; echo "why: no green macOS run was found"
+          }
+          # mac-gate: end
+          set -uo pipefail
+          lines=""
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/cross-platform.yml/runs?status=success&per_page=30" \
+                --jq '.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch") | "\(.id) \(.head_sha)"') || ids=""
+          while read -r id sha; do
+              [[ -n "$id" ]] || continue
+              c=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+                  --jq '[.jobs[] | select(.name == "suites (macos-latest)") | .conclusion][0] // ""') || c=""
+              lines+="$sha ${c:-none}"$'\n'
+              [[ "$c" == success ]] && break
+          done <<< "$ids"
+          out=$(printf '%s' "$lines" | mac_gate_decide "${MAIN_SHA:-}")
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | sed -n '/^run=/p' >> "${GITHUB_OUTPUT:?}"
+
+  # macOS weekly and by dispatch; Windows by dispatch only: a push once ran about 110 billed minutes here, almost all of
+  # it Windows' suites (decisions log §98, §99), and macOS, weighted ten to one, was nearly half of October's billed
+  # weight to 10-18 (§120, §121). Linux runs the suites on every push, in gitleaks.yml.
+  suites:
+    name: suites (${{ matrix.os }})
+    needs: [mac-gate]
+    if: >-
+      ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.os != 'linux') ||
+      (github.event_name == 'schedule' && needs.mac-gate.outputs.run != 'false')) }}
+    # macOS 30, the owner's ruling of 10-24 (decisions log §305 (d)): a run on 10-24 took 14 min 57 s of the 15 set at
+    # about three times §127's longest (4.8 minutes), and a run cut off spends its minutes and answers nothing.
+    # Windows keeps its 90: its suites have never passed, and their limit waits on the owner (queue 457).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'workflow_dispatch' && inputs.os == 'windows' && fromJSON('["windows-latest"]') || fromJSON('["macos-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # A Windows checkout turns LF into CRLF by default, and bash can't run a script with CRLF lines. The kit has
+      # no .gitattributes, so a default Git for Windows clone of it has the same problem.
+      - name: Keep LF line endings (Windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - name: GNU tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install bash coreutils gnu-sed findutils
+          p=$(brew --prefix)
+          for t in coreutils gnu-sed findutils; do echo "$p/opt/$t/libexec/gnubin" >> "${GITHUB_PATH:?}"; done
+          echo "$p/bin" >> "${GITHUB_PATH:?}"
+
+      # Windows' Python answers to python, not python3, which the load check and its tests call.
+      - name: python3 on PATH (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          if python3 --version >/dev/null 2>&1; then echo "python3: $(command -v python3)"; exit 0; fi
+          d=$(cygpath -u "${RUNNER_TEMP:?}/py3"); mkdir -p "$d"
+          printf '#!/bin/sh\nexec python "$@"\n' > "$d/python3"; chmod +x "$d/python3"
+          cygpath -w "$d" >> "${GITHUB_PATH:?}"
+          echo "python3: a shim to $(command -v python)"
+
+      # One gitleaks version on every runner, each archive checked against the sha256 written here, which is the one
+      # the release publishes (gitleaks_8.30.1_checksums.txt, matching GitHub's own asset digests on 2026-10-17).
+      # A checksum read at run time from the release would come from the same place as the archive. Moving the pin
+      # moves the version and every sum together, test-first (decisions log §69, §98).
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          ver=8.30.1
+          case "${RUNNER_OS:?}-${RUNNER_ARCH:?}" in
+            Linux-X64)   asset=gitleaks_${ver}_linux_x64.tar.gz;   want=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+            macOS-ARM64) asset=gitleaks_${ver}_darwin_arm64.tar.gz; want=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
+            macOS-X64)   asset=gitleaks_${ver}_darwin_x64.tar.gz;   want=dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 ;;
+            Windows-X64) asset=gitleaks_${ver}_windows_x64.zip;     want=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e ;;
+            *) echo "::error::no gitleaks pinned for ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+          esac
+          dir="${RUNNER_TEMP:?}/gitleaks-bin"
+          if command -v cygpath >/dev/null 2>&1; then dir=$(cygpath -u "$dir"); fi
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/$asset" "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/${asset}"
+          if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum < "$dir/$asset"); else got=$(shasum -a 256 < "$dir/$asset"); fi
+          got=${got%% *}
+          if [ "$got" != "$want" ]; then
+            echo "::error::$asset hashes to $got, not the pinned $want: refused"
+            exit 1
+          fi
+          case "$asset" in
+            *.zip) if command -v unzip >/dev/null 2>&1; then unzip -o -q "$dir/$asset" gitleaks.exe -d "$dir"
+                   else 7z x -y -o"$dir" "$dir/$asset" gitleaks.exe >/dev/null; fi ;;
+            *)     tar -xzf "$dir/$asset" -C "$dir" gitleaks ;;
+          esac
+          rm -f "$dir/$asset"
+          "$dir/gitleaks" version
+          if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
+
+      # What the suites' Windows fixes rest on, printed for the record (decisions log §102): Git Bash's execute and write
+      # bits, git init's fileMode, a Windows Python's line endings, and git and python3 started from a folder of a few
+      # links. Informational: it never fails the job.
+      - name: Facts the suites rely on (Windows)
+        if: runner.os == 'Windows'
+        env:
+          MSYS: winsymlinks:nativestrict
+        run: |
+          set +e
+          d=$(mktemp -d)
+          printf '#!/bin/sh\nexit 0\n' > "$d/bang"; printf 'exit 0\n' > "$d/plain"; chmod a-x "$d/bang" "$d/plain"
+          for f in bang plain; do if [ -x "$d/$f" ]; then echo "fact: after chmod a-x, $f is executable"; else echo "fact: after chmod a-x, $f is not executable"; fi; done
+          mkdir "$d/ro"; echo x > "$d/ro/f"; chmod -R a-w "$d/ro"; echo "fact: modes after chmod -R a-w: $(stat -c '%A %n' "$d/ro" "$d/ro/f" | sed "s|$d/||" | tr '\n' ' ')"
+          if touch "$d/ro/added" 2>/dev/null; then echo "fact: a file can be added to that folder"; else echo "fact: no file can be added to that folder"; fi
+          if echo y 2>/dev/null >> "$d/ro/f"; then echo "fact: that file can be appended to"; else echo "fact: that file can't be appended to"; fi
+          git init -q "$d/repo"; echo "fact: git init sets core.fileMode=$(git -C "$d/repo" config core.fileMode)"
+          echo "fact: python3 prints $(python3 -c 'print("x")' | od -An -c | tr -s ' ')"
+          mkdir "$d/few"; ln -s "$(command -v git)" "$d/few/git"; ln -s "$(command -v python3)" "$d/few/python3"
+          out=$(PATH="$d/few" git --version 2>&1); echo "fact: git from a few-link folder: exit $?, said [$out]"
+          out=$(PATH="$d/few:$PATH" python3 -c 'import sys' 2>&1); echo "fact: python3 from a link: exit $?, said [$(echo $out | cut -c1-120)]"
+          echo "fact: mounts: $(mount | grep -E ' on /(tmp)? ' | tr '\n' ' ')"
+          chmod -R u+w "$d"; rm -rf "${d:?}"
+          true
+
+      # All four run, whichever fails, so each one's count is in the log; the job fails if any did. On Windows, MSYS
+      # makes ln -s a real symlink (the runner may create them) instead of a copy: the suites' stand-in PATH folders
+      # link every command on PATH, and as copies they took most of an hour.
+      - name: The four suites
+        env:
+          KIT_TEST_BASH3: ${{ runner.os == 'macOS' && '/bin/bash' || '' }}
+          MSYS: winsymlinks:nativestrict
+        run: |
+          set +e
+          echo "bash: $(bash --version | head -n 1)"
+          fail=0
+          for t in hooks_test install_test load_check_test kit_docs_test; do
+            echo "::group::$t"
+            bash "tests/$t.sh"
+            rc=$?
+            echo "::endgroup::"
+            echo "$t: exit $rc"
+            [ "$rc" -eq 0 ] || fail=1
+          done
+          exit "$fail"
+
+  # Linux on every push; macOS as the suites job (weekly, dispatch); Windows on dispatch only. A dispatch runs the OS
+  # its input names.
+  smoke:
+    name: smoke (${{ matrix.os }})
+    needs: [mac-gate]
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'schedule' || needs.mac-gate.outputs.run != 'false') }}
+    # About three times the longest run measured from 10-01 to 10-18 (§127): Linux 2.0 minutes and macOS 1.9, so 6.
+    # Windows keeps its 30 (queue 457).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 6 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: >-
+          ${{ github.event_name == 'workflow_dispatch' && (
+          inputs.os == 'windows' && fromJSON('["windows-latest"]') ||
+          inputs.os == 'linux' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest"]')) ||
+          github.event_name == 'schedule' && fromJSON('["macos-latest"]') ||
+          fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The harness needs LF to run at all; inside, the smoke test uses the machine's own git settings, so on Windows
+      # its scratch kit gets Git for Windows' default line endings, as a user's clone would.
+      - name: Keep LF line endings (Windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      # The same step as the suites job's: one version, each archive checked against the sha256 written here.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          ver=8.30.1
+          case "${RUNNER_OS:?}-${RUNNER_ARCH:?}" in
+            Linux-X64)   asset=gitleaks_${ver}_linux_x64.tar.gz;   want=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+            macOS-ARM64) asset=gitleaks_${ver}_darwin_arm64.tar.gz; want=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
+            macOS-X64)   asset=gitleaks_${ver}_darwin_x64.tar.gz;   want=dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 ;;
+            Windows-X64) asset=gitleaks_${ver}_windows_x64.zip;     want=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e ;;
+            *) echo "::error::no gitleaks pinned for ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+          esac
+          dir="${RUNNER_TEMP:?}/gitleaks-bin"
+          if command -v cygpath >/dev/null 2>&1; then dir=$(cygpath -u "$dir"); fi
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/$asset" "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/${asset}"
+          if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum < "$dir/$asset"); else got=$(shasum -a 256 < "$dir/$asset"); fi
+          got=${got%% *}
+          if [ "$got" != "$want" ]; then
+            echo "::error::$asset hashes to $got, not the pinned $want: refused"
+            exit 1
+          fi
+          case "$asset" in
+            *.zip) if command -v unzip >/dev/null 2>&1; then unzip -o -q "$dir/$asset" gitleaks.exe -d "$dir"
+                   else 7z x -y -o"$dir" "$dir/$asset" gitleaks.exe >/dev/null; fi ;;
+            *)     tar -xzf "$dir/$asset" -C "$dir" gitleaks ;;
+          esac
+          rm -f "$dir/$asset"
+          "$dir/gitleaks" version
+          if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
+
+      # On macOS, a stock Mac: PATH is the system's four folders and the pinned gitleaks folder, nothing else, so bash
+      # is /bin/bash 3.2, the tools are BSD's, and git and python3 are the system's (the runner's own Python and
+      # Homebrew's folders came ahead of /usr/bin before; decisions log §104, §105). Homebrew's bash is named in
+      # SMOKE_INSTALL_BASH, which the smoke test uses only to build the install again if the stock install fails, so the
+      # user's later steps still run with the stock tools.
+      - name: Smoke test, the user's path
+        run: |
+          set -u
+          if [ "${RUNNER_OS:?}" = macOS ]; then
+            brew list bash >/dev/null 2>&1 || brew install bash
+            nb="$(brew --prefix)/bin/bash"
+            gl=$(command -v gitleaks) || { echo "::error::no gitleaks on PATH"; exit 1; }
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin:${gl%/*}"
+            export PATH SMOKE_INSTALL_BASH="$nb"
+            exec /bin/bash tests/smoke_test.sh
+          fi
+          exec bash tests/smoke_test.sh

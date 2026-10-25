@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# pre-commit — refuses, in order:
+#   0.  any commit in a repository with grafts; replace refs are off for every check below (rule 13 (c));
+#   0a. any commit while the identity is still the genesis sentinel (patterns/repo-genesis.md);
+#   0b. the FIRST commit, if it stages no CLAUDE.md or CLAUDE.md still carries the stakes-frame TODO;
+#   1.  anything under .local/, where the operator notes live (machine-specific identity and
+#       remotes; gitignored, so only a `git add -f` or a .gitignore edit can stage them);
+#   2.  credential shapes in staged content (gitleaks);
+#   2b. in a pinned spawn (run through the stub, KIT_INSTALL set), a kit-owned file that differs from
+#       the release and that kit.forks doesn't declare;
+#   3.  a failing check of the project's own, from hook-checks/pre-commit/ (below).
+#
+# Fast, local, and deliberately narrow. It does NOT scan for identity markers -- that is
+# pre-push's job, because identity residuals can predate the current change and a staged-diff
+# scan cannot see them. It reads the identity list only to withhold a staged .local/ name the
+# list matches from what refusal 1 prints.
+#
+# FAILS CLOSED: if gitleaks is missing, the commit is refused, exactly as pre-push refuses a push.
+# A warning that lets the commit through is the fail-open pattern this kit exists to remove.
+#
+# Bypass (deliberate escape hatch):  git commit --no-verify
+#
+set -uo pipefail
+# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159), as in pre-push: every
+# text tool here runs under LC_ALL=C; the project's own checks get the locale saved here (install test LG1).
+KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
+export LC_ALL=C
+
+# A pass comes only from the pass point at the end of this file. Any other exit 0 -- an early exit, or a stop on an
+# unset variable that the shell reports as 0, as bash 3.2 can -- is turned into a refusal here (decisions log §96,
+# §100). A refusal's own non-zero exit is left as it is.
+kit_passed=0
+kit_guard() {
+    local rc=$?
+    if [[ $rc -eq 0 && "${kit_passed:-0}" != 1 ]]; then
+        echo "pre-commit: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+        exit 1
+    fi
+}
+trap kit_guard EXIT
+
+# ---- 0. the git this hook needs: 2.31 or later ------------------------------------------------------------------
+# Below 2.31 git ignores the GIT_CONFIG_COUNT settings that keep gitleaks' diff uncoloured, so a forced colour in any
+# config file blinded the scan and a staged credential went through (measured on git 2.30.2), and pre-push can't read
+# merges. A git that old, or one whose version can't be read, is refused by name (decisions log §288, §290; hooks_test
+# OG1, OG3).
+gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
+if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
+    echo "pre-commit: REFUSING -- could not read git's version, and this hook needs git 2.31 or later." >&2
+    exit 1
+fi
+if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
+    echo "pre-commit: REFUSING -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can colour the diff gitleaks reads and blind it." >&2
+    echo "  Install git 2.31 or later, then commit again." >&2
+    exit 1
+fi
+
+# ---- 0. what git shows is what it records -----------------------------------------------------------------------
+# A replace ref makes git read another object in place of the one staged, so replace refs are off for every git command
+# below and for this hook's children (gitleaks, check-copies.sh, a project's own checks). A graft rewrites history for
+# every reader and no setting turns it off, so a repository with grafts is refused. What git sets for the hook stays (the
+# user-level rule 13 (c); decisions log §120, §121; hooks_test RG3, RG4, WT1).
+export GIT_NO_REPLACE_OBJECTS=1
+grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
+if [[ -n "$grafts" && -s "$grafts" ]]; then
+    echo "pre-commit: REFUSING -- this repository has grafts, which change the history git shows." >&2
+    echo "  Remove them (info/grafts, or the file GIT_GRAFT_FILE names); git replace --convert-graft-file turns them into replace refs, which this hook ignores." >&2
+    exit 1
+fi
+
+# ---- 0a. identity sentinel --------------------------------------------------------------------
+# repo-genesis sets this placeholder identity right after `git init`. A reflexive commit before the
+# real identity is set and read back then fails here, instead of writing a guessed author into
+# line one of a history -- the one line that cannot be rewritten. Both halves count, the name and the email, each read
+# from the identity git will record (git var: config, environment overrides and --author alike). The email must be
+# the placeholder exactly: another address on its reserved domain is not the sentinel (hooks_test ID3 to ID7).
+SENTINEL='UNSET-SEE-REPO-GENESIS'
+SENTINEL_EMAIL='unset@invalid.local'
+idents="$(git var GIT_AUTHOR_IDENT 2>/dev/null) $(git var GIT_COMMITTER_IDENT 2>/dev/null)"
+if [[ "$idents" == *"$SENTINEL"* || "$idents" == *"<$SENTINEL_EMAIL>"* ]]; then
+    echo "pre-commit: REFUSING -- the commit identity is still the genesis sentinel ($SENTINEL or $SENTINEL_EMAIL)." >&2
+    echo "  If the environment or --author sets it, drop that; otherwise set the real identity LOCALLY," >&2
+    echo "  then read it back (patterns/repo-genesis.md):" >&2
+    echo "      git config --local user.name '<name>'; git config --local user.email '<email>'" >&2
+    echo "      git config --local --get user.name;  git config --local --get user.email" >&2
+    exit 1
+fi
+
+# ---- 0b. first commit only: CLAUDE.md is present and its stakes frame is written --------------
+# A frame copied from another project re-aims every gate at that project's risks; the template's
+# TODO asks for this project's own. A spawn without CLAUDE.md is far likelier incomplete than a choice.
+FRAME_TODO="TODO: write this project's stakes frame fresh"
+if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    claude_md=$(git show :CLAUDE.md 2>/dev/null)
+    rc=$?
+    if (( rc != 0 )); then
+        echo "pre-commit: REFUSING -- the first commit stages no CLAUDE.md." >&2
+        echo "  A spawn without the template is far likelier incomplete than deliberate. Stage it." >&2
+        exit 1
+    fi
+    if [[ "$claude_md" == *"$FRAME_TODO"* ]]; then
+        echo "pre-commit: REFUSING -- CLAUDE.md still carries the stakes-frame TODO." >&2
+        echo "  Write this project's own frame and delete the TODO before commit one." >&2
+        exit 1
+    fi
+fi
+
+# ---- 1. nothing under .local/ -----------------------------------------------------------------
+# The refusal lists each staged .local/ path only when the identity list doesn't match it: a match, or a name that
+# can't be checked, is withheld, as pre-push and the binary scan withhold a name (decisions log §160, §161). The list
+# comes from .git/leak-pattern alone, read by the kit's reader beside this hook, never from the environment; with none
+# to read, no name is listed. Each name, read raw (-z), is matched twice, byte-wise and in the caller's locale, as
+# pre-push's list_matches.
+local_names() {
+    local hookdir list="" name n=0 c u
+    case "${BASH_SOURCE[0]}" in */*) hookdir="${BASH_SOURCE[0]%/*}" ;; *) hookdir=. ;; esac
+    if [[ -f "$hookdir/read-leak-pattern.sh" ]] && source "$hookdir/read-leak-pattern.sh" 2>/dev/null \
+       && declare -F read_leak_pattern >/dev/null && declare -F read_leak_pattern_selftest >/dev/null \
+       && read_leak_pattern_selftest && read_leak_pattern "$(git rev-parse --git-dir 2>/dev/null)/leak-pattern" 2>/dev/null; then
+        list=$LP_VALUE
+    fi
+    while IFS= read -r -d '' name; do
+        n=$((n + 1))
+        [[ -n "$list" ]] || continue
+        printf '%s\n' "$name" | LC_ALL=C grep -a -q -i -E -e "$list" 2>/dev/null; c=$?
+        printf '%s\n' "$name" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -q -i -E -e "$list" 2>/dev/null; u=$?
+        if (( c == 1 && u == 1 )); then echo "  $name"
+        else echo "  (a path withheld: it matches the identity list, or could not be checked)"; fi
+    done < <(git diff --cached --no-color --name-only -z -- .local/ 2>/dev/null)
+    [[ -n "$list" ]] || echo "  $n path(s), names withheld: no identity list in .git/leak-pattern to check them against"
+}
+staged_local=$(git diff --cached --no-color --name-only -- .local/ 2>/dev/null)
+rc=$?
+if (( rc != 0 )); then
+    echo "pre-commit: REFUSING -- could not list staged paths (git diff exit $rc)." >&2
+    exit 1
+fi
+if [[ -n "$staged_local" ]]; then
+    echo "pre-commit: REFUSING -- staged paths under .local/, which holds the local operator notes:" >&2
+    local_names >&2
+    echo "  Unstage them: git restore --staged .local/" >&2
+    exit 1
+fi
+
+# ---- 2. credential shapes --------------------------------------------------------------------
+# Under Claude Code's sandbox read block a gitleaks in a hidden folder (~/.local/bin, say) looks missing, as the install
+# does to the stub (decisions log §292), so the refusal names both causes and what to let sandboxed commands read.
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "pre-commit: REFUSING -- gitleaks was not found (missing, or hidden from this process), so staged content cannot be scanned for credentials." >&2
+    echo "  If it is missing, install it, then commit again. If hidden (a sandbox that blocks reading the home folder makes its folder look missing), let sandboxed commands read gitleaks' folder (Claude Code: sandbox.filesystem.allowRead in user or managed settings), or commit outside the sandbox." >&2
+    exit 1
+fi
+
+# The config: this clone's .gitleaks.toml, or else the spawn rules beside this hook (in a pinned spawn, the install's:
+# the kit's config without the kit-only exemption for its own fixture), always named with --config. Given none,
+# gitleaks takes one from GITLEAKS_CONFIG or GITLEAKS_CONFIG_TOML, so the caller's environment would choose the rules;
+# both are dropped from its environment too. With neither file there are no rules of the kit's to scan with, and the
+# commit is refused (decisions log §282, §286; rule 13 (a) and (d); hooks_test FC1 to FC3).
+case "${BASH_SOURCE[0]}" in */*) gl_dir="${BASH_SOURCE[0]%/*}" ;; *) gl_dir=. ;; esac
+cfg=()
+if [[ -f .gitleaks.toml ]]; then cfg=(--config .gitleaks.toml)
+elif [[ -f "$gl_dir/spawn.gitleaks.toml" ]]; then cfg=(--config "$gl_dir/spawn.gitleaks.toml")
+else
+    echo "pre-commit: REFUSING -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan with." >&2
+    # A command it names runs from inside a project, by its absolute path (decisions log §348; install test PC13).
+    kp_cmd="\"$(cd "$gl_dir/.." 2>/dev/null && pwd)/bin/kit-pin\""
+    echo "  Add the project's .gitleaks.toml, or rebuild the release's install, from this project ($kp_cmd restore \"\$KIT\")." >&2
+    echo "  KIT is your clone of the kit's public repository." >&2
+    exit 1
+fi
+# Colour off for the git diff gitleaks runs, which asks for none itself (`git -C . diff -U0 --no-ext-diff --staged .`,
+# measured with gitleaks 8.30.1): a forced color.ui or color.diff in any config file would colour that diff, and
+# gitleaks would find nothing (decisions log §151, §152). Two routes, each enough alone: config through the
+# environment, which beats every config file from git 2.31; and the command line, which beats them on every git,
+# through a shim first on gitleaks' PATH that runs this hook's git with -c color.ui=never -c color.diff=never
+# (§290; hooks_test CLW). A shim that can't be made refuses the commit.
+gl_noclr=(GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never GIT_CONFIG_KEY_1=color.diff GIT_CONFIG_VALUE_1=never)
+gl_git=$(command -v git) && gl_shim=$(mktemp -d "${TMPDIR:-/tmp}/kit-pre-commit.XXXXXX") \
+    && printf '#!/bin/sh\nexec "$KIT_GIT" -c color.ui=never -c color.diff=never "$@"\n' > "$gl_shim/git" \
+    && chmod 0700 "$gl_shim/git" \
+    || { echo "pre-commit: REFUSING -- could not set up the uncoloured git gitleaks runs (a temporary folder in ${TMPDIR:-/tmp})." >&2; exit 1; }
+gl_out=$(env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML "${gl_noclr[@]}" KIT_GIT="$gl_git" PATH="$gl_shim:$PATH" \
+    gitleaks protect --staged --no-banner --no-color --log-level info --redact "${cfg[@]}" 2>&1)
+gl_rc=$?
+rm -rf "${gl_shim:?}"
+[[ -z "$gl_out" ]] || printf '%s\n' "$gl_out" >&2
+if (( gl_rc != 0 )); then
+    echo >&2
+    echo "pre-commit: BLOCKED -- credential shapes detected in staged content." >&2
+    echo "  Remove the secret. If it is a false positive, add a scoped rule to .gitleaks.toml" >&2
+    echo "  with a comment explaining why -- never a blanket allowlist entry." >&2
+    exit 1
+fi
+# A scan that read nothing is not a clean one. gitleaks' "scanned ~N bytes" follows the text the staged diff adds: a
+# few bytes for a blank line, more for every path its config allowlists, and ~0 only when nothing is added or when
+# the scan went blind, as forced colour made it before (measured with gitleaks 8.30.1, decisions log §290 (c), §292).
+# So when git counts added text lines and gitleaks reports ~0 bytes, or no count at all, the commit is refused
+# (hooks_test TW1, TW2; TW3 to TW7 the commits that add nothing). The log level is set above, so nothing hides the count.
+ns=$(git diff --cached --no-color --numstat 2>/dev/null) \
+    || { echo "pre-commit: REFUSING -- could not count the text this commit adds (git diff --numstat failed)." >&2; exit 1; }
+adds=$(printf '%s\n' "$ns" | awk '$1 ~ /^[0-9]+$/ { a += $1 } END { print a + 0 }')
+gl_re='scanned ~([0-9]+) byte'; gl_read=""
+[[ "$gl_out" =~ $gl_re ]] && gl_read=${BASH_REMATCH[1]}
+if (( adds > 0 )) && [[ -z "$gl_read" || "$gl_read" == 0 ]]; then
+    gl_said="no count"; [[ -z "$gl_read" ]] || gl_said="~$gl_read bytes scanned"
+    echo "pre-commit: REFUSING -- gitleaks read nothing of the $adds line(s) of text this commit adds (it reported $gl_said), so its clean result means nothing." >&2
+    echo "  Something kept it from reading the staged changes: check git's colour settings and gitleaks' version." >&2
+    exit 1
+fi
+
+# ---- 2b. kit-owned copies, in a pinned spawn ---------------------------------------------------
+# Only when the stub has exported KIT_INSTALL: each kit-owned file the spawn holds equals the
+# release's, or kit.forks declares it (leak-detection/check-copies.sh, which prints its own refusal).
+if [[ -n "${KIT_INSTALL:-}" ]]; then
+    "$KIT_INSTALL/leak-detection/check-copies.sh" pre-commit || exit 1
+fi
+
+# ---- 3. the project's own checks: hook-checks/pre-commit/ -------------------------------------
+# A project that needs one more commit-time check puts an executable in this folder instead of
+# forking this hook or pointing core.hooksPath at a wrapper. The folder is the project's: tracked,
+# and never shipped by the kit, so an upgrade never touches it. An absent folder runs nothing.
+# Each entry runs in name order, only after every check above has passed, so none can admit what
+# this hook refused. Any non-zero exit refuses the commit.
+#
+# REFUSES, rather than skips, an entry that is not an executable file: git skips a non-executable
+# hook with a "hint" and lets the commit through, and this runner must not do the same.
+# REFUSES if a check changed what is staged: the credential scan above read the index as it was,
+# and a check that restages would commit content that scan never saw.
+EXT=hook-checks/pre-commit
+if [[ -e "$EXT" || -L "$EXT" ]]; then
+    if [[ ! -d "$EXT" || ! -r "$EXT" || ! -x "$EXT" ]]; then
+        echo "pre-commit: REFUSING -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
+        exit 1
+    fi
+    before=$(git write-tree 2>/dev/null)
+    rc=$?
+    if (( rc != 0 )); then
+        echo "pre-commit: REFUSING -- could not record the staged tree (git write-tree exit $rc), so $EXT cannot run." >&2
+        exit 1
+    fi
+    LC_COLLATE=C
+    shopt -s nullglob dotglob
+    checks=("$EXT"/*)
+    shopt -u nullglob dotglob
+    for x in ${checks[@]+"${checks[@]}"}; do
+        if [[ ! -f "$x" || ! -x "$x" ]]; then
+            echo "pre-commit: REFUSING -- $x is not an executable file, so it cannot run." >&2
+            echo "  Make it executable (git update-index --chmod=+x $x), or move it out of $EXT." >&2
+            exit 1
+        fi
+        LC_ALL="$KIT_CALLER_LOCALE" "$x" "$@"
+        rc=$?
+        if (( rc != 0 )); then
+            echo "pre-commit: REFUSING -- $x exited $rc." >&2
+            exit 1
+        fi
+    done
+    after=$(git write-tree 2>/dev/null)
+    rc=$?
+    if (( rc != 0 )) || [[ "$after" != "$before" ]]; then
+        echo "pre-commit: REFUSING -- a check in $EXT changed what is staged; the credential scan read the index before it." >&2
+        exit 1
+    fi
+fi
+
+# ---- the pass point ----------------------------------------------------------------------------
+kit_passed=1
+exit 0

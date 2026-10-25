@@ -1,0 +1,46 @@
+name: leak-scan
+
+# Marker scan over every tracked file, against the LEAK_PATTERN repository secret. Ships as
+# MECHANISM ONLY -- the pattern lives in the secret, never in this file, because the pattern IS the
+# marker list and committing it would publish the exact strings the scan exists to keep out.
+#
+#   gh secret set LEAK_PATTERN
+#
+# WHAT IT CHECKS is whatever the secret holds, and nothing else. Under the kit's policy
+# (leak-detection/README.md, Setup) the secret holds only terms that identify no one -- a canary,
+# machine-path patterns, an IP pattern -- and identity terms are checked by the local pre-push hook
+# alone. So a green run says how many tracked files were scanned and that none matched
+# LEAK_PATTERN; it does not say no identity term is present, and neither does its output.
+#
+# FAILS CLOSED when the secret is unset. That is correct behaviour, not a gap: an adopter who
+# pushes without configuring a pattern gets a hard error rather than a green check that examined
+# nothing. A check that cannot fail is worse than no check, because it ends the search.
+#
+# FAILS CLOSED, too, when the secret isn't the list the tracked .github/leak-pattern.pin names (its
+# rows and a hash; decisions log §108, §112): a secret cut or changed would scan for less while every
+# run kept passing. bin/kit-pin repin ci writes the pin from .git/leak-pattern.ci, the secret's record.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan-tree:
+    runs-on: ubuntu-latest
+    # Its longest run measured from 10-01 to 10-18 took 6 seconds, so 5 minutes is a floor, not three times it: a slow
+    # checkout shouldn't fail the scan (decisions log §127). A job past its limit fails.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan tracked files against LEAK_PATTERN
+        env:
+          LEAK_PATTERN: ${{ secrets.LEAK_PATTERN }}
+        # The scan lives in a tracked script so tests/hooks_test.sh runs exactly what CI runs.
+        run: leak-detection/scan-tree.sh

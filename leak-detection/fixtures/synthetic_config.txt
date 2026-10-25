@@ -1,0 +1,57 @@
+# SYNTHETIC credential fixture — every value here is FAKE and inert.
+# Purpose: prove the credential scanner (.gitleaks.toml) still DETECTS. See leak-detection/README.md.
+# This path is allowlisted in .gitleaks.toml so routine scans stay green; the canary PROCEDURE
+# scans a COPY (outside the allowlisted path) to confirm all nine custom rules still fire.
+# Do NOT remove the allowlist entry, and do NOT move this file without updating it.
+
+# generic-api-key-40char-in-config
+api_key = "abcdefghij0123456789ABCDEFGHIJ0123456789"
+
+# generic-secret-assignment
+password = "correcthorsebatterystapleXYZ1234567"
+
+# kit-jwt
+jwt_token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0Iiwibm8iOjF9.aGVsbG8td29ybGQtc2lnbmF0dXJlLXY"
+
+# bearer-header
+Authorization: Bearer aGVsbG8td29ybGQtYmVhcmVyLXRva2VuLXZhbHVl
+
+# db-url-with-password
+DATABASE_URL = "postgresql://admin:supersecret123@db.example:5432/app"
+
+# private-key-pem
+-----BEGIN OPENSSH PRIVATE KEY-----
+c3ludGhldGljLWZha2Uta2V5LW1hdGVyaWFsLW5vdC1yZWFsLWRvLW5vdC11c2U
+-----END OPENSSH PRIVATE KEY-----
+
+# aws-named-access-key-id
+aws_access_key_id = "0123456789abcdef0123456789abcdef"
+
+# aws-named-secret-access-key
+aws_secret_access_key = "abcDEF123456ghiJKL789012mnoPQR345678stuv"
+
+# monitoring-ping-url-uuid
+PING_URL = "https://hc.example.com/ping/12345678-1234-1234-1234-123456789abc"
+
+# Further shapes, each read alone by a case of its own in tests/hooks_test.sh (GR10 on).
+
+# bearer-header, an = inside the token
+Authorization: Bearer 7x8S51FBlTbY=hWIuMRcAOnd5BGFtfaBgoubWxDNy
+
+# generic-api-key-40char-in-config, its key name on another line
+api_key:
+  value: "ClXqLnNvXkw3X9kSqUkF0eLtelycrpKLzLiUr0hM"
+
+# private-key-pem, a tab after BEGIN
+-----BEGIN	PRIVATE KEY-----
+c3ludGhldGljLWZha2UtcHJpdmF0ZS1rZXktbWF0ZXJpYWwtZm9yLXRoZS1raXQt
+Zml4dHVyZS1ub3QtYS1yZWFsLWtleS1kby1ub3QtdXNlLWFueXdoZXJlLWF0LWFs
+bA==
+-----END PRIVATE KEY-----
+
+# private-key-pem, two spaces inside PRIVATE KEY
+-----BEGIN PRIVATE  KEY-----
+c3ludGhldGljLWZha2UtcHJpdmF0ZS1rZXktbWF0ZXJpYWwtZm9yLXRoZS1raXQt
+Zml4dHVyZS1ub3QtYS1yZWFsLWtleS1kby1ub3QtdXNlLWFueXdoZXJlLWF0LWFs
+bA==
+-----END PRIVATE KEY-----

@@ -1,0 +1,12 @@
+# ci/copies.txt -- the files a project keeps for its CI, and the release file each one is held to.
+#
+#   PROJECT-PATH                     RELEASE-PATH
+#
+# The checked-copies layer (leak-detection/check-copies.sh) holds a project's file at PROJECT-PATH to the release's
+# RELEASE-PATH, unless kit.forks declares it; patterns/local-upgrade.md's move keeps these files and makes each the
+# release's version; patterns/local-spawn.md says how a project that gains a remote takes them. A project's
+# .gitleaks.toml is the spawn config, never the kit's own, which exempts the kit's credential fixture by path.
+.github/workflows/gitleaks.yml   ci/gitleaks.yml
+.github/workflows/leak-scan.yml  ci/leak-scan.yml
+.gitleaks.toml                   leak-detection/spawn.gitleaks.toml
+leak-detection/scan-tree.sh      leak-detection/scan-tree.sh

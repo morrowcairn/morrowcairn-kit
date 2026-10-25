@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.DS_Store
+
+# Local, per-clone leak pattern lives in .git/leak-pattern (never tracked).
+# This entry exists so a stray copy at the repo root cannot be committed by accident.
+leak-pattern
+*.leak-pattern
+
+# Local operator notes -- machine-specific identity and remotes -- at .local/operator-notes.md, named
+# in CLAUDE.md. Never tracked; leak-detection/pre-commit also refuses anything staged under .local/.
+.local/

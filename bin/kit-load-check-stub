@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# kit-load-check-stub — what the daily cron line runs. It lives outside the install (the user-level import step puts
+# it there), reads the kit pin line in the user-level CLAUDE.md, verifies the whole install against that pin with its
+# own copy of the install verifier (the same text as leak-detection/stub-hook's and bin/kit-pin's; load_check_test
+# LS9), and only then runs the install's load check, bin/kit-load-check, with the same arguments. Every file of the
+# install is covered, the load check's own and kit-pin among them: a verifier read from the install would be checking
+# itself.
+#
+#   kit-load-check-stub [load-check arguments]
+#
+# Environment: KIT_USER_CLAUDE_MD (default ~/.claude/CLAUDE.md); KIT_INSTALL_ROOT (default
+# ~/.local/share/morrowcairn/releases); KIT_LOAD_CHECK_PING, the Healthchecks URL, a credential and never printed;
+# KIT_LOAD_CHECK_REPORT, a file the report is also written to.
+#
+# REFUSES when any check fails, and reports the refusal as a failed run, to the ping's /fail route when one is set and
+# to the report file: a check that stopped is never a silent one. A report names no absolute path.
+#
+set -uo pipefail
+
+root=${KIT_INSTALL_ROOT:-${HOME:-}/.local/share/morrowcairn/releases}
+report_fail() {  # REASON
+    local body; body=$(printf 'kit load check: FAIL\nfail: %s\n' "$1")
+    body=${body//"$root"/<install root>}; [[ -z "${HOME:-}" ]] || body=${body//"$HOME"/\~}
+    [[ -z "${KIT_LOAD_CHECK_REPORT:-}" ]] || printf '%s\n' "$body" > "$KIT_LOAD_CHECK_REPORT"
+    if [[ -n "${KIT_LOAD_CHECK_PING:-}" ]]; then
+        curl -fsS -m 10 --data-raw "$body" "${KIT_LOAD_CHECK_PING%/}/fail" >/dev/null 2>&1 \
+            || echo "kit-load-check-stub: the fail ping did not go through" >&2
+    fi
+}
+refuse() {
+    echo "kit-load-check-stub: REFUSING -- $1." >&2
+    [[ -z "${2:-}" ]] || echo "  $2" >&2
+    report_fail "$1"
+    kit_reported=1
+    exit 1
+}
+
+# The stub's only pass is the hand-over at the end: a successful exec replaces this process, so this trap never runs
+# after it. Any other end -- an exit 0 short of it, a stop on an unset variable (which bash 3.2 can report as 0), a
+# failed exec -- is refused and reported as a failed run, as a refusal is: a check that stopped is never a silent one
+# (decisions log §96, §100, §105). A refusal has reported already.
+kit_reported=0
+kit_guard() {
+    local rc=$?
+    [[ "${kit_reported:-0}" == 1 ]] && return
+    echo "kit-load-check-stub: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+    report_fail "the check stopped before it finished, so what it had not reached was never checked"
+    (( rc != 0 )) || rc=1
+    exit "$rc"
+}
+trap kit_guard EXIT
+
+# SHA-256 by sha256sum where it is installed, else by shasum -a 256, which a stock Mac has instead: one routine, the
+# same text in each script that hashes (install test HS1). kit_sha256 hashes stdin and prints what sha256sum prints;
+# kit_no_sha256 succeeds, saying why, only when neither tool is installed, and the caller refuses then.
+kit_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else return 127; fi
+}
+kit_no_sha256() {
+    if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then return 1; fi
+    printf 'neither sha256sum (GNU coreutils) nor shasum (Perl) is installed'
+}
+
+kit_verify_install() {   # DIR RELEASE MANIFEST-HASH: 0, or 1 with KV_ERROR saying why
+    local dir=$1 rel=$2 want=$3 got sum path n=0 extra
+    KV_ERROR=""
+    if [[ ! -d "$dir" ]]; then KV_ERROR="no install for $rel in ${dir%/*}"; return 1; fi
+    got=$(sed -n 's/^tag=//p' "$dir/RELEASE" 2>/dev/null)
+    if [[ "$got" != "$rel" ]]; then KV_ERROR="the install's RELEASE names ${got:-no tag}, not $rel"; return 1; fi
+    got=$(kit_sha256 < "$dir/MANIFEST.sha256" 2>/dev/null) || got=""
+    if [[ -z "$got" || "sha256:${got%% *}" != "$want" ]]; then KV_ERROR="the install's manifest doesn't match the pin"; return 1; fi
+    while read -r sum path; do
+        n=$((n + 1))
+        if [[ ! -f "$dir/$path" ]]; then KV_ERROR="$path is missing from the install"; return 1; fi
+        got=$(kit_sha256 < "$dir/$path") || got=""
+        if [[ "${got%% *}" != "$sum" ]]; then KV_ERROR="$path in the install doesn't match its manifest line"; return 1; fi
+    done < "$dir/MANIFEST.sha256"
+    if (( n == 0 )); then KV_ERROR="the install's manifest lists no files"; return 1; fi
+    extra=$(cd "$dir" && find . ! -type d ! -path ./MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+            | LC_ALL=C comm -23 - <(awk '{print $2}' MANIFEST.sha256 | LC_ALL=C sort)) || extra="(a file list that could not be read)"
+    if [[ -n "$extra" ]]; then KV_ERROR="${extra%%$'\n'*} is in the install but not in its manifest"; return 1; fi
+    return 0
+}
+
+uf=${KIT_USER_CLAUDE_MD:-${HOME:-}/.claude/CLAUDE.md}
+[[ -r "$uf" ]] || refuse "the user-level CLAUDE.md can't be read"
+pins=$(grep -E '^<!-- kit pin:' "$uf")
+[[ -n "$pins" ]] || refuse "no kit pin line in the user-level CLAUDE.md" \
+    "The import edit writes one beside the import lines: <!-- kit pin: release=vX.Y.Z manifest=sha256:<64 hex> -->"
+re='^<!-- kit pin: release=(v[0-9]+\.[0-9]+\.[0-9]+) manifest=(sha256:[0-9a-f]{64}) -->$'
+[[ $(printf '%s\n' "$pins" | wc -l) -eq 1 && "$pins" =~ $re ]] || refuse "the kit pin line is malformed" \
+    "It reads: <!-- kit pin: release=vX.Y.Z manifest=sha256:<64 hex> -->, once."
+release=${BASH_REMATCH[1]}; manifest=${BASH_REMATCH[2]}
+if why=$(kit_no_sha256); then refuse "$why, so the install can't be checked against the pin line"; fi
+kit_verify_install "$root/$release" "$release" "$manifest" || refuse "$KV_ERROR"
+command -v python3 >/dev/null 2>&1 || refuse "python3 is not installed, so the load check can't run"
+
+export KIT_INSTALL="$root/$release"
+# Isolated (-I): no PYTHON* variable, no user site-packages, no script folder on its path, so no module the environment
+# plants runs in the check's place (decisions log §147, §148; load_check_test LS13).
+exec python3 -I "$KIT_INSTALL/bin/kit-load-check" --install "$KIT_INSTALL" --release "$release" --user-file "$uf" "$@"

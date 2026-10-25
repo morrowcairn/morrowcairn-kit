@@ -1,0 +1,700 @@
+#!/usr/bin/env bash
+#
+# kit-history-audit -- the full-history identity check: a repository's whole history read against the project's own
+# identity list, run before the repository goes public (decisions log §284 ruling 2, queue 538). It is the kit's own
+# push audit, shipped for any project.
+#
+#   kit-history-audit [REPO] [--remote NAME|none] [--allow FILE]
+#   kit-history-audit --control [REPO]
+#
+#   REPO       the repository to audit, only read (default: the current folder)
+#   --remote   a remote whose ref names are read too, each of whose refs must point at an object this clone holds:
+#              history the remote has and this clone lacks would go public unread (default: origin, if there is one)
+#   --allow    the project's allow file: the content lines that may stand, one a line, COMMIT WHERE SHA256 PATH: the
+#              commit's full hash, where the allowance was decided (one word, a § say), the SHA-256 of the line's bytes
+#              without its newline, and the path. One line per occurrence. Only content can be allowed, never a name,
+#              an email, a message, a path, a tag or a ref name.
+#   --control  the control: a term is made from every row of the list, none printed. One is planted in each of the ten
+#              fields of a throwaway repository, and each row's in a commit of its own; this audit is run over it. It
+#              passes only when the audit refuses all ten fields and every row's commit, and fails on a row it can't
+#              make a term from. A clean result is evidence only after the control has gone red on the same list.
+#
+# What it reads: every commit reachable from any ref, and every one only the reflog still holds, each by its author and
+# committer (names and emails), its message (with any other header), the paths it touches and the lines it adds,
+# binary files' too, a merge's against its first parent, as pre-push reads a merge (§281); every tag object's tagger
+# and message; every ref name, and the remote's. The list is the repository's own .git/leak-pattern, read as data by
+# the kit's reader and checked against .git/leak-pattern.pin; a list in the environment is ignored (the user-level
+# rule 13 (a)). Each field is searched by git grep and by grep, each under LC_ALL=C and in the caller's locale, and a
+# file either names counts (§145, §159; queue 462).
+#
+# PRINTS COUNTS, COMMIT AND TAG OBJECT HASHES AND FIELD NAMES ONLY: never a matched line, a term, the list or a path.
+# A user who needs to see a hit looks at that commit's field themselves.
+#
+# Exit: 0 when nothing matches, or each hit is a content line the allow file pins; 3 when any other hit is found, each
+# named; 1 when the audit could not run or could not see all of the history; 2 on a usage error. The control exits 0
+# only when ten of ten fields go red and the audit exits 3.
+#
+set -uo pipefail
+# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159): every text tool here runs
+# under LC_ALL=C, and each search runs twice, under LC_ALL=C and in the locale saved here (install test LG1).
+KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
+export LC_ALL=C
+
+# A pass comes only from a pass point. Any other exit 0, a stop on an unset variable among them, is a refusal (§96).
+A=""
+kit_passed=0
+kit_guard() {
+    local rc=$?
+    if [[ -n "$A" && -d "$A" ]]; then chmod -R u+w "${A:?}" 2>/dev/null; rm -rf "${A:?}"; fi
+    if [[ $rc -eq 0 && "${kit_passed:-0}" != 1 ]]; then
+        echo "kit-history-audit: REFUSING -- it stopped before it finished, so what it had not reached was never read." >&2
+        exit 1
+    fi
+}
+trap kit_guard EXIT
+refuse() {  # REASON [HINT...]: exit 1
+    local l; printf 'kit-history-audit: REFUSING -- %s\n' "$1" >&2; shift
+    for l in "$@"; do printf '  %s\n' "$l" >&2; done
+    exit 1
+}
+usage() {  # [WHY]: exit 2
+    [[ -z "${1:-}" ]] || printf 'kit-history-audit: %s\n' "$1" >&2
+    echo "usage: kit-history-audit [REPO] [--remote NAME|none] [--allow FILE]   or   kit-history-audit --control [REPO]" >&2
+    exit 2
+}
+
+# It runs outside a git hook, so it follows no git setting it inherits (the user-level rule 13 (c); decisions log §134):
+# every GIT_ variable from the caller goes, so git reads REPO itself; replace refs are off, so git reads the objects
+# history holds; and git never stops to ask for a password. A repository with grafts is refused below.
+for v in $(compgen -e); do case $v in GIT_*) unset "$v" ;; esac; done
+export GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0
+unset LEAK_PATTERN
+
+# SHA-256 by sha256sum where it is installed, else by shasum -a 256, which a stock Mac has instead: one routine, the
+# same text in each script that hashes (install test HS1). kit_sha256 hashes stdin and prints what sha256sum prints;
+# kit_no_sha256 succeeds, saying why, only when neither tool is installed, and the caller refuses then.
+kit_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else return 127; fi
+}
+kit_no_sha256() {
+    if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then return 1; fi
+    printf 'neither sha256sum (GNU coreutils) nor shasum (Perl) is installed'
+}
+
+# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value (decisions
+# log §108, §112). A row is one top-level alternative of the extended regex: groups, bracket expressions and escapes
+# don't split one. One routine, the same text in each script that reads a pin (install test PN0). kit_list_rows VALUE
+# prints how many rows VALUE holds; kit_list_head VALUE N prints its first N rows as written; kit_pin_check VALUE PINFILE
+# succeeds when VALUE is the list PINFILE names, and otherwise fails with KP_ERROR saying why, in rows, never in a term
+# or a hash. It needs kit_sha256.
+kit_list_split='{ s = s (NR > 1 ? "\n" : "") $0 }
+END { n = length(s); rows = 1; depth = 0; i = 1; cut = n + 1
+      while (i <= n) {
+          c = substr(s, i, 1)
+          if (c == "\\") { i += 2; continue }
+          if (c == "[") {
+              j = i + 1
+              if (substr(s, j, 1) == "^") j++
+              if (substr(s, j, 1) == "]") j++
+              while (j <= n && substr(s, j, 1) != "]") {
+                  d = substr(s, j + 1, 1)
+                  if (substr(s, j, 1) == "[" && (d == ":" || d == "." || d == "=")) { k = index(substr(s, j + 2), d "]"); j = k ? j + k + 3 : j + 1 }
+                  else j++
+              }
+              i = j + 1; continue
+          }
+          if (c == "(") depth++
+          else if (c == ")") depth--
+          else if (c == "|" && depth == 0) { if (rows == want) { cut = i; break }; rows++ }
+          i++
+      }
+      if (want > 0) printf "%s", substr(s, 1, cut - 1); else print rows }'
+kit_list_rows() { printf '%s' "$1" | awk -v want=0 "$kit_list_split"; }
+kit_list_head() { printf '%s' "$1" | awk -v want="$2" "$kit_list_split"; }
+kit_pin_check() {
+    local rows sum got_rows got_sum
+    KP_ERROR=""
+    if [[ ! -f "$2" ]]; then KP_ERROR="it has no pin"; return 1; fi
+    rows=$(sed -n 's/^rows=//p' "$2" 2>/dev/null); sum=$(sed -n 's/^sha256=//p' "$2" 2>/dev/null)
+    if [[ ! "$rows" =~ ^[0-9]+$ || ! "$sum" =~ ^[0-9a-f]{64}$ ]]; then KP_ERROR="its pin is malformed"; return 1; fi
+    got_rows=$(kit_list_rows "$1")
+    got_sum=$(printf '%s' "$1" | kit_sha256) || got_sum=""
+    if [[ -z "$got_sum" ]]; then KP_ERROR="it could not be hashed"; return 1; fi
+    if [[ "$got_rows" != "$rows" ]]; then KP_ERROR="it holds $got_rows row(s) where its pin expects $rows"; return 1; fi
+    if [[ "${got_sum%% *}" != "$sum" ]]; then KP_ERROR="it holds the $rows row(s) its pin expects, but not the same ones"; return 1; fi
+    return 0
+}
+
+REPO=""; REMOTE=""; ALLOW=""; CONTROL=0; remote_set=0
+while (( $# )); do
+    case $1 in
+        --remote)  (( $# >= 2 )) || usage "--remote needs a name, or none"; REMOTE=$2; remote_set=1; shift 2 ;;
+        --allow)   (( $# >= 2 )) || usage "--allow needs a file"; ALLOW=$2; shift 2 ;;
+        --control) CONTROL=1; shift ;;
+        -h|--help) usage ;;
+        -*)        usage "unknown option $1" ;;
+        *)         [[ -z "$REPO" ]] || usage "one repository at a time"; REPO=$1; shift ;;
+    esac
+done
+(( CONTROL == 0 )) || [[ -z "$ALLOW" && $remote_set -eq 0 ]] || usage "--control takes a repository and nothing else"
+REPO=${REPO:-.}
+[[ -d "$REPO" ]] || usage "no such folder: the repository given"
+REPO=$(cd "$REPO" && pwd) || usage "the repository's folder can't be entered"
+[[ -z "$ALLOW" || ( -f "$ALLOW" && -r "$ALLOW" ) ]] || usage "the allow file can't be read"
+[[ "$ALLOW" == /* || -z "$ALLOW" ]] || ALLOW="$PWD/$ALLOW"
+
+# This file, and the kit's list reader beside the install's gates, by absolute paths: the audit moves into REPO, and
+# the control runs this same file again.
+case "${BASH_SOURCE[0]}" in */*) here="${BASH_SOURCE[0]%/*}" ;; *) here=. ;; esac
+here=$(cd "$here" && pwd) || refuse "the folder this audit sits in can't be entered."
+self="$here/${BASH_SOURCE[0]##*/}"
+reader="$here/../leak-detection/read-leak-pattern.sh"; reader_fault=""
+if [[ ! -f "$reader" ]]; then
+    reader_fault="it is missing"
+elif ! source "$reader"; then
+    reader_fault="it did not load"
+elif ! declare -F read_leak_pattern >/dev/null || ! declare -F read_leak_pattern_selftest >/dev/null; then
+    reader_fault="it does not define both read_leak_pattern and read_leak_pattern_selftest"
+elif ! read_leak_pattern_selftest; then
+    reader_fault="it failed its selftest"
+fi
+[[ -z "$reader_fault" ]] || refuse "the list reader leak-detection/read-leak-pattern.sh can't be used: $reader_fault." \
+    "It travels beside this audit, in the install's leak-detection folder; restore it from the kit's release."
+
+command -v git >/dev/null 2>&1 || refuse "git was not found, so no history can be read."
+command -v python3 >/dev/null 2>&1 || refuse "python3 was not found: the audit reads each commit's fields with it."
+# The git this audit needs: 2.31 or later, as the hooks do (decisions log §290): it asks git for absolute paths, and the
+# kit is tested on nothing older. A git that old, or one whose version can't be read, is refused by name.
+gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
+if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
+    refuse "could not read git's version, and this audit needs git 2.31 or later."
+fi
+if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
+    refuse "git $gv is older than 2.31, the oldest this audit is built and tested for." "Install git 2.31 or later, then run it again."
+fi
+
+cd "$REPO" || refuse "the repository's folder can't be entered."
+git rev-parse --git-dir >/dev/null 2>&1 || usage "not a git repository: the folder given"
+GITDIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || refuse "where this repository's git folder is can't be read."
+A=$(mktemp -d) || refuse "no temporary folder could be made."
+chmod 700 "$A"; umask 077; mkdir "$A/f" "$A/p" "$A/hooks" "$A/home" || refuse "no temporary folder could be made."
+
+# The list: the repository's own, read as data, and the one its pin names (rule 13 (a), (d); queue 462). A refusal
+# names rows, never a term or a hash.
+[[ -e "$GITDIR/leak-pattern" || -L "$GITDIR/leak-pattern" ]] || refuse "no identity list at .git/leak-pattern, so there is nothing to read the history against." \
+    "Put the project's list there (leak-detection/README.md, Setup), then give it its first pin (\"$here/kit-pin\" repin local --first)."
+[[ -f "$GITDIR/leak-pattern" && -r "$GITDIR/leak-pattern" ]] || refuse ".git/leak-pattern exists but can't be read (not a readable file), so there is nothing to read the history against."
+read_leak_pattern "$GITDIR/leak-pattern" || refuse ".git/leak-pattern is not in a shape the reader reads: $LP_ERROR."
+LEAK_PATTERN=$LP_VALUE
+[[ -n "$LEAK_PATTERN" ]] || refuse "the identity list in .git/leak-pattern sets no pattern, so there is nothing to read the history against."
+if why=$(kit_no_sha256); then refuse "$why, so the identity list can't be checked against its pin."; fi
+kit_pin_check "$LEAK_PATTERN" "$GITDIR/leak-pattern.pin" || refuse "the identity list in .git/leak-pattern doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." \
+    "If the list changed on purpose, record why and repin it (\"$here/kit-pin\" repin local); if it didn't, put the list back."
+ROWS=$(kit_list_rows "$LEAK_PATTERN")
+# The reserved line says the project has no identity list (§308): there is nothing to read a history against, and a
+# project going public needs a real list (§309, §310 (a)).
+[[ "$LEAK_PATTERN" != "kit:no-identity-list" ]] || refuse "this project's list is the line saying it has no identity list: a project going public needs a real list, so its history can't be read against one." \
+    "Put the project's own list in .git/leak-pattern and pin it (leak-detection/README.md, Setup), then run this again."
+
+# The list against one text, in two passes, under LC_ALL=C and in the caller's locale; a match in either counts. 0 when
+# either matched, 1 when neither did, 2 when a pass couldn't run and neither matched (as pre-push's list_matches).
+list_matches() {  # TEXT
+    local c u
+    printf '%s\n' "$1" | LC_ALL=C grep -a -q -i -E -e "$LEAK_PATTERN" 2>/dev/null; c=$?
+    printf '%s\n' "$1" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -q -i -E -e "$LEAK_PATTERN" 2>/dev/null; u=$?
+    (( c == 0 || u == 0 )) && return 0
+    (( c == 1 && u == 1 )) && return 1
+    return 2
+}
+list_matches "" ; (( $? < 2 )) || refuse "the identity list doesn't compile as an extended regex, so nothing can be searched with it."
+
+# ============================== the control ==============================================================
+if (( CONTROL )); then
+    # Two readings of every row, each its shortest, an alternation tried a branch at a time (§306 (c)): one to stand
+    # alone on a line, where an anchor holds; and one to sit inside a field, letters, digits, dots, dashes or underscores
+    # only, at least three, which the list must match in each of the ten places it goes. Written to private files, never
+    # printed. A row using a back-reference, an equivalence class or a collating element gives neither.
+    printf '%s' "$LEAK_PATTERN" > "$A/list.value"
+    python3 -I - "$A/list.value" "$A/rows" "$A/terms.field" "$A/terms.line" <<'PY' || refuse "the control's terms could not be made from the list."
+import sys
+pat = open(sys.argv[1], "rb").read().decode("latin-1")
+MODE = "field"                                     # "line": the term stands alone on its line, so ^ and $ hold
+
+
+class No(Exception):
+    pass
+
+
+def rows(p):
+    out, cur, depth, i, n = [], [], 0, 0, len(p)
+    while i < n:
+        c = p[i]
+        if c == "\\" and i + 1 < n:
+            cur.append(p[i:i + 2]); i += 2; continue
+        if c == "[":
+            j = i + 1
+            if j < n and p[j] == "^": j += 1
+            if j < n and p[j] == "]": j += 1
+            while j < n and p[j] != "]":
+                if p[j] == "[" and j + 1 < n and p[j + 1] in ":.=":
+                    k = p.find(p[j + 1] + "]", j + 2); j = (k + 2) if k != -1 else j + 1
+                else:
+                    j += 1
+            cur.append(p[i:j + 1]); i = j + 1; continue
+        if c == "(": depth += 1
+        if c == ")": depth -= 1
+        if c == "|" and depth == 0:
+            out.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    out.append("".join(cur))
+    return out
+
+
+PLANT = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-_."   # a dash first: a ref name can't end in a dot
+CLASS = {"alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isalnum, "upper": str.isupper,
+         "lower": str.islower, "xdigit": lambda c: c in "0123456789abcdefABCDEF", "punct": lambda c: c in "-_.",
+         "print": lambda c: True, "graph": lambda c: c != " ", "word": lambda c: c.isalnum() or c == "_",
+         "space": lambda c: c == " ", "blank": lambda c: c == " ", "cntrl": lambda c: False}
+
+
+def bracket(r, i):
+    j, neg, items, first = i + 1, False, [], True
+    if j < len(r) and r[j] == "^":
+        neg = True; j += 1
+    while True:
+        if j >= len(r):
+            raise No
+        c = r[j]
+        if c == "]" and not first:
+            break
+        first = False
+        if c == "[" and j + 1 < len(r) and r[j + 1] == ":":
+            k = r.find(":]", j + 2)
+            if k < 0 or r[j + 2:k] not in CLASS:
+                raise No
+            items.append(CLASS[r[j + 2:k]]); j = k + 2; continue
+        if c == "[" and j + 1 < len(r) and r[j + 1] in ".=":
+            raise No
+        if j + 2 < len(r) and r[j + 1] == "-" and r[j + 2] != "]":
+            items.append(lambda x, lo=c, hi=r[j + 2]: lo <= x <= hi); j += 3; continue
+        items.append(lambda x, c=c: x == c); j += 1
+    for x in PLANT + (" " if MODE == "line" else ""):
+        inside = any(f(x) for f in items)
+        if neg and not inside and not any(f(x.swapcase()) for f in items):
+            return x, j + 1
+        if not neg and inside:
+            return x, j + 1
+    raise No
+
+
+def atom(r, i):
+    c = r[i]
+    if c == "\\":
+        if i + 1 >= len(r):
+            raise No
+        d = r[i + 1]
+        if d in "<>b":
+            return "", i + 2
+        if d == "w":
+            return "a", i + 2
+        if d.isalnum():
+            raise No
+        return d, i + 2
+    if c == "[":
+        return bracket(r, i)
+    if c == "(":
+        s, j = alt(r, i + 1, False)
+        return s, j + 1
+    if c == ".":
+        return "x", i + 1
+    if c in "^$" and MODE == "line":
+        return "", i + 1
+    if c in "^$*+?{":
+        raise No
+    return c, i + 1
+
+
+def seq(r, i):
+    out = []
+    while i < len(r) and r[i] not in "|)":
+        a, i = atom(r, i)
+        times = 1
+        if i < len(r) and r[i] in "*+?":
+            i += 1
+        elif i < len(r) and r[i] == "{":
+            k = r.find("}", i)
+            if k < 0:
+                raise No
+            spec = r[i + 1:k].split(",")
+            if not spec[0].isdigit() or len(spec) > 2 or (len(spec) == 2 and spec[1] and not spec[1].isdigit()):
+                raise No
+            times = int(spec[0])
+            if times == 0 and len(spec) == 2 and (spec[1] == "" or int(spec[1]) > 0):
+                times = 1
+            i = k + 1
+        out.append(a * times)
+    return "".join(out), i
+
+
+def branch_end(r, i):
+    """Where the branch starting at i ends: at the next | or ) of its own level, or the row's end."""
+    depth = 0
+    while i < len(r):
+        c = r[i]
+        if c == "\\":
+            i += 2; continue
+        if c == "[":
+            j = i + 1
+            if j < len(r) and r[j] == "^": j += 1
+            if j < len(r) and r[j] == "]": j += 1
+            while j < len(r) and r[j] != "]":
+                if r[j] == "[" and j + 1 < len(r) and r[j + 1] in ":.=":
+                    k = r.find(r[j + 1] + "]", j + 2); j = (k + 2) if k != -1 else j + 1
+                else:
+                    j += 1
+            i = j + 1; continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "|" and depth == 0:
+            break
+        i += 1
+    return i
+
+
+def alt(r, i, top):
+    got = None                                     # the first branch that gives a reading; the rest are only passed over
+    while True:
+        end = branch_end(r, i)
+        if got is None:
+            try:
+                s, k = seq(r, i)
+                if k == end:
+                    got = s
+            except (No, IndexError, ValueError):
+                pass
+        i = end
+        if i < len(r) and r[i] == "|":
+            i += 1; continue
+        break
+    if (not top and (i >= len(r) or r[i] != ")")) or (top and i != len(r)) or got is None:
+        raise No
+    return got, i
+
+
+def reading(row, mode):
+    global MODE
+    MODE = mode
+    try:
+        return alt(row, 0, True)[0]
+    except (No, IndexError, ValueError):
+        return ""
+
+
+with open(sys.argv[2], "w", encoding="latin-1") as r, open(sys.argv[3], "w", encoding="latin-1") as f, \
+        open(sys.argv[4], "w", encoding="latin-1") as ln:
+    for row in rows(pat):
+        r.write(row + "\n"); f.write(reading(row, "field") + "\n"); ln.write(reading(row, "line") + "\n")
+PY
+    # A row counts as built when its line reading matches that row alone and the whole list, each in two passes (the
+    # row is matched by list_matches with LEAK_PATTERN set to it for that one call). The field term is the first field
+    # reading the list matches in all ten places.
+    term=""; frow=0; row=0; built=0; unbuilt=""; plant='^[A-Za-z0-9._-]{3,}$'
+    : > "$A/built"
+    while IFS= read -r r <&3 && IFS= read -r tf <&4 && IFS= read -r tl <&5; do
+        row=$((row + 1))
+        if [[ -n "$tl" ]] && LEAK_PATTERN=$r list_matches "$tl" && list_matches "$tl"; then
+            built=$((built + 1)); printf '%s\n' "$row" >> "$A/built"
+        else
+            unbuilt="$unbuilt${unbuilt:+, }$row"
+        fi
+        [[ -z "$term" && "$tf" =~ $plant ]] || continue
+        ok=1
+        for x in "a $tf" "a@$tf.invalid" "c $tf" "c@$tf.invalid" "p5 names $tf" "line $tf" "f-$tf.txt" "t $tf" "names $tf" "refs/heads/ref-$tf"; do
+            list_matches "$x" || { ok=0; break; }
+        done
+        (( ok )) && { term=$tf; frow=$row; }
+    done 3< "$A/rows" 4< "$A/terms.field" 5< "$A/terms.line"
+    rm -f "$A/rows" "$A/terms.field" "$A/list.value"
+    [[ -n "$term" ]] || refuse "no row of the list gives a term the control can plant in all ten fields." \
+        "It needs a row whose shortest reading is letters, digits, dots, dashes or underscores, at least three."
+    if [[ -n "$unbuilt" ]]; then
+        case $unbuilt in *,*) which="rows $unbuilt" ;; *) which="row $unbuilt" ;; esac
+        refuse "terms could be made from $built of the list's $ROWS rows: none from $which, so the control can't prove it." \
+            "The control reads literals, escapes, bracket expressions and classes, groups, alternations and counts; a back-reference, an equivalence class or a collating element gives no term."
+    fi
+    echo "control: terms made from $built of the list's $ROWS rows, never printed; row $frow's planted in ten fields, and each row's in a commit of its own"
+
+    W="$A/control"
+    cb() {  # GIT-ARGS...: git in the control, with none of the caller's settings, every hook off
+        HOME="$A/home" XDG_CONFIG_HOME="$A/home" GIT_CONFIG_NOSYSTEM=1 git -C "$W" -c user.name=control \
+            -c user.email=control@invalid.local -c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath="$A/hooks" "$@"
+    }
+    au="control <control@invalid.local>"
+    {
+        HOME="$A/home" XDG_CONFIG_HOME="$A/home" GIT_CONFIG_NOSYSTEM=1 git init -q "$W" \
+        && echo 1 > "$W/plain.txt" && cb add plain.txt && cb commit -q --no-verify --author="a $term <control@invalid.local>" -m p1 \
+        && echo 2 >> "$W/plain.txt" && cb add plain.txt && cb commit -q --no-verify --author="control <a@$term.invalid>" -m p2 \
+        && echo 3 >> "$W/plain.txt" && cb add plain.txt && cb -c user.name="c $term" commit -q --no-verify --author="$au" -m p3 \
+        && echo 4 >> "$W/plain.txt" && cb add plain.txt && cb -c user.email="c@$term.invalid" commit -q --no-verify --author="$au" -m p4 \
+        && echo 5 >> "$W/plain.txt" && cb add plain.txt && cb commit -q --no-verify --author="$au" -m "p5 names $term" \
+        && printf 'line %s\n' "$term" > "$W/added.txt" && cb add added.txt && cb commit -q --no-verify --author="$au" -m p6 \
+        && echo u > "$W/f-$term.txt" && cb add "f-$term.txt" && cb commit -q --no-verify --author="$au" -m p7 \
+        && cb -c user.name="t $term" tag -a ctl-tagger -m clean HEAD \
+        && cb tag -a ctl-msg -m "names $term" HEAD \
+        && cb branch "ref-$term" HEAD \
+        && cp "$GITDIR/leak-pattern" "$W/.git/leak-pattern" && cp "$GITDIR/leak-pattern.pin" "$W/.git/leak-pattern.pin"
+    } >/dev/null 2>&1 || refuse "the control repository could not be built."
+    # Each built row's line reading, alone on the one line of a file of its own, in a commit of its own.
+    : > "$A/rowcommits"
+    while IFS= read -r n; do
+        { sed -n "${n}p" "$A/terms.line" > "$W/row-$n.txt" && cb add "row-$n.txt" && cb commit -q --no-verify --author="$au" -m "row $n"; } \
+            >/dev/null 2>&1 || refuse "the control repository could not be built (row $n's commit)."
+        c=$(cb rev-parse HEAD 2>/dev/null) || refuse "the control repository could not be read back."
+        printf '%s %s\n' "$n" "$c" >> "$A/rowcommits"
+    done < "$A/built"
+    rm -f "$A/terms.line"
+    out=$(LC_ALL="$KIT_CALLER_LOCALE" "$BASH" "$self" "$W" --remote none 2>/dev/null); rc=$?
+    block=$(printf '%s\n' "$out" | awk '/^--- by field/ {p = 1; next} /^---/ {p = 0} p')
+    printf '%s\n' "$block"
+    red=$(printf '%s\n' "$block" | awk 'NF >= 4 && $(NF - 1) == "/" {t++; if ($(NF - 2) + 0 > 0) r++} END {print r + 0, t + 0}')
+    echo "control: ${red% *} of ${red#* } fields red (10 of 10 required)"
+    found=0; missed=""
+    while read -r n c; do
+        if printf '%s\n' "$out" | awk -v h="${c:0:12}" '$1 == "REFUSED" && $3 == h && $4 == "content" {f = 1} END {exit !f}'; then
+            found=$((found + 1))
+        else
+            missed="$missed${missed:+, }$n"
+        fi
+    done < "$A/rowcommits"
+    echo "control: $found of $built rows' terms refused in content, each in a commit of its own ($built of $ROWS required)"
+    (( rc == 3 )) || refuse "the audit exited $rc over the control, where it must refuse the planted hits (3)."
+    [[ "$red" == "10 10" ]] || refuse "the control went red on ${red% *} of ${red#* } fields, not 10 of 10."
+    [[ -z "$missed" ]] || refuse "the audit didn't refuse the term of row(s) $missed, which the list matches: those rows went unread."
+    kit_passed=1
+    exit 0
+fi
+
+# ============================== the audit ================================================================
+grafts=$(git rev-parse --path-format=absolute --git-path info/grafts 2>/dev/null) || refuse "where this repository's grafts would be can't be read."
+[[ -s "$grafts" ]] && refuse "this repository has grafts, which change the history git shows, so its history can't be read as it is." \
+    "Remove them (info/grafts); git replace --convert-graft-file turns them into replace refs, which this audit ignores."
+[[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == false ]] \
+    || refuse "this is a shallow clone, or its depth can't be read: it holds only part of the history, and the rest would go public unread." \
+              "Fetch the whole history first (git fetch --unshallow), then run it again."
+
+# The allow file: each line that isn't blank or a comment is COMMIT WHERE SHA256 PATH, or the audit stops.
+: > "$A/allowed"
+if [[ -n "$ALLOW" ]]; then
+    are='^([0-9a-f]{40}|[0-9a-f]{64}) [^[:space:]]+ [0-9a-f]{64} .+$'; n=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1))
+        [[ "$line" =~ ^[[:blank:]]*(#.*)?$ ]] && continue
+        [[ "$line" =~ $are ]] || usage "the allow file's line $n is not COMMIT WHERE SHA256 PATH (a full commit hash, one word, a SHA-256, a path)"
+        printf '%s\n' "$line" >> "$A/allowed"
+    done < "$ALLOW"
+fi
+pinned() {  # COMMIT PATH: the line hashes the allow file pins there, one per occurrence
+    local ac as ah ap
+    while read -r ac as ah ap; do
+        [[ "$ac" == "$1" && "$ap" == "$2" ]] && printf '%s\n' "$ah"
+    done < "$A/allowed"
+}
+
+# The remote: its ref names are read, and every one must point at an object here.
+if (( ! remote_set )); then
+    REMOTE=none
+    git remote 2>/dev/null | awk '$0 == "origin" {f = 1} END {exit !f}' && REMOTE=origin
+fi
+: > "$A/remote"
+if [[ "$REMOTE" != none ]]; then
+    git ls-remote "$REMOTE" > "$A/remote" 2>/dev/null \
+        || refuse "the refs of the remote $REMOTE could not be listed, so what it holds can't be read." \
+                  "Check that it can be reached, or name another with --remote, or none to read this clone alone."
+    miss=0
+    while read -r h r; do git cat-file -e "$h" 2>/dev/null || miss=$((miss + 1)); done < "$A/remote"
+    (( miss == 0 )) || refuse "$miss of the refs of the remote $REMOTE point at objects not here, so history it holds would go unread." \
+        "Fetch them first (git fetch $REMOTE), then run it again."
+fi
+
+# The walk: every commit reachable from a ref, then those only the reflog holds.
+git rev-list --all > "$A/reach" 2>/dev/null || refuse "the commits reachable from this repository's refs could not be listed."
+git rev-list --all --reflog > "$A/every" 2>/dev/null || refuse "the commits this repository's reflog holds could not be listed."
+sort -u "$A/reach" > "$A/reach.s" && sort -u "$A/every" > "$A/every.s" && comm -23 "$A/every.s" "$A/reach.s" > "$A/reflog" \
+    || refuse "the commits only the reflog holds could not be told apart."
+
+# Each field to a file of its own, byte for byte: SET.ID.FIELD, and SET.COMMIT.content.N for the lines the commit's Nth
+# path gains, that path kept apart in p/COMMIT.N so that it is never searched or printed as a hit's content.
+python3 -I - "$A/f" "$A/p" "$A/reach" "$A/reflog" "$A/remote" "$A/counts" <<'PY' || refuse "the history could not be read in full."
+import os, subprocess, sys
+f, p, reach, reflog, remote, counts = sys.argv[1:7]
+
+
+def git(args):
+    r = subprocess.run(["git"] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if r.returncode != 0:
+        sys.stderr.write("kit-history-audit: git %s exited %d\n" % (next(a for a in args if not a.startswith("-")), r.returncode))
+        sys.exit(1)
+    return r.stdout
+
+
+def put(name, data):
+    with open(os.path.join(f, name), "wb") as o:
+        o.write(data)
+
+
+def lines(xs):
+    return b"".join(x + b"\n" for x in xs)
+
+
+merges = commits = 0
+for s, listing in (("reach", reach), ("reflog", reflog)):
+    for c in open(listing).read().split():
+        commits += 1
+        head, _, msg = git(["cat-file", "commit", c]).partition(b"\n\n")
+        who, parents, other = {}, [], []
+        for line in head.split(b"\n"):
+            k, _, v = line.partition(b" ")
+            if k in (b"author", b"committer") and k not in who:
+                who[k] = v
+            elif k == b"parent":
+                parents.append(v.decode("ascii"))
+            elif k != b"tree":
+                other.append(line)
+        for k in (b"author", b"committer"):
+            v = who.get(k, b"")
+            lt = v.find(b"<")
+            gt = v.find(b">", lt + 1) if lt >= 0 else -1
+            name, mail = (v, b"") if gt < 0 else (v[:lt].rstrip(b" "), v[lt + 1:gt])
+            put("%s.%s.%s_name" % (s, c, k.decode()), name + b"\n")
+            put("%s.%s.%s_email" % (s, c, k.decode()), mail + b"\n")
+        put("%s.%s.message" % (s, c), msg + b"\n" + lines(other))
+        merges += len(parents) > 1
+        base = ["--root", c] if not parents else [parents[0], c]
+        names = [x for x in git(["diff-tree", "-r", "-z", "--no-commit-id", "--name-only", "--no-renames"] + base).split(b"\0") if x]
+        put("%s.%s.path" % (s, c), lines(names))
+        for i, path in enumerate(names, 1):
+            with open(os.path.join(p, "%s.%d" % (c, i)), "wb") as o:
+                o.write(path)
+            patch = git(["--literal-pathspecs", "diff-tree", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--unified=0", "--no-renames", "--no-commit-id"] + base + ["--", path])
+            added, hunk = [], False
+            for line in patch.split(b"\n"):
+                if line.startswith(b"diff "):
+                    hunk = False
+                elif line.startswith(b"@@"):
+                    hunk = True
+                elif hunk and line.startswith(b"+"):
+                    added.append(line[1:])
+            put("%s.%s.content.%d" % (s, c, i), lines(added))
+tags = set()
+for line in git(["for-each-ref", "--format=%(objectname) %(objecttype)"]).split(b"\n"):
+    if not line:
+        continue
+    o, t = line.decode("ascii").split(" ")
+    while t == "tag" and o not in tags:
+        tags.add(o)
+        head, _, msg = git(["cat-file", "tag", o]).partition(b"\n\n")
+        tagger, other, nxt = b"", [], (None, None)
+        for h in head.split(b"\n"):
+            k, _, v = h.partition(b" ")
+            if k == b"tagger":
+                tagger = v
+            elif k == b"object":
+                nxt = (v.decode("ascii"), nxt[1])
+            elif k == b"type":
+                nxt = (nxt[0], v.decode("ascii"))
+            else:
+                other.append(h)
+        put("tag.%s.tag_tagger" % o, tagger + b"\n")
+        put("tag.%s.tag_message" % o, msg + b"\n" + lines(other))
+        o, t = nxt
+refs = git(["for-each-ref", "--format=%(refname)"]).split(b"\n")
+refs += [l.split(b"\t", 1)[1] for l in open(remote, "rb").read().split(b"\n") if b"\t" in l]
+refs = sorted(set(r for r in refs if r))
+put("refs.-.ref_name", lines(refs))
+with open(counts, "w") as o:
+    o.write("%d %d %d %d %d\n" % (commits, merges, len(tags), len(refs), sum(1 for _ in open(reflog))))
+PY
+read -r n_commits n_merges n_tags n_refs n_reflog < "$A/counts" || refuse "the history's counts could not be read."
+echo "kit-history-audit: the list's $ROWS row(s), matching its pin; remote: $REMOTE"
+echo "commits: $((n_commits - n_reflog)) reachable from a ref, $n_reflog only in the reflog, $n_merges merge(s) read against their first parent; tag objects $n_tags; ref names $n_refs"
+
+# ---- the search ----------------------------------------------------------------------------------------------------
+# Two engines, git grep and grep, each under LC_ALL=C and in the caller's locale, over every field file; a file any of
+# the four names is a hit. An engine that couldn't run stops the audit; engines that disagree are named, and stop it.
+cd "$A/f" || refuse "the field files can't be entered."
+LC_ALL=C git grep --no-index --no-color -a -l -i -E -e "$LEAK_PATTERN" -- . > "$A/g.c" 2>/dev/null; r1=$?
+LC_ALL="$KIT_CALLER_LOCALE" git grep --no-index --no-color -a -l -i -E -e "$LEAK_PATTERN" -- . > "$A/g.u" 2>/dev/null; r2=$?
+LC_ALL=C grep -a -l -r -i -E -e "$LEAK_PATTERN" . > "$A/n.c" 2>/dev/null; r3=$?
+LC_ALL="$KIT_CALLER_LOCALE" grep -a -l -r -i -E -e "$LEAK_PATTERN" . > "$A/n.u" 2>/dev/null; r4=$?
+for r in "$r1" "$r2" "$r3" "$r4"; do
+    (( r <= 1 )) || refuse "a search over the history could not run (exit $r), so a clean result would be unproven."
+done
+awk '{sub(/^\.\//, ""); print}' "$A/g.c" "$A/g.u" | sort -u > "$A/hits.git"
+awk '{sub(/^\.\//, ""); print}' "$A/n.c" "$A/n.u" | sort -u > "$A/hits.grep"
+sort -u "$A/hits.git" "$A/hits.grep" > "$A/hits"
+agree=yes; cmp -s "$A/hits.git" "$A/hits.grep" || agree=NO
+echo "matching field files: $(($(wc -l < "$A/hits.git"))) (git grep), $(($(wc -l < "$A/hits.grep"))) (grep); engines agree: $agree"
+echo "--- by field: hits / scanned"
+ls "$A/f" | awk -F. '{print $3}' | sort | uniq -c > "$A/scanned"
+awk -F. '{print $3}' "$A/hits" | sort | uniq -c > "$A/hit.fields"
+for fld in author_name author_email committer_name committer_email message path content tag_tagger tag_message ref_name; do
+    printf '  %-16s %s / %s\n' "$fld" "$(awk -v f="$fld" '$2 == f {print $1}' "$A/hit.fields" | awk '{s += $1} END {print s + 0}')" \
+        "$(awk -v f="$fld" '$2 == f {print $1}' "$A/scanned" | awk '{s += $1} END {print s + 0}')"
+done
+
+# ---- each hit ------------------------------------------------------------------------------------------------------
+# The lines of a field file that match, by number, in either pass. Every line counts, whatever bytes it holds (-a): a
+# NUL or invalid UTF-8 on a line hid it from the .local audit's verdict (§145 step 3).
+hit_lines() {  # FILE: the matching lines' numbers, one a line, to stdout; 1 when a pass couldn't run
+    local c u
+    LC_ALL=C grep -a -n -i -E -e "$LEAK_PATTERN" -- "$1" > "$A/l.c" 2>/dev/null; c=$?
+    LC_ALL="$KIT_CALLER_LOCALE" grep -a -n -i -E -e "$LEAK_PATTERN" -- "$1" > "$A/l.u" 2>/dev/null; u=$?
+    (( c <= 1 && u <= 1 )) || return 1
+    awk -F: '{print $1}' "$A/l.c" "$A/l.u" | sort -un
+}
+echo "--- each hit: the verdict, set, commit or tag object, field, matching lines (never the text or a path)"
+: > "$A/refused"
+while IFS= read -r h; do
+    hs=${h%%.*}; rest=${h#*.}; id=${rest%%.*}; fld=${rest#*.}; idx=""
+    case $fld in content.*) idx=${fld#content.}; fld=content ;; esac
+    hit_lines "$h" > "$A/ln" || refuse "a field file's matching lines could not be numbered."
+    nl=$(($(wc -l < "$A/ln")))
+    show=${id:0:12}; [[ $hs == refs ]] && show=-
+    verdict=REFUSED
+    # Only a content line can be allowed: by its commit, its path and the SHA-256 of its bytes, one pin an occurrence.
+    if [[ $fld == content && ( $hs == reach || $hs == reflog ) && $nl -gt 0 && -s "$A/allowed" ]]; then
+        path=$(cat "$A/p/$id.$idx") || refuse "a hit's path could not be read back."
+        : > "$A/got"
+        while IFS= read -r k; do
+            s=$(head -n "$k" "$h" | tail -n 1 | tr -d '\n' | kit_sha256) || refuse "a hit's line could not be hashed."
+            printf '%s\n' "${s%% *}" >> "$A/got"
+        done < "$A/ln"
+        sort -o "$A/got" "$A/got"; pinned "$id" "$path" | sort > "$A/pin"
+        [[ $(($(comm -23 "$A/got" "$A/pin" | wc -l))) -eq 0 ]] && verdict=allowed
+    fi
+    line=$(printf '  %-7s %-7s %-12s %-16s lines=%s' "$verdict" "$hs" "$show" "$fld" "$nl")
+    echo "$line"
+    [[ $verdict == allowed ]] || echo "$line" >> "$A/refused"
+done < "$A/hits"
+
+echo "--- verdict"
+if [[ -s "$A/refused" ]]; then
+    echo "REFUSING: $(($(wc -l < "$A/refused"))) hit(s) outside the allow file, each named above; the matched text and paths are never shown."
+    [[ $agree == yes ]] || echo "  and the two engines disagree on which field files match, so either may have missed one."
+    exit 3   # the refusal
+fi
+[[ $agree == yes ]] || refuse "git grep and grep disagree on which field files match the list, so neither result can be trusted."
+if [[ -s "$A/hits" ]]; then
+    echo "allowed: every hit is a content line the allow file pins ($(($(wc -l < "$A/allowed"))) line(s) pinned)."
+else
+    echo "clean: no field of the history matches the list ($ROWS row(s)). Trust it only after the control has gone red."
+fi
+kit_passed=1
+exit 0

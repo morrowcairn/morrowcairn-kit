@@ -1,0 +1,48 @@
+name: leak-scan
+
+# The release's marker-scan workflow for a project (ci/leak-scan.yml), held as the project's
+# .github/workflows/leak-scan.yml by the checked-copies layer (ci/copies.txt). The scan is the project's
+# leak-detection/scan-tree.sh, held to the release's copy the same way; the kit's hook suite tests that script
+# before every release.
+#
+# Marker scan over every tracked file, against the LEAK_PATTERN repository secret. Ships as
+# MECHANISM ONLY -- the pattern lives in the secret, never in this file, because the pattern IS the
+# marker list and committing it would publish the exact strings the scan exists to keep out.
+#
+#   gh secret set LEAK_PATTERN
+#
+# WHAT IT CHECKS is whatever the secret holds, and nothing else. Under the kit's policy
+# (leak-detection/README.md, Setup) the secret holds only terms that identify no one -- a canary,
+# machine-path patterns, an IP pattern -- and identity terms are checked by the local pre-push hook
+# alone. So a green run says how many tracked files were scanned and that none matched
+# LEAK_PATTERN; it does not say no identity term is present, and neither does its output.
+#
+# FAILS CLOSED when the secret is unset. That is correct behaviour, not a gap: an adopter who
+# pushes without configuring a pattern gets a hard error rather than a green check that examined
+# nothing. A check that cannot fail is worse than no check, because it ends the search.
+#
+# FAILS CLOSED, too, when the secret isn't the list the project's tracked .github/leak-pattern.pin names
+# (its rows and a hash): a secret cut or changed would scan for less while every run kept passing. The
+# project writes that pin with bin/kit-pin repin ci, from the secret's value kept untracked in
+# .git/leak-pattern.ci (leak-detection/README.md, Setup).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan tracked files against LEAK_PATTERN
+        env:
+          LEAK_PATTERN: ${{ secrets.LEAK_PATTERN }}
+        run: leak-detection/scan-tree.sh

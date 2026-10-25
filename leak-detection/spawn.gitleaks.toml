@@ -1,0 +1,139 @@
+## Credential-shape ruleset for a pinned spawn: the kit's .gitleaks.toml without its kit-only exemption.
+##
+## The hooks use this file, from the pinned install, when a spawn holds no .gitleaks.toml of its own
+## (leak-detection/pre-commit and pre-push, under the stub). The kit's own .gitleaks.toml allowlists
+## the kit's synthetic credential fixture by path; that entry would exempt the same path in any spawn,
+## so it is the one line this file leaves out. Everything else is the kit's file, line for line, and
+## the install test's GL1 fails if the two drift apart. A spawn that needs rules of its own keeps its
+## own .gitleaks.toml (declared in kit.forks if it is a changed copy of the kit's).
+
+title = "Credential-shape ruleset"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Carve-outs"
+paths = [
+  '''\.gitleaks\.toml$''',   # this file's own regexes look like the things it matches
+  '''\.git/''',
+]
+
+# ---------------------------------------------------------------------------------------------
+# Generic shapes — portable, no service assumptions
+# ---------------------------------------------------------------------------------------------
+
+# Written from what it names: in a config file, a key, token or secret name (api key, access key or
+# token, auth token, secret key), an assignment (=, : or =>), and a value of exactly 40 letters and
+# digits, quoted or not. Or a quoted 40-character value anywhere in a config file that names such a key
+# elsewhere, as when YAML nests the value under its key: the keywords are those names, so the file must
+# hold one.
+[[rules]]
+id = "generic-api-key-40char-in-config"
+description = "A 40-character alphanumeric value assigned to an API, access, auth or secret key or token name, or quoted in a config file naming one"
+regex = '''(?i)(?:(?:api|access|auth|secret)[_.-]?(?:key|token)[A-Za-z0-9_.-]*["']?\s*(?:=>|=|:)\s*["']?|["'])([A-Za-z0-9]{40})(?:[^A-Za-z0-9]|$)'''
+secretGroup = 1
+keywords = [
+  "apikey", "api_key", "api-key", "api.key", "apitoken", "api_token", "api-token", "api.token",
+  "accesskey", "access_key", "access-key", "access.key", "accesstoken", "access_token", "access-token", "access.token",
+  "authkey", "auth_key", "auth-key", "auth.key", "authtoken", "auth_token", "auth-token", "auth.token",
+  "secretkey", "secret_key", "secret-key", "secret.key", "secrettoken", "secret_token", "secret-token", "secret.token",
+]
+path = '''(?i)(conf|settings|secret|credential|\.env|\.(ini|cfg|toml|ya?ml|json|properties)$)'''
+tags = ["credential", "generic", "shape-40-alnum"]
+
+[[rules]]
+id = "generic-secret-assignment"
+description = "Long opaque value assigned to a secret-ish variable name"
+regex = '''(?i)(secret|token|passwd|password|api[_-]?key)\s*[:=]\s*["']([A-Za-z0-9+/=_\-]{24,})["']'''
+secretGroup = 2
+keywords = ["secret", "token", "password", "passwd", "api_key", "apikey"]
+tags = ["credential", "generic"]
+
+# Written from RFC 7519 section 3 and RFC 7515 section 7.1 (JWS compact serialization): three base64url
+# segments joined by dots. The header is a JSON object, so it opens {" and encodes to eyJ; the shortest
+# useful one, {"alg":"none"}, is 19 characters. The payload can be as short as {} (e30). The signature
+# floor leaves out unsigned tokens and stays well under HS256's 43 characters, so a truncated copy still
+# matches.
+# Never give a rule a default rule's id: gitleaks then runs it in the default's place, keeping the
+# default's entropy floor where it sets none, and deleting it brings the default back under the same
+# id. Hence kit-jwt, beside the default jwt rule. Its entropy floor is the default jwt rule's, which
+# it had while it shared that id.
+[[rules]]
+id = "kit-jwt"
+description = "A JSON Web Token: base64url header, payload and signature joined by dots, the header opening eyJ"
+regex = '''eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{16,}'''
+entropy = 3
+keywords = ["eyj"]
+tags = ["credential", "jwt"]
+
+# Written from RFC 9110 section 11.6.2 (Authorization: a case-insensitive scheme, then credentials) and
+# RFC 6750 section 2.1 (Bearer, spaces, then a b64token: letters, digits, - . _ ~ + /, trailing =).
+# The token may hold = anywhere, looser than RFC 6750: no other rule backs this one up, so it errs wide.
+# The field name may be quoted, as a key in JSON or a dict. The 16-character floor keeps placeholders
+# like "Bearer YOUR_TOKEN" out.
+[[rules]]
+id = "bearer-header"
+description = "An HTTP Authorization header, or a key named for one, carrying a Bearer token"
+regex = '''(?i)authorization["']?\s*[:=]\s*["']?bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})'''
+secretGroup = 1
+keywords = ["bearer"]
+tags = ["credential", "bearer"]
+
+[[rules]]
+id = "db-url-with-password"
+description = "Database connection URL with an embedded password"
+regex = '''(?i)(postgres|postgresql|mysql|mongodb(\+srv)?|redis|amqp)://[^:@/\s]+:([^@\s]{4,})@'''
+secretGroup = 3
+keywords = ["postgres://", "postgresql://", "mysql://", "mongodb://", "mongodb+srv://", "redis://", "amqp://"]
+tags = ["credential", "conn-string"]
+
+# Written from RFC 7468 section 2 (the PEM encapsulation boundary) and RFC 4880 section 6.2 (OpenPGP
+# armor): "-----BEGIN ", a label whose last words are PRIVATE KEY (PGP's adds BLOCK), "-----".
+# Any run of spaces or tabs stands where the RFCs have one space, so a hand-edited header still marks
+# the key; no other rule catches such a key. The keyword is "private", not "private key": a file whose
+# only PRIVATE KEY is spaced that way would never reach the regex.
+[[rules]]
+id = "private-key-pem"
+description = "The header line of a PEM or OpenPGP-armored private key"
+regex = '''-----BEGIN[ \t]+(?:[A-Z0-9]+(?:[ \t]+|-))*PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?-----'''
+keywords = ["private"]
+tags = ["credential", "private-key"]
+
+# ---------------------------------------------------------------------------------------------
+# Storage conventions — a credential filed under a name the default rules don't recognize.
+# S3-compatible object stores (Cloudflare R2, Backblaze B2, MinIO, Wasabi) are routinely accessed
+# through AWS SDKs and tools, so the credential lands in AWS_* variables while not being an AWS
+# key — and therefore not matching AWS-shaped default rules.
+# ---------------------------------------------------------------------------------------------
+
+[[rules]]
+id = "aws-named-access-key-id"
+description = "Access key ID under AWS_ACCESS_KEY_ID — real AWS (AKIA…) or a 32-hex S3-compatible ID"
+regex = '''(?i)aws_access_key_id\s*[:=]\s*["']?([a-f0-9]{32}|AKIA[0-9A-Z]{16})["']?'''
+secretGroup = 1
+keywords = ["aws_access_key_id"]
+tags = ["credential", "named-cloud-cred"]
+
+[[rules]]
+id = "aws-named-secret-access-key"
+description = "Secret under AWS_SECRET_ACCESS_KEY — covers S3-compatible stores and real AWS"
+regex = '''(?i)aws_secret_access_key\s*[:=]\s*["']?([A-Za-z0-9+/=]{20,80})["']?'''
+secretGroup = 1
+keywords = ["aws_secret_access_key"]
+tags = ["credential", "named-cloud-cred"]
+
+[[rules]]
+id = "monitoring-ping-url-uuid"
+description = "Monitoring/heartbeat ping URL with an embedded UUID — the URL IS the credential"
+regex = '''https?://[A-Za-z0-9.\-]+/(?:ping/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b'''
+secretGroup = 1
+keywords = ["ping", "heartbeat", "healthcheck"]
+tags = ["credential", "capability-url"]
+
+# ---------------------------------------------------------------------------------------------
+# PROJECT-SPECIFIC RULES — add yours below this line.
+# Anchor on your own service names and variable conventions. Nothing here by default: a kit that
+# shipped one project's service list would leak that project's stack to every adopter, and would
+# be dead weight for all of them.
+# ---------------------------------------------------------------------------------------------

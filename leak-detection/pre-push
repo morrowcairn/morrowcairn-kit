@@ -1,0 +1,670 @@
+#!/usr/bin/env bash
+#
+# pre-push — three layers, and they read different parts of what a push sends:
+#   1.  identity markers in files: the CONTENTS of the files in the tree at each pushed ref's TIP, every line read as
+#       text whatever bytes it holds (invalid UTF-8, a NUL), and a file git takes as binary named whole;
+#   1b. identity markers in metadata: the author and committer (names and emails) and the message of
+#       every commit this push adds, below the tip as well as at it; every tag object it adds (tagger,
+#       name, message); and the names of the refs pushed. Ref names, tag objects and the file names a block
+#       reports are matched in two passes, under LC_ALL=C and in the caller's locale, so a term on a line holding
+#       invalid UTF-8 is caught on BSD grep (a Mac's) too, and a non-ASCII letter keeps the case folding the caller's
+#       locale gives it;
+#   2.  credential shapes (gitleaks): the lines added by every commit this push adds -- and, where the project turns
+#       the binary scan on (a tracked kit.binaries holding scan=on, or a tracked reviewed list, at the pushed tip),
+#       every binary file those commits add, which must be cleared by leak-detection/scan-binaries.py
+#       (reviewed by blob id, structurally plain, no match in its strings); that scan needs python3, which it
+#       runs isolated (-I), so no module the environment plants on PYTHONPATH or in the user site runs in it.
+#       With the scan off, a push carrying a binary says so on one line.
+# In a pinned spawn (run through the stub, KIT_INSTALL set), it also refuses a pushed tip holding a kit-owned
+# file that differs from the release and that kit.forks doesn't declare (leak-detection/check-copies.sh).
+# Once all pass, it runs the project's own checks from hook-checks/pre-push/ (end of this file).
+# Before any of them it turns replace refs off for every git command it runs, and refuses a repository with grafts,
+# so each layer reads what the push sends (the user-level rule 13 (c); decisions log §120, §121). And it handles text
+# byte-wise, under LC_ALL=C, while every matcher runs in the locale it was started in (below, and §159).
+#
+# WHAT THE IDENTITY LAYERS DO NOT READ. File names, and the files of the commits between what the
+# remote has and the pushed tip. An identity term in either reaches the remote unchecked: a file added
+# in one commit and deleted in the next passes, because only the tip's files are read. Both were
+# probed with a canary from a real list and both reached the remote. CI does not cover the gap:
+# under the kit's CI-secret policy (leak-detection/README.md, Setup) the secret holds no identity
+# term, so these layers are the only identity check there is.
+#
+# WHY A HOOK AND NOT A PROCEDURE
+# A documented "grep before pushing" step can detect a hit and let the push run anyway, if the
+# check is wired to a log line instead of an exit code. A check that alerts without blocking
+# manufactures assurance. Here git enforces the verdict: non-zero exit, no push.
+#
+# WHY THE TIP'S WHOLE TREE AND NOT THE STAGED DIFF (identity layer)
+# Staged-only and added-lines scanners structurally miss PRE-EXISTING residuals -- an incomplete
+# earlier sanitization, or a marker that arrived before the hook did. Those are exactly the ones
+# still sitting in the repo at publish time. The tip's tree catches them; it cannot see what an
+# earlier commit added and a later one removed, which is the gap above. Layer 1b reads the metadata
+# of every new commit and tag; reading every new commit's files has not been built.
+#
+# PATTERN SOURCE: environment, or a local untracked file. NEVER hardcoded here.
+# The pattern IS the marker list -- committing it publishes the strings it exists to keep out.
+#   export LEAK_PATTERN='marker1|marker2|...'
+#   ...or put that line in .git/leak-pattern  (untracked, per-clone), which is read as data, never
+#   run: blank lines, full-line comments and one such line, the export word optional.
+#
+# FAILS CLOSED: no pattern configured => refuse. An unconfigured scan that passes silently is
+# worse than no scan, because it reads as coverage. A project with no identity list says so with
+# one deliberate line, LEAK_PATTERN='kit:no-identity-list', pinned like any list: the identity
+# layers are then off, and every push says so; the credential layers run (decisions log §308).
+#
+# FAILS CLOSED AGAIN when a scan cannot run -- a pattern that does not compile, a commit that
+# cannot be read, a tool missing. A scan that did not run examined nothing, and "examined
+# nothing" must never be reported as "found nothing". Every stage below reads its exit code for
+# exactly this reason; none may be silenced with `2>/dev/null` or `|| true`.
+#
+# Bypass (deliberate escape hatch):  git push --no-verify   -- it skips BOTH layers and every project check.
+# A fresh `git clone` runs no hook. A pinned project gets its stubs from bin/kit-pin (to, migrate or restore);
+# the kit itself points core.hooksPath at leak-detection (leak-detection/README.md, Setup).
+#
+set -uo pipefail
+# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159). In a UTF-8 locale BSD's
+# tools stop on, skip or quote a line holding invalid UTF-8 (cut and grep measured, awk inferred), so every text tool
+# here runs under LC_ALL=C; each matcher runs in the locale saved here, so -i keeps folding a non-ASCII letter's case,
+# which C drops, git's matchers too. The matchers, and what is handed the saved locale, are named in install test LG1.
+KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
+export LC_ALL=C
+
+# A pass comes only from the pass point at the end of this file. Any other exit 0 -- an early exit, the list reader
+# exiting while it is sourced, or a stop on an unset variable that the shell reports as 0, as bash 3.2 can -- is
+# turned into a refusal here (decisions log §96, §100). A refusal's own non-zero exit is left as it is.
+kit_passed=0
+kit_guard() {
+    local rc=$?
+    if [[ $rc -eq 0 && "${kit_passed:-0}" != 1 ]]; then
+        echo "pre-push: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+        exit 1
+    fi
+}
+trap kit_guard EXIT
+
+# SHA-256 by sha256sum where it is installed, else by shasum -a 256, which a stock Mac has instead: one routine, the
+# same text in each script that hashes (install test HS1). kit_sha256 hashes stdin and prints what sha256sum prints;
+# kit_no_sha256 succeeds, saying why, only when neither tool is installed, and the caller refuses then.
+kit_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else return 127; fi
+}
+kit_no_sha256() {
+    if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then return 1; fi
+    printf 'neither sha256sum (GNU coreutils) nor shasum (Perl) is installed'
+}
+
+# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value (decisions
+# log §108, §112). A row is one top-level alternative of the extended regex: groups, bracket expressions and escapes
+# don't split one. One routine, the same text in each script that reads a pin (install test PN0). kit_list_rows VALUE
+# prints how many rows VALUE holds; kit_list_head VALUE N prints its first N rows as written; kit_pin_check VALUE PINFILE
+# succeeds when VALUE is the list PINFILE names, and otherwise fails with KP_ERROR saying why, in rows, never in a term
+# or a hash. It needs kit_sha256.
+kit_list_split='{ s = s (NR > 1 ? "\n" : "") $0 }
+END { n = length(s); rows = 1; depth = 0; i = 1; cut = n + 1
+      while (i <= n) {
+          c = substr(s, i, 1)
+          if (c == "\\") { i += 2; continue }
+          if (c == "[") {
+              j = i + 1
+              if (substr(s, j, 1) == "^") j++
+              if (substr(s, j, 1) == "]") j++
+              while (j <= n && substr(s, j, 1) != "]") {
+                  d = substr(s, j + 1, 1)
+                  if (substr(s, j, 1) == "[" && (d == ":" || d == "." || d == "=")) { k = index(substr(s, j + 2), d "]"); j = k ? j + k + 3 : j + 1 }
+                  else j++
+              }
+              i = j + 1; continue
+          }
+          if (c == "(") depth++
+          else if (c == ")") depth--
+          else if (c == "|" && depth == 0) { if (rows == want) { cut = i; break }; rows++ }
+          i++
+      }
+      if (want > 0) printf "%s", substr(s, 1, cut - 1); else print rows }'
+kit_list_rows() { printf '%s' "$1" | awk -v want=0 "$kit_list_split"; }
+kit_list_head() { printf '%s' "$1" | awk -v want="$2" "$kit_list_split"; }
+kit_pin_check() {
+    local rows sum got_rows got_sum
+    KP_ERROR=""
+    if [[ ! -f "$2" ]]; then KP_ERROR="it has no pin"; return 1; fi
+    rows=$(sed -n 's/^rows=//p' "$2" 2>/dev/null); sum=$(sed -n 's/^sha256=//p' "$2" 2>/dev/null)
+    if [[ ! "$rows" =~ ^[0-9]+$ || ! "$sum" =~ ^[0-9a-f]{64}$ ]]; then KP_ERROR="its pin is malformed"; return 1; fi
+    got_rows=$(kit_list_rows "$1")
+    got_sum=$(printf '%s' "$1" | kit_sha256) || got_sum=""
+    if [[ -z "$got_sum" ]]; then KP_ERROR="it could not be hashed"; return 1; fi
+    if [[ "$got_rows" != "$rows" ]]; then KP_ERROR="it holds $got_rows row(s) where its pin expects $rows"; return 1; fi
+    if [[ "${got_sum%% *}" != "$sum" ]]; then KP_ERROR="it holds the $rows row(s) its pin expects, but not the same ones"; return 1; fi
+    return 0
+}
+
+REMOTE_URL="${2:-}"      # git passes: $1 = remote name (or URL), $2 = the URL being pushed to
+
+# The list file is read as data, never run as shell, by the kit's one reader, read-leak-pattern.sh
+# beside this hook (its header says what it accepts). This hook refuses before it reads a list or scans
+# anything if that file is missing, does not load, lacks either of its functions, or fails its
+# selftest -- even with the pattern in the environment, which the reader isn't needed for: a reader in
+# that state was cut or edited, and a scan run on a list read wrong lets through what the list exists
+# to stop (hooks tests RC1 to RC5).
+case "${BASH_SOURCE[0]}" in */*) hookdir="${BASH_SOURCE[0]%/*}" ;; *) hookdir=. ;; esac
+# A kit-pin command this hook names runs from inside a project, by its absolute path (decisions log §348; install test
+# PC11, PC12, PC14).
+kp_cmd="\"$(cd "$hookdir/.." 2>/dev/null && pwd)/bin/kit-pin\""
+reader="$hookdir/read-leak-pattern.sh"; reader_fault=""
+if [[ ! -f "$reader" ]]; then
+    reader_fault="it is missing"
+elif ! source "$reader"; then
+    reader_fault="it did not load"
+elif ! declare -F read_leak_pattern >/dev/null || ! declare -F read_leak_pattern_selftest >/dev/null; then
+    reader_fault="it does not define both read_leak_pattern and read_leak_pattern_selftest"
+elif ! read_leak_pattern_selftest; then
+    reader_fault="it failed its selftest"
+fi
+if [[ -n "$reader_fault" ]]; then
+    echo "pre-push: REFUSING -- the list reader leak-detection/read-leak-pattern.sh can't be used: $reader_fault." >&2
+    echo "  It travels beside this hook; restore it from the kit's release this project took." >&2
+    exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "pre-push: REFUSING -- git was not found, so nothing this push sends can be read." >&2
+    exit 1
+fi
+
+# The git this hook needs: 2.31 or later. Below it, git rejects --diff-merges=first-parent, which the scans read merges
+# with, and ignores the GIT_CONFIG_COUNT settings that keep gitleaks' log uncoloured; on git 2.30.2 every push was
+# refused as "could not compute the commits", without its reason, and pre-commit let a credential through. A git that
+# old, or one whose version can't be read, is refused by name (decisions log §288, §290; hooks_test OG2, OG4).
+gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
+if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
+    echo "pre-push: REFUSING -- could not read git's version, and this hook needs git 2.31 or later." >&2
+    exit 1
+fi
+if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
+    echo "pre-push: REFUSING -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can't read merges and can colour the log gitleaks reads." >&2
+    echo "  Install git 2.31 or later, then push again." >&2
+    exit 1
+fi
+
+# What git shows must be what the push sends. A replace ref makes git read another object in place of the one pushed,
+# so replace refs are off for every git command below and for this hook's children (gitleaks, scan-binaries.py, a
+# project's own checks). A graft rewrites history for every reader and no setting turns it off, so a repository with
+# grafts (info/grafts, or the file GIT_GRAFT_FILE names) is refused. What git sets for the hook stays: in a linked
+# worktree that is GIT_DIR, which finds the worktree's own git dir (hooks_test RG1, RG2, WT2, WT3).
+export GIT_NO_REPLACE_OBJECTS=1
+grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
+if [[ -n "$grafts" && -s "$grafts" ]]; then
+    echo "pre-push: REFUSING -- this repository has grafts, which change the history git shows, so what this push sends can't be read as it is." >&2
+    echo "  Remove them (info/grafts, or the file GIT_GRAFT_FILE names); git replace --convert-graft-file turns them into replace refs, which this hook ignores." >&2
+    exit 1
+fi
+GITDIR="$(git rev-parse --git-dir)"
+LIST_FROM="the environment"
+# A project with no identity list says so with one deliberate line, this reserved value, pinned like any list: the
+# identity layers then stay off, said on every push, and the credential layers run (decisions log §308, §310 (a)). A
+# missing list still refuses, naming the line, and a list file that exists but can't be read refuses on its own.
+KIT_NO_LIST='kit:no-identity-list'
+no_list_help() {
+    echo "  If this project has an identity list, put it in .git/leak-pattern (untracked) and pin it: leak-detection/README.md, Setup." >&2
+    echo "  If it has none, say so with one line, then pin that line:" >&2
+    echo "    echo \"LEAK_PATTERN='$KIT_NO_LIST'\" > \"\$(git rev-parse --git-dir)/leak-pattern\"" >&2
+    echo "    $kp_cmd repin local --first" >&2
+    echo "  Never commit the pattern: it is the marker list itself." >&2
+}
+if [[ -z "${LEAK_PATTERN:-}" ]]; then
+    if [[ -e "$GITDIR/leak-pattern" || -L "$GITDIR/leak-pattern" ]]; then
+        if [[ ! -f "$GITDIR/leak-pattern" || ! -r "$GITDIR/leak-pattern" ]]; then
+            echo "pre-push: REFUSING -- .git/leak-pattern exists but can't be read (not a readable file), so the identity list can't be checked." >&2
+            echo "  Make it a file this user can read (chmod 600 on the file), or put the list back." >&2
+            exit 1
+        fi
+        if ! read_leak_pattern "$GITDIR/leak-pattern"; then
+            echo "pre-push: REFUSING -- .git/leak-pattern is not in a shape this hook reads: $LP_ERROR." >&2
+            echo "  It may hold blank lines, full-line comments and one LEAK_PATTERN='...' line (leak-detection/README.md, Setup)." >&2
+            exit 1
+        fi
+        LEAK_PATTERN="$LP_VALUE"; LIST_FROM=".git/leak-pattern"
+        [[ -z "$LP_EXPORT" ]] || export LEAK_PATTERN    # as sourcing the export form did, for a project's own checks
+        if [[ -z "$LEAK_PATTERN" ]]; then
+            echo "pre-push: REFUSING -- LEAK_PATTERN is not configured: .git/leak-pattern sets no list." >&2
+            no_list_help
+            exit 1
+        fi
+    fi
+fi
+
+if [[ -z "${LEAK_PATTERN:-}" ]]; then
+    echo "pre-push: REFUSING -- LEAK_PATTERN is not configured: this project has no .git/leak-pattern, and none in the environment." >&2
+    no_list_help
+    exit 1
+fi
+
+# The list must be the one its pin names: a list cut, or changed in place, would scan for less while every push kept
+# passing (decisions log §108, §112). The pin sits beside the list, untracked: .git/leak-pattern.pin, which
+# bin/kit-pin repin writes. A refusal gives rows, never a term or a hash.
+if why=$(kit_no_sha256); then
+    echo "pre-push: REFUSING -- $why, so the identity list can't be checked against its pin." >&2
+    exit 1
+fi
+if ! kit_pin_check "$LEAK_PATTERN" "$GITDIR/leak-pattern.pin"; then
+    echo "pre-push: REFUSING -- the identity list (from $LIST_FROM) doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." >&2
+    echo "  If the list changed on purpose, record why and repin it ($kp_cmd repin local; leak-detection/README.md," >&2
+    echo "  Changing the list). If it didn't, put the list back." >&2
+    exit 1
+fi
+identity_off=0
+if [[ "$LEAK_PATTERN" == "$KIT_NO_LIST" ]]; then
+    identity_off=1
+    echo "pre-push: identity checks are off for this project: its list (from $LIST_FROM) is the line saying it has none. The credential scan runs." >&2
+fi
+
+# Exact strings that are SUPPOSED to appear (documented placeholders, if any).
+# Do not grow this to silence a real hit -- sanitize the occurrence instead.
+# An allowlist that absorbs findings is a mute button with a respectable name.
+ALLOW='__NEVER_MATCHES_BY_DEFAULT__'
+
+# The list against a name or a tag object, in two passes over the same text, one under LC_ALL=C and one in the
+# caller's locale, saved above; a match in either counts (decisions log §155 to §159). BSD grep (a Mac's) in a UTF-8 locale misses
+# a term on a line holding invalid UTF-8, which LC_ALL=C reads byte by byte; LC_ALL=C folds only ASCII letters' case
+# and \b doesn't see a non-ASCII letter as part of a word, which the caller's locale keeps. 0 when either pass
+# matched, 1 when neither did, 2 when a pass couldn't run and neither matched. The text goes through a pipe, not a
+# here-string: bash before 5.1 writes a here-string to a temporary file, and one it can't write would read as no match.
+list_matches() {  # TEXT
+    local c u
+    printf '%s\n' "$1" | LC_ALL=C grep -a -q -i -E -e "$LEAK_PATTERN" 2>/dev/null; c=$?
+    printf '%s\n' "$1" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -q -i -E -e "$LEAK_PATTERN" 2>/dev/null; u=$?
+    (( c == 0 || u == 0 )) && return 0
+    (( c == 1 && u == 1 )) && return 1
+    return 2
+}
+
+# git passes one line per ref on stdin; both layers need them, and stdin can be read only once.
+refs=()
+while read -r line; do
+    [[ -n "$line" ]] && refs+=("$line")
+done
+
+status=0
+
+# ---- LAYER 1: identity markers ---------------------------------------------------------------
+for line in ${refs[@]+"${refs[@]}"}; do
+    (( identity_off )) && break                  # the reserved line: no identity list, said above
+    read -r _local_ref local_sha _remote_ref _remote_sha <<<"$line"
+    [[ "$local_sha" =~ ^0+$ ]] && continue     # branch deletion, nothing to scan
+
+    # git grep: 0 = markers found, 1 = tree examined and clean, anything else = the scan did not
+    # run. Only 1 is clean. Discarding stderr and appending `|| true` would fold all three into
+    # "no output" -- and a typo in LEAK_PATTERN would then disable this layer on every push
+    # while every push kept passing.
+    scan=$(LC_ALL="$KIT_CALLER_LOCALE" git grep --no-color -inE "$LEAK_PATTERN" "$local_sha" -- . 2>&1)
+    rc=$?
+    (( rc == 1 )) && continue
+
+    if (( rc != 0 )); then
+        # Name the cause, but do NOT print git's own message: for a pattern that fails to
+        # compile, git quotes the pattern back -- and the pattern is the marker list.
+        if (( rc == 127 )); then
+            why="git was not found"
+        elif ! git cat-file -e "${local_sha}^{commit}" 2>/dev/null; then
+            why="commit ${local_sha:0:12} could not be read"
+        else
+            why="LEAK_PATTERN did not compile as an extended regex, or git grep failed"
+        fi
+        echo "pre-push: REFUSING -- identity scan did not run (git grep exit $rc): $why." >&2
+        echo "  A scan that could not run examined nothing; that is not a clean result." >&2
+        status=1
+        continue
+    fi
+
+    # Same rule for the allowlist filter, which decides by count and only then names. grep -c -v counts the hits the
+    # allowlist leaves: exit 0 for some, 1 for none, anything else = the filter did not run (a malformed ALLOW). Without
+    # this, a broken allowlist would erase real hits and let the push through. Both steps read every line as text (-a):
+    # without it, grep in a UTF-8 locale takes a line holding invalid UTF-8 as binary and prints nothing for it, and
+    # v0.9.0 let a hit on such a line through (decisions log §145, §148). The count decides; printed lines only name.
+    nhit=$(printf '%s\n' "$scan" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -c -v -i -E -e "$ALLOW")
+    rc=$?
+    hits=""
+    if (( rc <= 1 && nhit > 0 )); then
+        hits=$(printf '%s\n' "$scan" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -v -i -E -e "$ALLOW")
+        rc=$?
+    fi
+    if (( rc > 1 )); then
+        echo "pre-push: REFUSING -- allowlist filter did not run (grep exit $rc): ALLOW is malformed, or grep is missing." >&2
+        echo "  Markers were found in ${local_sha:0:12} and could not be filtered." >&2
+        status=1
+        continue
+    fi
+
+    # Name each hit's file and line, never the matched text: this output reaches a terminal and an
+    # agent's transcript. git grep prints "<sha>:<path>:<line>:<text>", and the path ends at the first
+    # ":<digits>:", so nothing after it is printed; lines in any other shape are not printed at all. A
+    # file name is printed only when grep says it does not match the list (exit 1); otherwise it is
+    # withheld, as is anything grep could not decide. A hit that can't be named still blocks, counted.
+    if (( nhit > 0 )); then
+        echo "pre-push: BLOCKED -- identity markers in the tree of ${local_sha:0:12} (file and line; matched text not shown):" >&2
+        names=$(printf '%s\n' "$hits" \
+            | awk -v p="$local_sha:" '
+                index($0, p) == 1 { s = substr($0, length(p) + 1)
+                                    if (match(s, /:[0-9]+:/)) print substr(s, 1, RSTART - 1) "\t" substr(s, RSTART + 1, RLENGTH - 2) }
+                /^Binary file / { s = $0; sub(/^Binary file /, "", s); sub(/ matches$/, "", s)
+                                  if (index(s, p) == 1) print substr(s, length(p) + 1) "\tbinary" }' \
+            | head -40)
+        nnamed=0
+        if [[ -n "$names" ]]; then
+            while IFS=$'\t' read -r path where; do
+                nnamed=$((nnamed + 1))
+                list_matches "$path"
+                (( $? == 1 )) || path="(file name withheld: it matches the list, or could not be checked)"
+                echo "  $path:$where" >&2
+            done <<<"$names"
+        fi
+        if (( nnamed == 0 )); then
+            echo "  $nhit matching line(s) that couldn't be named" >&2
+        elif (( nhit > nnamed )); then
+            echo "  ... and $(( nhit - nnamed )) more matching lines" >&2
+        fi
+        status=1
+    fi
+done
+
+# ---- LAYER 2: credential shapes, over exactly the commits this push adds ---------------------
+#
+# A pushed ref's NEW commits are those reachable from its tip and from no ref the remote
+# advertises right now -- asked of the remote itself (git ls-remote on the URL being pushed to),
+# never read from local remote-tracking refs. A tracking ref left pointing at a commit the remote
+# no longer has would shrink the range to nothing and pass a push that delivers that commit.
+#
+# A range-based scan fails by silence. The first time this kind of scan ran on a first push, its
+# range was invalid on the root commit; the scanner printed "no leaks found" over zero bytes, and
+# only the git error that followed made the job red. An EMPTY range prints the same line and goes
+# green. That is why every range below is asked of the remote, and why a range that cannot be
+# computed refuses rather than passes.
+#
+# REFUSES, rather than passes, whenever it cannot show it examined every commit that adds text:
+#   - gitleaks is missing, the remote's refs cannot be listed, or a range cannot be computed;
+#   - the range adds or changes a binary that scan-binaries.py does not clear -- `gitleaks git`
+#     cannot read binary content -- or python3 or the scan is missing, or the scan cannot run;
+#   - gitleaks' "N commits scanned" differs from the commits in the range that add text lines.
+# A range that adds no text (deletions, renames, mode changes, or no new commits at all) passes
+# without a scan: the remote already holds every line it contains.
+#
+# A merge commit is scanned like any other, through its diff against its first parent. Left to itself
+# `gitleaks git` skips a merge, so a conflict resolution, or anything else a merge adds that neither
+# parent has, would go unread; the first-parent diff holds all of that, and the merged branch's lines
+# too, which are read twice (the stricter reading; decisions log §281). The count of commits that add
+# text, gitleaks' log and the binary scan read merges the same way. Until v0.11.0 every merge was
+# refused, which left a bypass that skips every check as the only way past.
+
+scan_refs=()
+for line in ${refs[@]+"${refs[@]}"}; do
+    read -r _local_ref local_sha _remote_ref _remote_sha <<<"$line"
+    [[ "$local_sha" =~ ^0+$ ]] || scan_refs+=("$line")
+done
+
+if (( ${#scan_refs[@]} > 0 )); then
+    # Under Claude Code's sandbox read block a gitleaks in a hidden folder looks missing, as the install does to the stub
+    # (decisions log §292), so the refusal names both causes and what to let sandboxed commands read.
+    if ! command -v gitleaks >/dev/null 2>&1; then
+        echo "pre-push: REFUSING -- gitleaks was not found (missing, or hidden from this process), so the commits being pushed cannot be scanned for credentials." >&2
+        echo "  If it is missing, install it, then push again. If hidden (a sandbox that blocks reading the home folder makes its folder look missing), let sandboxed commands read gitleaks' folder (Claude Code: sandbox.filesystem.allowRead in user or managed settings), or push outside the sandbox." >&2
+        exit 1
+    fi
+    if [[ -z "$REMOTE_URL" ]]; then
+        echo "pre-push: REFUSING -- no remote URL was passed to the hook, so the new commits cannot be determined." >&2
+        exit 1
+    fi
+
+    # Never print ls-remote's own output or errors: a URL can carry a token.
+    advertised=$(git ls-remote "$REMOTE_URL" 2>/dev/null)
+    rc=$?
+    if (( rc != 0 )); then
+        echo "pre-push: REFUSING -- could not list the remote's refs (git ls-remote exit $rc)." >&2
+        echo "  Without them the hook cannot tell which commits are new, so it cannot scan them." >&2
+        exit 1
+    fi
+
+    # Advertised tips this clone also has are the only usable range boundaries. A tip the clone
+    # lacks is simply not excluded: the range grows, it never shrinks.
+    known=()
+    while read -r sha; do
+        [[ -n "$sha" ]] && known+=("$sha")
+    done < <(printf '%s\n' "$advertised" | awk 'NF { print $1 "^{commit}" }' \
+             | git cat-file --batch-check='%(objectname)' 2>/dev/null | grep -v ' missing$' | sort -u)
+
+    # The config: this clone's .gitleaks.toml, or else the spawn rules beside this hook (in a pinned spawn, the
+    # install's), always named with --config: given none, gitleaks takes one from GITLEAKS_CONFIG or
+    # GITLEAKS_CONFIG_TOML, so the caller's environment would choose the rules, and both are dropped from its
+    # environment too. With neither file, a push that adds text is refused below, where the scan would run (decisions
+    # log §282, §286; rule 13 (a) and (d); hooks_test FP1 to FP3).
+    cfg=()
+    if [[ -f .gitleaks.toml ]]; then cfg=(--config .gitleaks.toml)
+    elif [[ -f "$hookdir/spawn.gitleaks.toml" ]]; then cfg=(--config "$hookdir/spawn.gitleaks.toml"); fi
+    # Colour off for the git commands gitleaks runs: a forced color.ui or color.diff in any config file (a user's, the
+    # repo's) would colourise the log gitleaks parses, and gitleaks would find nothing (decisions log §151, §152). Two
+    # routes, each enough alone: config through the environment, which beats every config file from git 2.31 and which
+    # gitleaks passes to its git; and --no-color in the options gitleaks puts on its `git log` (§290; hooks_test CPC,
+    # CPW). Every git call below whose output this hook reads asks for no colour as well.
+    gl_noclr=(GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never GIT_CONFIG_KEY_1=color.diff GIT_CONFIG_VALUE_1=never)
+
+    # ---- LAYER 1b: identity markers in the metadata this push adds -----------------------------
+    # Over the same new commits as the credential layer below: each one's author and committer
+    # (name and email) and its message, below the tip as well as at it; every tag object the remote
+    # does not already have (tagger, tag name, message), followed down a tag of a tag; and the names
+    # of the refs pushed. Commits are read with git's own matcher (git log -i -E), with --no-use-mailmap
+    # so a mailmap (any config file, or an untracked .mailmap) can't map a marker author to a clean name
+    # and hide it (decisions log §151, §152); tag objects and ref names with list_matches, in two passes (§157). A
+    # refusal names the field and the object, never the matched text.
+    have=$(printf '%s\n' "$advertised" | awk 'NF { print $1 }')
+    for line in "${scan_refs[@]}"; do
+        (( identity_off )) && break              # the reserved line: no identity list, said above
+        read -r local_ref local_sha remote_ref _remote_sha <<<"$line"
+        range=("$local_sha" --not ${known[@]+"${known[@]}"})
+        label="$local_ref (${local_sha:0:12})"
+        found=(); broken=""
+
+        list_matches "$local_ref"$'\n'"$remote_ref"
+        rc=$?
+        (( rc == 0 )) && found+=("ref name")
+        (( rc > 1 )) && broken="the ref names could not be matched (grep exit $rc)"
+
+        obj=$local_sha; ntags=0
+        while [[ -z "$broken" && $(git cat-file -t "$obj" 2>/dev/null) == tag ]]; do
+            body=$(git cat-file tag "$obj" 2>/dev/null) || { broken="tag object ${obj:0:12} could not be read"; break; }
+            if ! grep -qxF "$obj" <<<"$have"; then
+                ntags=$((ntags + 1))
+                list_matches "$body"
+                rc=$?
+                (( rc == 0 )) && found+=("tag object ${obj:0:12} (tagger, name or message)")
+                (( rc > 1 )) && broken="tag object ${obj:0:12} could not be matched (grep exit $rc)"
+            fi
+            obj=$(printf '%s\n' "$body" | sed -n '1s/^object //p')
+            (( ntags > 50 )) && { broken="more than 50 nested tag objects"; break; }
+        done
+
+        ncommits=0
+        if [[ -z "$broken" ]]; then
+            ncommits=$(git rev-list --count "${range[@]}" 2>/dev/null) || broken="the new commits could not be listed"
+        fi
+        for field in author committer grep; do
+            [[ -n "$broken" ]] && break
+            # Never print git's own error text: for a pattern that fails to compile, it quotes the pattern.
+            shas=$(LC_ALL="$KIT_CALLER_LOCALE" git log --no-color --no-use-mailmap --format=%h -i -E "--$field=$LEAK_PATTERN" "${range[@]}" 2>/dev/null)
+            rc=$?
+            if (( rc != 0 )); then broken="git log exit $rc reading the ${field/grep/message}s"; break; fi
+            [[ -n "$shas" ]] && found+=("${field/grep/message} of $(printf '%s' "$shas" | tr '\n' ' ' | sed 's/ $//')")
+        done
+
+        if [[ -n "$broken" ]]; then
+            echo "pre-push: REFUSING -- the metadata scan did not run for $label: $broken." >&2
+            echo "  A scan that could not run examined nothing; that is not a clean result." >&2
+            status=1
+        elif (( ${#found[@]} > 0 )); then
+            echo "pre-push: BLOCKED -- identity markers in the metadata $label adds (matched text not shown):" >&2
+            printf '  %s\n' "${found[@]}" >&2
+            echo "  Rewrite what is named before pushing: the commit identity or message (git commit --amend," >&2
+            echo "  or a rebase for a commit below the tip), the tag (delete and recreate it), or the ref's name." >&2
+            status=1
+        else
+            echo "pre-push: metadata scan $label: $ncommits new commit(s) (authors, committers, messages), $ntags new tag object(s) and the ref names read, clean." >&2
+        fi
+    done
+
+    for line in "${scan_refs[@]}"; do
+        read -r local_ref local_sha _remote_ref _remote_sha <<<"$line"
+        range=("$local_sha" --not ${known[@]+"${known[@]}"})
+        label="$local_ref (${local_sha:0:12})"
+
+        total=$(git rev-list --count "${range[@]}" 2>/dev/null)
+        rc_total=$?
+        merges=$(git rev-list --count --merges "${range[@]}" 2>/dev/null)
+        rc_merges=$?
+        stats=$(git log --no-color --diff-merges=first-parent --format='@%H' --numstat --diff-filter=ACMRT "${range[@]}" 2>/dev/null)
+        rc_stats=$?
+        if (( rc_total != 0 || rc_merges != 0 || rc_stats != 0 )); then
+            echo "pre-push: REFUSING -- could not compute the commits $label adds (git exits $rc_total/$rc_merges/$rc_stats)." >&2
+            status=1
+            continue
+        fi
+
+        # Per commit: does it add any text lines? Binary files show as "-  -  path" in numstat.
+        read -r expected binaries < <(printf '%s\n' "$stats" | awk '
+            /^@/              { if (adds > 0) n++; adds = 0; next }
+            $1 == "-"         { b++; next }
+            $1 ~ /^[0-9]+$/   { adds += $1 }
+            END               { if (adds > 0) n++; print n + 0, b + 0 }')
+
+        # The binary scan runs only where the project turns it on (decisions log §274 ruling 4, §280 (b)), read at the
+        # pushed tip, as its reviewed list is: a tracked kit.binaries holding the one line scan=on, or a tracked
+        # records/reviewed_binaries.txt, which a project relying on the scan already has. Anything else in kit.binaries
+        # refuses a push that carries a binary. Off, such a push says so; the identity layer still reads the tip's raw
+        # bytes, binaries included, and gitleaks the text (hooks_test BS0 to BS8).
+        binscan=off
+        if git cat-file -e "$local_sha:kit.binaries" 2>/dev/null; then
+            sw=$(git cat-file blob "$local_sha:kit.binaries" 2>/dev/null; printf .); sw=${sw%.}
+            if [[ "$sw" == "scan=on" || "$sw" == $'scan=on\n' ]]; then binscan=on; else binscan=bad; fi
+        elif git cat-file -e "$local_sha:records/reviewed_binaries.txt" 2>/dev/null; then
+            binscan=on
+        fi
+
+        # Binaries get their own scan, and it does not stand in for the text scan below: a push that
+        # carries a binary still has its text scanned, whatever the binary verdict.
+        if (( binaries > 0 )) && [[ $binscan == bad ]]; then
+            echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and kit.binaries at its tip isn't the one line scan=on, so whether to scan them can't be read." >&2
+            echo "  kit.binaries holds exactly scan=on. To turn the scan off, remove kit.binaries and records/reviewed_binaries.txt (leak-detection/README.md, Binary files)." >&2
+            status=1
+        elif (( binaries > 0 )) && [[ $binscan == off ]]; then
+            echo "pre-push: binary scan off for this project: $label adds or changes $binaries binary file(s), not scanned. A tracked kit.binaries holding scan=on turns it on (leak-detection/README.md, Binary files)." >&2
+        elif (( binaries > 0 )); then
+            scanner="$hookdir/scan-binaries.py"
+            if ! command -v python3 >/dev/null 2>&1; then
+                echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and python3 is not installed, so they cannot be checked." >&2
+                echo "  Install python3; it is needed only for pushes that carry a binary." >&2
+                status=1
+            elif [[ ! -f "$scanner" ]]; then
+                echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and $scanner is missing, so they cannot be checked." >&2
+                status=1
+            else
+                echo "pre-push: binary scan $label: $binaries binary file change(s) in the new commits" >&2
+                # Isolated (-I): no PYTHON* variable, no user site-packages, no script folder on its path, so no module
+                # the environment plants can clear a binary (decisions log §145, §148; hooks_test PY1, PY2).
+                KIT_CALLER_LOCALE="$KIT_CALLER_LOCALE" LEAK_PATTERN="$LEAK_PATTERN" python3 -I "$scanner" "${range[@]}"
+                rc=$?
+                if (( rc == 1 )); then
+                    echo "pre-push: BLOCKED -- $label adds binary file(s) that are not cleared (above)." >&2
+                    status=1
+                elif (( rc != 0 )); then
+                    echo "pre-push: REFUSING -- the binary scan did not run for $label (exit $rc); nothing it did not examine is cleared." >&2
+                    status=1
+                fi
+            fi
+        fi
+
+        if (( expected == 0 )); then
+            if (( total == 0 )); then
+                echo "pre-push: credential scan $label: no new commits -- the remote already has every commit it reaches." >&2
+            else
+                echo "pre-push: credential scan $label: $total new commit(s), none adding text -- nothing to scan." >&2
+            fi
+            continue
+        fi
+
+        if (( ${#cfg[@]} == 0 )); then
+            echo "pre-push: REFUSING -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan $label with." >&2
+            echo "  Add the project's .gitleaks.toml, or rebuild the release's install, from this project ($kp_cmd restore \"\$KIT\")." >&2
+            echo "  KIT is your clone of the kit's public repository." >&2
+            status=1
+            continue
+        fi
+        out=$(env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML "${gl_noclr[@]}" gitleaks git --no-banner --no-color --redact --exit-code 3 "${cfg[@]}" \
+              --log-opts="--no-color --diff-merges=first-parent ${range[*]}" 2>&1)
+        rc=$?
+        scanned=$(printf '%s\n' "$out" | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | head -1)
+
+        if (( rc == 3 )); then
+            echo "pre-push: BLOCKED -- gitleaks found credential shapes in the commits $label adds." >&2
+            printf '%s\n' "$out" | grep -oE 'leaks found: [0-9]+' >&2
+            echo "  Details, values redacted:  gitleaks git -v --redact --log-opts=\"--no-color --diff-merges=first-parent ${range[*]}\"" >&2
+            status=1
+            continue
+        fi
+        if (( rc != 0 )); then
+            echo "pre-push: REFUSING -- gitleaks did not complete (exit $rc) for $label." >&2
+            status=1
+            continue
+        fi
+        if [[ "$scanned" != "$expected" ]]; then
+            echo "pre-push: REFUSING -- gitleaks scanned ${scanned:-an unknown number of} commit(s) for $label, but $expected add text; a partial scan is not a clean one." >&2
+            status=1
+            continue
+        fi
+        mnote=""; (( merges > 0 )) && mnote=" ($merges merge(s) among them, each read against its first parent)"
+        echo "pre-push: credential scan $label: $scanned of $expected commit(s) adding text scanned, clean$mnote." >&2
+    done
+fi
+
+# ---- kit-owned copies at each pushed tip, in a pinned spawn ------------------------------------
+# pre-commit's 2b over what is pushed: a commit made with --no-verify can still carry an undeclared
+# difference, and this is the last hook it meets. Only when the stub has exported KIT_INSTALL.
+if [[ -n "${KIT_INSTALL:-}" ]]; then
+    for line in ${scan_refs[@]+"${scan_refs[@]}"}; do
+        read -r _local_ref local_sha _remote_ref _remote_sha <<<"$line"
+        "$KIT_INSTALL/leak-detection/check-copies.sh" pre-push "$local_sha" || status=1
+    done
+fi
+
+# ---- the project's own checks: hook-checks/pre-push/ ------------------------------------------
+# The pre-push half of pre-commit's section 3, with the same rules: the project's folder, run in name
+# order only once both layers above have passed, a non-executable entry refused rather than
+# skipped, and any non-zero exit refusing the push. Each check gets this hook's arguments and, on
+# stdin, the same ref lines git sent, which were read into refs[] above because stdin reads once.
+(( status == 0 )) || exit "$status"
+
+EXT=hook-checks/pre-push
+if [[ -e "$EXT" || -L "$EXT" ]]; then
+    if [[ ! -d "$EXT" || ! -r "$EXT" || ! -x "$EXT" ]]; then
+        echo "pre-push: REFUSING -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
+        exit 1
+    fi
+    LC_COLLATE=C
+    shopt -s nullglob dotglob
+    checks=("$EXT"/*)
+    shopt -u nullglob dotglob
+    for x in ${checks[@]+"${checks[@]}"}; do
+        if [[ ! -f "$x" || ! -x "$x" ]]; then
+            echo "pre-push: REFUSING -- $x is not an executable file, so it cannot run." >&2
+            echo "  Make it executable (git update-index --chmod=+x $x), or move it out of $EXT." >&2
+            exit 1
+        fi
+        LC_ALL="$KIT_CALLER_LOCALE" "$x" "$@" < <(for line in ${refs[@]+"${refs[@]}"}; do printf '%s\n' "$line"; done)
+        rc=$?
+        if (( rc != 0 )); then
+            echo "pre-push: REFUSING -- $x exited $rc." >&2
+            exit 1
+        fi
+    done
+fi
+
+# ---- the pass point ----------------------------------------------------------------------------
+kit_passed=1
+exit 0

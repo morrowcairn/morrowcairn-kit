@@ -1,0 +1,89 @@
+name: gitleaks
+
+# The release's CI workflow for a project (ci/gitleaks.yml), held as the project's .github/workflows/gitleaks.yml by
+# the checked-copies layer (ci/copies.txt). The kit's own gitleaks.yml also runs the kit's test suites; a pinned
+# project holds none of them, so this variant keeps the scan alone. It scans with the project's .gitleaks.toml, which
+# the same layer holds to the release's spawn config: never the kit's own config and its fixture exemption.
+#
+# Credential-shape scan. Rules live in .gitleaks.toml and need no configuration.
+#
+# SCANS THE WORKING TREE, not a computed commit range. A range-based scan examines
+# `<before>^..<after>`. On a repository's first push there is no `<before>^`, so git errors and the
+# job goes red -- but the scanner has already printed "no leaks found" over a zero-byte scan by
+# then. The red came from the git error, not from the scanner noticing it had examined nothing;
+# had the range been merely EMPTY rather than invalid, the same zero-byte scan would have gone
+# green. So the examined set must not depend on commit topology: a scan whose failure mode is
+# silence is worse than no scan.
+#
+# NON-VACUITY: the job asserts a non-zero file count. A clean result is only meaningful with
+# evidence that something was actually looked at.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # One gitleaks version, its archive checked against the sha256 written here, which is the one the release
+      # publishes (gitleaks_8.30.1_checksums.txt). The kit's own gitleaks.yml carries the same step, line for line
+      # (kit_docs_test K26), so a kit release moves both together, test-first (decisions log §69, §98, §103). gitleaks
+      # goes on the PATH once, for every later step, from a folder of its own, not the checkout.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          ver=8.30.1
+          case "${RUNNER_OS:?}-${RUNNER_ARCH:?}" in
+            Linux-X64)   asset=gitleaks_${ver}_linux_x64.tar.gz;   want=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+            macOS-ARM64) asset=gitleaks_${ver}_darwin_arm64.tar.gz; want=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
+            macOS-X64)   asset=gitleaks_${ver}_darwin_x64.tar.gz;   want=dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 ;;
+            Windows-X64) asset=gitleaks_${ver}_windows_x64.zip;     want=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e ;;
+            *) echo "::error::no gitleaks pinned for ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+          esac
+          dir="${RUNNER_TEMP:?}/gitleaks-bin"
+          if command -v cygpath >/dev/null 2>&1; then dir=$(cygpath -u "$dir"); fi
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/$asset" "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/${asset}"
+          if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum < "$dir/$asset"); else got=$(shasum -a 256 < "$dir/$asset"); fi
+          got=${got%% *}
+          if [ "$got" != "$want" ]; then
+            echo "::error::$asset hashes to $got, not the pinned $want: refused"
+            exit 1
+          fi
+          case "$asset" in
+            *.zip) if command -v unzip >/dev/null 2>&1; then unzip -o -q "$dir/$asset" gitleaks.exe -d "$dir"
+                   else 7z x -y -o"$dir" "$dir/$asset" gitleaks.exe >/dev/null; fi ;;
+            *)     tar -xzf "$dir/$asset" -C "$dir" gitleaks ;;
+          esac
+          rm -f "$dir/$asset"
+          "$dir/gitleaks" version
+          if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
+
+      - name: Scan working tree
+        run: |
+          set -uo pipefail
+
+          # Non-vacuity precondition: prove there is something to scan before believing a clean
+          # result. A zero-file scan that reports "no leaks" is the incident this replaced.
+          files=$(git ls-files | wc -l)
+          echo "tracked files: $files"
+          if [ "$files" -lt 1 ]; then
+            echo "::error::nothing to scan -- refusing to report a clean result over an empty tree"
+            exit 1
+          fi
+
+          gitleaks dir . --config .gitleaks.toml --redact --verbose --no-banner
+          rc=$?
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::credential shapes detected (values redacted above)"
+            exit 1
+          fi
+          echo "clean: $files tracked files scanned, no credential shapes found"
