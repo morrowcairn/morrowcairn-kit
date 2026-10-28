@@ -5,13 +5,18 @@ Two layers, shipped differently by necessity.
 | Layer | Where the rules live | Ships |
 |---|---|---|
 | **Credential shapes** | `.gitleaks.toml`, committed | **Complete** — works with no configuration |
-| **Identity markers** | a repository secret / an untracked local file | **Mechanism only** — fails closed until configured |
+| **Listed terms**: the do-not-publish list (called the identity list in v0.11.0's messages), and CI's generic patterns | an untracked local file (the list) / a repository secret (the generic patterns only) | **Mechanism only** — fails closed until configured |
 
-**Why the identity layer cannot ship complete:** the pattern *is* the marker list — the exact
+**Why the do-not-publish list cannot ship complete:** the pattern *is* the list — the exact
 strings you are trying to keep out of a public repository. Committing it publishes them. So the
 mechanism ships and the content does not, and the scan **fails closed** until someone supplies a
 pattern. An adopter who pushes unconfigured gets a hard error rather than a green check that
 examined nothing.
+
+The list is private to each clone. It holds terms you've agreed or are required to keep confidential: a
+client's or a matter's name, a research participant's details, a data partner your agreement says you won't
+name, an unreleased product's codename, a private server's address. Most projects don't need one; a project
+without one says so in a single pinned line (below).
 
 ## What neither layer catches: personal data
 
@@ -33,7 +38,7 @@ project's `CLAUDE.md`, and never let a green scan stand in for it.
 git config core.hooksPath leak-detection                            # the kit itself: hooks from its working tree
 echo "LEAK_PATTERN='marker1|marker2'" > "$(git rev-parse --git-dir)/leak-pattern"   # every term, local only
 "$INST/bin/kit-pin" repin local --first                             # its pin, beside it (a first pin: below)
-gh secret set LEAK_PATTERN < "$(git rev-parse --git-dir)/leak-pattern.ci"   # CI: the non-identity terms only
+gh secret set LEAK_PATTERN < "$(git rev-parse --git-dir)/leak-pattern.ci"   # CI: the non-confidential terms only
 "$INST/bin/kit-pin" repin ci --first                                # CI's pin: commit .github/leak-pattern.pin
 ```
 
@@ -85,18 +90,19 @@ pushes with no note: move such a project onto this release before writing the li
 CI's scan refuses unless the `LEAK_PATTERN` secret is the one the tracked `.github/leak-pattern.pin` names. A pin
 holds the list's rows (its top-level alternatives) and the SHA-256 of its value, so a list cut, or changed in
 place, refuses where a count alone would pass. The local pin stays untracked beside the list, as the list does: a
-hash of the whole list lets anyone holding a guess at it confirm the guess. CI's list holds no identity term, so its
+hash of the whole list lets anyone holding a guess at it confirm the guess. CI's list holds no confidential term, so its
 pin is tracked, and a change to it is a reviewed commit. CI's secret can't be read back, so its exact value is kept,
 untracked, in `.git/leak-pattern.ci`, with no trailing newline. A refusal gives rows, never a term or a hash.
 `bin/kit-pin check` finishes with exit 3 while pre-push would refuse every push: no usable list, or one its pin
 doesn't name.
 
 **A first pin** is written once, with `--first`, after the list is checked against a source it didn't come from:
-the copy its rows were made from (another list they were copied from, compared by exact text), or the records
-of each row's addition; never the list against itself. A project moving onto an install takes its pins in that
-move (`patterns/local-upgrade.md`). A project with no identity terms of its own needs nothing else: its local
-list holds the terms that identify no one (a synthetic canary, machine paths, an IP pattern), as its CI list does,
-and each gets its pin.
+the copy its rows were made from (another list they were copied from, compared by exact text), or the records of
+each row's addition; never the list against itself. A project moving onto an install takes its pins in that move
+(`patterns/local-upgrade.md`). A project with no confidential terms of its own says so with the pinned line above;
+it may instead keep a local list of only the terms that aren't confidential, the ones `kit-pin`'s setup text calls
+"the terms that identify no one" (a synthetic canary, machine paths, an IP pattern), as its CI list does, and pin
+it.
 
 **Changing the list.** After any change, repin it, `bin/kit-pin repin local` (or `ci`), which tells an append from
 anything else:
@@ -128,12 +134,13 @@ refuses the commit or push and names it, to restore the bit or remove the file, 
 An org's hook that isn't executable is skipped, as git skips it, and the kit's checks still run.
 
 **The two lists differ on purpose.** The local file holds every term. The repository secret holds
-only the terms that identify no one: a synthetic canary, machine-path patterns, an IP-address
-pattern. A secret is stored under the account that owns the repository, so an identity list in a
-secret ties those identities to that account, which is the association the list exists to prevent.
-The cost is real and should be written down where the project states its posture: CI does not
-check identity terms, so edits made on the forge and pull requests are checked for them only by
-the local hook, which `--no-verify` skips.
+only the terms that aren't confidential themselves: a synthetic canary, machine-path patterns, an
+IP-address pattern. A secret is stored with the forge, under the account that owns the repository, so
+a confidential term put in a secret would hand it to the very service the list keeps it from.
+The cost is real and should be written down where the project states its posture: CI does not check
+the confidential terms, so an edit made on the forge reaches the remote with nothing checking it for
+them, and a pull request's commits are checked for them only by the local hook of whoever pushed
+them, which `--no-verify` skips.
 
 ### A project's own checks: `hook-checks/`
 
@@ -310,8 +317,10 @@ work. Removing them destroys the receipt to tidy a non-problem — and leaves th
 
 Hooks are **per-clone** and do not survive `git clone`; `--no-verify` bypasses them. **CI is the only
 clone-surviving layer**, and it holds for what it is given: credential shapes, and the terms in the
-`LEAK_PATTERN` secret. For identity terms it is given nothing (see Setup), so the local pre-push hook
-is the only identity layer. It reads more than the files now, but still not all of a push.
+`LEAK_PATTERN` secret. The shipped workflows run on pull requests and on pushes to `main` only, so a
+push to any other branch with its hooks skipped gets no CI scan. For identity terms it is given
+nothing (see Setup), so the local pre-push hook is the only identity layer. It reads more than the
+files now, but still not all of a push.
 
 | Layer | Reads, for marker terms | Does not read |
 |---|---|---|

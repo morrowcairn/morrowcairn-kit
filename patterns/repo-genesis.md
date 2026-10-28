@@ -13,9 +13,12 @@ downstream clone, and by the time anyone notices, there usually are some.
 is precisely why this is a pattern and not a note in a README: the moment of exposure precedes the
 moment anyone would consult a README.
 
-Consequence class scales with the project. On an ordinary repo a wrong author is untidy. On a repo
-developed under a separated or pseudonymous identity, **a wrong author on commit one is
-identity-piercing**, and no later discipline recovers it.
+Consequence class scales with the project. On an ordinary repo a wrong author is untidy. Where the
+author fields carry something the project must keep confidential (a personal email address on a
+client's repository, say), **a wrong author on commit one is a disclosure waiting for a push**. If
+the project's do-not-publish list holds that term, pre-push refuses any commit it would send that
+carries it, so the history has to be rewritten before it can go anywhere; if the list doesn't hold
+it, the first push sends it. Once it is pushed, no later discipline recovers it.
 
 ## The sequence
 
@@ -69,11 +72,11 @@ identity has turned a reusable pattern into a leak, which inverts the thing the 
 
 ## Identity criticality belongs to the destination, not to the pattern
 
-How much a wrong author *costs* varies enormously — untidy on a private local project, and
-identity-piercing on a repo published under a separated identity. **What does not vary is the
-verify step.** Its value was never solely about identity: it is the habit of confirming a configured
-state instead of assuming one, and a habit skipped whenever stakes are low is not available when
-stakes are high.
+How much a wrong author *costs* varies enormously — untidy on a private local project, and a
+disclosure waiting for a push where the author fields carry something the project must keep
+confidential. **What does not vary is the verify step.** Its value was never solely about identity:
+it is the habit of confirming a configured state instead of assuming one, and a habit skipped
+whenever stakes are low is not available when stakes are high.
 
 Run it either way. Where the identity chosen is simply the machine default, record *that it was a
 choice* in the project's decisions log — a later reader cannot otherwise distinguish "considered and

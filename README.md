@@ -11,9 +11,9 @@ using it at work, see [`patterns/claude-code-at-work.md`](patterns/claude-code-a
 **Install.** You need git 2.31 or later, gitleaks on `PATH`, python3, and `sha256sum` or `shasum`, on Linux or macOS (on
 Windows, inside WSL2; the kit doesn't run on native Windows).
 1. Clone this repository and check out the release's tag: `git clone <this repository's URL> morrowcairn`, then `cd
-   morrowcairn` and `git checkout v0.11.0`.
-2. Build the release's read-only install: `tools/install-release.sh v0.11.0`. It runs the release's own hook suite on the
-   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.11.0` (or under
+   morrowcairn` and `git checkout v0.11.1`.
+2. Build the release's read-only install: `tools/install-release.sh v0.11.1`. It runs the release's own hook suite on the
+   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.11.1` (or under
    `$KIT_INSTALL_ROOT`).
 3. Make a project from it: follow the install's copy of [`patterns/local-spawn.md`](patterns/local-spawn.md), whose
    procedure pins the project to the release and puts its hooks in before commit one; then
@@ -30,7 +30,7 @@ Morrowcairn is a **project-genesis kit**: the record-keeping machinery, script p
 triggered doctrine that let a project accumulate hard-won operational knowledge *and actually
 receive it again* at the moment it applies.
 
-**Status: v0.11.0.** The scaffolding half is here, and the first doctrine with it. More families arrive as the extraction pass reaches them;
+**Status: v0.11.1.** The scaffolding half is here, and the first doctrine with it. More families arrive as the extraction pass reaches them;
 see [`skills/README.md`](skills/README.md).
 
 ---
@@ -89,13 +89,12 @@ So the history must be publishable *as history*, which means sanitization discip
 the first commit, not from the publish decision. Retrofitting costs a rewritten history or a
 withheld one.
 
-**Identity discipline runs both directions.** The standard question is *what could leak out of this
-repo*. A project developed under a pseudonymous or separated identity must also ask **what could
-leak in** — an inherited config file, a borrowed credential, a copied absolute path, an author
-string on commit one. Both are the same discipline applied to the same artifact, and stating only
-the outward half is how the inward half gets skipped.
+**Leak discipline runs both directions.** The standard question is *what could leak out of this
+repo*. A project must also ask **what could leak in** — an inherited config file, a borrowed
+credential, a copied absolute path, an author string on commit one. Both are the same discipline
+applied to the same artifact, and stating only the outward half is how the inward half gets skipped.
 
-See [`patterns/repo-genesis.md`](patterns/repo-genesis.md) — identity is configured and **verified
+See [`patterns/repo-genesis.md`](patterns/repo-genesis.md) — the commit identity is configured and **verified
 by reading it back** before the first commit exists, because that failure window is one command wide
 and opens before any documentation has been read.
 
@@ -135,20 +134,28 @@ Two layers, and they ship differently **by necessity**:
 
 - **Credential shapes ship complete** — `.gitleaks.toml` carries real rules and needs no
   configuration.
-- **Identity markers ship as mechanism only.** Identity terms live in an untracked local list that
-  the pre-push hook reads. **It reads the contents of the files at each pushed tip**, the binary
+- **The do-not-publish list ships as mechanism only.** The do-not-publish list, called the identity list
+  in v0.11.0's messages, is private to each clone, untracked. It holds terms you've agreed or are required to
+  keep confidential: a client's or a matter's name, a research participant's details, a data partner your
+  agreement says you won't name, an unreleased product's codename, a private server's address. Most projects
+  don't need one; a project without one says so in a single pinned line. The pre-push hook reads it.
+  **It reads the contents of the files at each pushed tip**, the binary
   files any new commit adds where the project turns the binary scan on, and the metadata the push adds (author and committer fields, commit
   messages, tag objects, the names of the refs pushed): not file names, or the text of a file that a
   later commit removed.
-  `.github/workflows/leak-scan.yml` reads a repository secret named `LEAK_PATTERN`, which holds only
-  terms that identify no one. Each list is pinned, by its rows and its hash: pre-push checks the
+  `.github/workflows/leak-scan.yml` reads a repository secret named `LEAK_PATTERN`, which the setup fills with
+  only terms that aren't confidential themselves, such as an IP-address pattern, or with the line saying the
+  project keeps no list. Each list is pinned, by its rows and its hash: pre-push checks the
   local list against `.git/leak-pattern.pin`, untracked beside it, and CI's scan checks the secret
   against the tracked `.github/leak-pattern.pin`. Both **fail closed when their pattern is unset, or
   isn't the one its pin names**, so a list cut short or changed in place refuses instead of scanning
   for less. What each layer reads, and how a list is changed and repinned, is in
   [`leak-detection/README.md`](leak-detection/README.md), "Layers, honestly ranked" and "Changing the list."
 
-> ⚠ **Do not commit an identity pattern to this repository.** The pattern *is* the marker list — the
+Neither layer recognizes personal records, such as account numbers or medical details, so keep raw records out of
+the repository entirely ([`leak-detection/README.md`](leak-detection/README.md), "What neither layer catches").
+
+> ⚠ **Do not commit your do-not-publish list to this repository.** The pattern *is* the list — the
 > exact strings you are trying to keep out of a public repo. Committing it publishes them. If CI
 > tells you `LEAK_PATTERN` is unset, the fix is `gh secret set LEAK_PATTERN`, never editing a
 > pattern into the workflow file. If it tells you the secret doesn't match its pin, set the secret
@@ -161,11 +168,11 @@ nothing, or less. **A check that cannot fail is worse than no check, because it 
 Hooks are per-clone and **do not survive `git clone`**. A project gets them back from `bin/kit-pin`
 (`restore` or `to`, [`patterns/local-spawn.md`](patterns/local-spawn.md)); a clone of the kit itself
 runs `git config core.hooksPath leak-detection`. The CI workflows are the only clone-surviving layer,
-and for identity terms they check nothing.
+and for the do-not-publish list's terms they check nothing.
 
 ## Versioning
 
-**v0.11.0.** Point releases are driven by *instance* evidence — friction
+**v0.11.1.** Point releases are driven by *instance* evidence — friction
 recorded in a spawned project's `records/kit_feedback.md`, or an incident recorded by a spawn or by
 a project run by the kit's operator, is the evidence that advances a version. A pattern refined by
 imagining its use is refined by guesswork; one refined because it failed a real job is not.
@@ -459,6 +466,14 @@ every report says how many ("no model turn: N sessions skipped"). A model turn i
 record but Claude Code's own API-error record, so one turn with no instructions record still fails,
 and an instructions record that exists is still checked. Cases LT1 to LT6 hold it; LT2, LT2b, LT4 and
 LT5 are red against v0.10.1.
+
+v0.11.1 is another, and it changes wording only: no hook, script, message or test changed, so a project on v0.11.0 can
+stay there. This README, the leak-detection README and `patterns/repo-genesis.md` describe the name list as the
+do-not-publish list, for terms you've agreed or are required to keep confidential, and no longer frame it around
+anyone's identity. The hooks' and `kit-pin`'s messages still call it the identity list, and so do the names the
+leak-detection README's later sections share with the code, until a later release renames them together. This README's
+leak section also says that neither layer recognizes personal records. And the public repository's address is now
+`github.com/morrowcairn/morrowcairn-kit`; the old address redirects there, so a clone made from it keeps working.
 
 ## License
 
