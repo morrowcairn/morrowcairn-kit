@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""kit-load-check: the daily check that the user-level CLAUDE.md still loads the kit's doctrine from the pinned
-install, and that the triggered skills at user level are the pinned install's (design k, 4 and 6).
+"""kit-load-check: the daily check that the user level still loads the kit's rules file from the pinned install, and
+that the triggered skills at user level are the pinned install's.
 
-Run it through bin/kit-load-check-stub, which verifies the whole install against the pin line first and passes
---install, --release and --user-file. It is opt-in: nothing in an install schedules it, and a machine that wants it
-places the stub and a daily line itself (README, under Layout). One run, one result, from two parts:
-  - the user-level skill entries, each the pinned install's, by link target or by hash;
+Run it through bin/kit-load-check-stub, which verifies the whole install against the kit's user pin first and passes
+--install, --release and, when the person has one, --user-file. It is opt-in: nothing in an install schedules it, and a
+machine that wants it places the stub and a daily line itself (README, under Layout). One run, one result, from:
+  - the user-level rules entry (--rules), the kit's link to the pinned install's rules/morrowcairn.md, or a byte-equal
+    copy, as a skill entry may be: missing, linked into another release or elsewhere, or a copy that differs, it fails;
+  - a user-level CLAUDE.md that still imports a kit file, from any release, fails: it would load the kit a second way;
+  - the user-level skill entries, each the pinned install's, by link target or by hash; whether a skill loads isn't
+    checked, so a lock on skills goes unnoticed (its report says so);
   - a headless probe: `claude -p` from an empty folder, user settings on, tools, MCP servers, hooks and auto memory off,
     under a timeout, and KIT_LOAD_PROBE=1 in its environment alone. Its environment is the caller's without the
-    credentials this check holds (CREDENTIALS). It passes only on exit 0 and an answer holding every import's canary:
-    the canaries are the check, so no transcript is read (decisions log §274 ruling 3). Claude Code's updates lead
-    (§263): the probe doesn't turn the updater off.
+    credentials this check holds (CREDENTIALS). It passes only on exit 0 and an answer holding the rules file's canary:
+    the canary is the check, so no transcript is read. Claude Code's updates lead: the probe doesn't turn the updater
+    off.
+The user level is Claude Code's config folder, CLAUDE_CONFIG_DIR where it is set, else ~/.claude.
 Under an org's managed-mcp.json, where the probe's --strict-mcp-config makes Claude Code exit at startup
 (code.claude.com/docs/en/managed-mcp.md), the probe is skipped, saying so, and never reported as passing; --managed-mcp
-names the file, the platform's documented path by default (decisions log §280 (a)).
+names the file, the platform's documented path by default.
 It prints the report and exits 0 on PASS, 1 on FAIL. The report names install-relative files, counts and reasons:
-never an absolute path or a canary. KIT_LOAD_CHECK_PING, a Healthchecks URL (a credential: never printed), gets it, at
-/fail when it fails; KIT_LOAD_CHECK_REPORT, a file, gets it too.
+never an absolute path or a canary. KIT_LOAD_CHECK_REPORT, a file, gets it too. KIT_LOAD_CHECK_PING, a Healthchecks URL
+(a credential: never printed), gets the kit's fixed words alone, at /fail when it fails: the verdict, the probe's line
+and each kind of problem, never a value read from the machine, which stays in the report (PING_KINDS).
 """
 import argparse
 import hashlib
@@ -29,15 +35,41 @@ import sys
 import urllib.request
 
 CANARY = re.compile(r"\bkc-[0-9a-f]{16}\b")
+RULES = "rules/morrowcairn.md"            # the install's rules file, and its name in the user level's rules folder
 PROMPT = ("Reply with every token in your instructions that starts with kc- followed by sixteen hex digits, "
           "one per line, and nothing else.")
 PING = "KIT_LOAD_CHECK_PING"
 # Every credential this check holds, named in one place. The probe never gets one: the ping is sent after the probe has
-# exited, by this check alone (queue 195). A credential the caller exports that isn't named here still reaches it.
+# exited, by this check alone. A credential the caller exports that isn't named here still reaches it.
 CREDENTIALS = (PING,)
 # Where an org deploys managed-mcp.json, by platform (code.claude.com/docs/en/managed-mcp.md, "Deploy managed-mcp.json").
 MANAGED_MCP = {"darwin": "/Library/Application Support/ClaudeCode/managed-mcp.json",
                "win32": r"C:\Program Files\ClaudeCode\managed-mcp.json"}.get(sys.platform, "/etc/claude-code/managed-mcp.json")
+# The ping's words for each reason the report can give (load_check_test LP2). A reason in the
+# kit's fixed words alone goes as it is; one that names a value read from the machine (a skill's or a folder's name, a
+# path, the release, an exit status) goes as its kind; any other as PING_OTHER, so a reason added later can't send one.
+PING_FIXED = {f"can't tell: the pinned install has no {RULES}", "the rules link points elsewhere than the pinned install",
+              "the rules file's copy differs from the pinned install", "no rules file at user level",
+              f"can't tell: {RULES} carries no canary", f"can't tell: {RULES} carries more than one canary",
+              "probe: can't tell: a CLAUDE.md sits in or above its folder", "probe: can't tell: claude could not be started",
+              "probe: timeout", "probe: auth", "probe: can't tell: its output was not the JSON it should be",
+              f"probe: missing from the answer: {RULES}"}
+PING_KINDS = ((r"skill .+: its link points elsewhere than the pinned install",
+               "a skill's link points elsewhere than the pinned install"),
+              (r"skill .+: its copy differs from the pinned install", "a skill's copy differs from the pinned install"),
+              (r"skill .+: no user-level entry", "a skill has no user-level entry"),
+              (r"the rules link points into .+; the pin names .+",
+               "the rules link points into another release than the pin names"),
+              (r"the user-level CLAUDE\.md still imports a kit file \(.+\); the kit's rules load from the rules folder",
+               "the user-level CLAUDE.md still imports a kit file; the kit's rules load from the rules folder"),
+              (r"probe: non-zero exit \(-?[0-9]+\)", "probe: non-zero exit"))
+PING_OTHER = "a check failed (the report on the machine says which)"
+
+
+def ping_kind(reason):
+    if reason in PING_FIXED:
+        return reason
+    return next((kind for pat, kind in PING_KINDS if re.fullmatch(pat, reason)), PING_OTHER)
 
 
 def sha(path):
@@ -85,7 +117,7 @@ def probe(claude, probe_dir, timeout, imports, canaries):
     # quiet, they can skip any run that carries it (load_check_test LC12).
     env = {k: v for k, v in os.environ.items() if k not in CREDENTIALS}         # load_check_test LC15
     env.update(CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", KIT_LOAD_PROBE="1")        # no DISABLE_AUTOUPDATER (LQ4)
-    cmd = [claude, "-p", "--setting-sources", "user", "--tools", "", "--strict-mcp-config",
+    cmd = [claude, "-p", "--no-session-persistence", "--setting-sources", "user", "--tools", "", "--strict-mcp-config",
            "--settings", json.dumps({"disableAllHooks": True}), "--output-format", "json", PROMPT]
     try:
         p = subprocess.Popen(cmd, cwd=probe_dir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -110,40 +142,64 @@ def probe(claude, probe_dir, timeout, imports, canaries):
     if not isinstance(res, dict):
         return ["probe: can't tell: its output was not the JSON it should be"]
     answer = str(res.get("result") or "")
-    return [f"probe: import missing: {rel}" for rel in sorted(imports) if canaries.get(rel, "") not in answer]
+    return [f"probe: missing from the answer: {rel}" for rel in sorted(imports) if canaries.get(rel, "") not in answer]
+
+
+def check_rules(inst, root, release, entry, fails):
+    """The user-level rules entry against the pinned install's rules file: 'linked', 'copied', or '' on a failure."""
+    theirs = os.path.join(inst, RULES)
+    if not os.path.isfile(theirs):
+        fails.append(f"can't tell: the pinned install has no {RULES}")
+        return ""
+    if os.path.islink(entry):
+        target = os.path.realpath(entry)
+        if target == os.path.realpath(theirs):
+            return "linked"
+        if target.startswith(root + os.sep):
+            fails.append(f"the rules link points into {os.path.relpath(target, root).split(os.sep)[0]}; the pin names {release}")
+        else:
+            fails.append("the rules link points elsewhere than the pinned install")
+    elif os.path.isfile(entry):
+        if sha(entry) == sha(theirs):
+            return "copied"
+        fails.append("the rules file's copy differs from the pinned install")
+    else:
+        fails.append("no rules file at user level")
+    return ""
 
 
 def main():
     home = os.path.expanduser("~")
+    user_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--install", required=True)
     ap.add_argument("--release", required=True)
-    ap.add_argument("--user-file", required=True)
-    ap.add_argument("--skills", default=os.path.join(home, ".claude", "skills"))
+    ap.add_argument("--user-file")
+    ap.add_argument("--rules", default=os.path.join(user_dir, "rules", "morrowcairn.md"))
+    ap.add_argument("--skills", default=os.path.join(user_dir, "skills"))
     ap.add_argument("--probe-dir", default=os.path.join(home, ".local", "state", "morrowcairn", "load-probe"))
     ap.add_argument("--managed-mcp", default=MANAGED_MCP)
     ap.add_argument("--claude", default=os.environ.get("KIT_CLAUDE", "claude"))
     ap.add_argument("--timeout", type=int, default=120)
     a = ap.parse_args()
-    inst, uf, probe_dir = real(a.install), real(a.user_file), real(a.probe_dir)
+    inst, probe_dir, root = real(a.install), real(a.probe_dir), os.path.dirname(real(a.install))
     fails, notes = [], []
 
-    # What the user-level file imports from the pinned install, and each import's one canary.
-    imports, others, root = [], set(), os.path.dirname(inst)
-    with open(uf, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            m = re.match(r"@(\S+)\s*$", line)
-            if not m:
-                continue
-            p = real(m.group(1))
-            if p.startswith(inst + os.sep):
-                imports.append(os.path.relpath(p, inst))
-            elif p.startswith(root + os.sep):          # another release's install: the pin and the imports disagree
-                others.add(os.path.relpath(p, root).split(os.sep)[0])
-    if others:
-        fails.append(f"an import names {', '.join(sorted(others))}; the pin names {a.release}")
-    if not imports:
-        fails.append("the user-level CLAUDE.md imports nothing from the pinned install")
+    # A user-level CLAUDE.md that still imports a kit file, from any release, would load the kit a second way: the kit's
+    # rules load from the rules folder alone (load_check_test LCd).
+    stale = set()
+    if a.user_file:
+        with open(real(a.user_file), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.match(r"@(\S+)\s*$", line)
+                if m and real(m.group(1)).startswith(root + os.sep):
+                    stale.add(os.path.relpath(real(m.group(1)), root))
+    for rel in sorted(stale):
+        fails.append(f"the user-level CLAUDE.md still imports a kit file ({rel}); the kit's rules load from the rules folder")
+
+    # The rules entry, and the rules file's one canary, which the probe's answer must hold.
+    rules_kind = check_rules(inst, root, a.release, os.path.expanduser(a.rules), fails)
+    imports = [RULES] if os.path.isfile(os.path.join(inst, RULES)) else []
     canaries = {}
     for rel in imports:
         try:
@@ -160,26 +216,27 @@ def main():
     if os.path.exists(a.managed_mcp):
         probe_line = "probe: skipped"
         notes.append("note: an org's managed-mcp.json is deployed, and under it the probe's --strict-mcp-config makes "
-                     "Claude Code exit at startup, so the probe didn't run; the skills check stands alone")
+                     "Claude Code exit at startup, so the probe didn't run; the rules and skills checks stand alone")
     else:
         probe_fails = probe(a.claude, probe_dir, a.timeout, imports, canaries)
         fails += probe_fails
         probe_line = f"probe: {'fail' if probe_fails else 'pass'}"
 
     lines = [f"kit load check: {'FAIL' if fails else 'PASS'}",
-             f"release {a.release}; imports: {', '.join(imports) or 'none'}",
+             f"release {a.release}; rules: {rules_kind or 'fail'}",
              probe_line,
-             f"skills: {', '.join(kinds) or 'none'}"]
+             f"skills: {', '.join(kinds) or 'none'}; whether they load isn't checked"]
     body = "\n".join(lines + notes + [f"fail: {x}" for x in fails]) + "\n"
     print(body, end="")
     if os.environ.get("KIT_LOAD_CHECK_REPORT"):
         with open(os.environ["KIT_LOAD_CHECK_REPORT"], "w", encoding="utf-8") as f:
             f.write(body)
+    ping = "\n".join([lines[0], probe_line] + [f"fail: {k}" for k in dict.fromkeys(map(ping_kind, fails))]) + "\n"
     url = os.environ.get(PING)
     if url:
         try:
             urllib.request.urlopen(urllib.request.Request(url.rstrip("/") + ("/fail" if fails else ""),
-                                                          data=body.encode()), timeout=10).read()
+                                                          data=ping.encode()), timeout=10).read()
         except Exception:
             print("kit-load-check: the ping did not go through", file=sys.stderr)
     return 1 if fails else 0

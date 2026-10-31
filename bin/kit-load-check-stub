@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# kit-load-check-stub — what the daily cron line runs. It lives outside the install (the user-level import step puts
-# it there), reads the kit pin line in the user-level CLAUDE.md, verifies the whole install against that pin with its
+# kit-load-check-stub — what the daily cron line runs. It lives outside the install (a machine that wants the check
+# puts it there), reads the kit's user pin (kit-pin's user mode writes it), verifies the whole install against it with its
 # own copy of the install verifier (the same text as leak-detection/stub-hook's and bin/kit-pin's; load_check_test
 # LS9), and only then runs the install's load check, bin/kit-load-check, with the same arguments. Every file of the
 # install is covered, the load check's own and kit-pin among them: a verifier read from the install would be checking
@@ -9,20 +9,36 @@
 #
 #   kit-load-check-stub [load-check arguments]
 #
-# Environment: KIT_USER_CLAUDE_MD (default ~/.claude/CLAUDE.md); KIT_INSTALL_ROOT (default
-# ~/.local/share/morrowcairn/releases); KIT_LOAD_CHECK_PING, the Healthchecks URL, a credential and never printed;
-# KIT_LOAD_CHECK_REPORT, a file the report is also written to.
+# Environment: KIT_USER_PIN (default ${XDG_CONFIG_HOME:-~/.config}/morrowcairn/user.pin: release=vX.Y.Z and
+# manifest=sha256:<64 hex>, two lines); KIT_USER_CLAUDE_MD (default ~/.claude/CLAUDE.md, passed to the check only when
+# the person has one); KIT_INSTALL_ROOT (default ~/.local/share/morrowcairn/releases); KIT_LOAD_CHECK_PING, the
+# Healthchecks URL, a credential and never printed; KIT_LOAD_CHECK_REPORT, a file the report is also written to.
 #
 # REFUSES when any check fails, and reports the refusal as a failed run, to the ping's /fail route when one is set and
-# to the report file: a check that stopped is never a silent one. A report names no absolute path.
+# to the report file: a check that stopped is never a silent one. A report names no absolute path. The ping carries the
+# kit's fixed words alone, the verdict and the kind of problem, never a value read from the machine: the report there
+# keeps those, and of the files someone put in the install the ping says only how many there are.
 #
 set -uo pipefail
 
 root=${KIT_INSTALL_ROOT:-${HOME:-}/.local/share/morrowcairn/releases}
+ping_why=""     # the ping's own reason, in fixed words, where the report's can name a value from the machine (below)
 report_fail() {  # REASON
     local body; body=$(printf 'kit load check: FAIL\nfail: %s\n' "$1")
     body=${body//"$root"/<install root>}; [[ -z "${HOME:-}" ]] || body=${body//"$HOME"/\~}
     [[ -z "${KIT_LOAD_CHECK_REPORT:-}" ]] || printf '%s\n' "$body" > "$KIT_LOAD_CHECK_REPORT"
+    # A reason in the kit's fixed words goes to the ping as it is; any other only as the kind ping_why gives it, or as
+    # the line below, so a refusal added later can't send a value read from the machine (load_check_test LP1f).
+    local kind=$ping_why
+    if [[ -z "$kind" ]]; then
+        case "$1" in
+            "no kit user pin can be read"|"the kit user pin is malformed"|"the user-level CLAUDE.md can't be read" \
+            |"python3 is not installed, so the load check can't run" \
+            |"the check stopped before it finished, so what it had not reached was never checked") kind=$1 ;;
+            *) kind="the stub refused (the report on the machine says why)" ;;
+        esac
+    fi
+    body=$(printf 'kit load check: FAIL\nfail: %s\n' "$kind")
     if [[ -n "${KIT_LOAD_CHECK_PING:-}" ]]; then
         curl -fsS -m 10 --data-raw "$body" "${KIT_LOAD_CHECK_PING%/}/fail" >/dev/null 2>&1 \
             || echo "kit-load-check-stub: the fail ping did not go through" >&2
@@ -38,8 +54,8 @@ refuse() {
 
 # The stub's only pass is the hand-over at the end: a successful exec replaces this process, so this trap never runs
 # after it. Any other end -- an exit 0 short of it, a stop on an unset variable (which bash 3.2 can report as 0), a
-# failed exec -- is refused and reported as a failed run, as a refusal is: a check that stopped is never a silent one
-# (decisions log §96, §100, §105). A refusal has reported already.
+# failed exec -- is refused and reported as a failed run, as a refusal is: a check that stopped is never a silent one.
+# A refusal has reported already.
 kit_reported=0
 kit_guard() {
     local rc=$?
@@ -85,20 +101,56 @@ kit_verify_install() {   # DIR RELEASE MANIFEST-HASH: 0, or 1 with KV_ERROR sayi
     return 0
 }
 
+# The kit's user pin, a file of the kit's own, never a line in the person's CLAUDE.md.
+pinf=${KIT_USER_PIN:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/morrowcairn/user.pin}
+[[ -f "$pinf" && -r "$pinf" ]] || refuse "no kit user pin can be read" \
+    "kit-pin's user mode writes it, as it links the kit's rules file and skills: \"<install>/bin/kit-pin\" user vX.Y.Z"
+release=""; manifest=""; n=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    case "$line" in
+        release=*)  release=${line#release=} ;;
+        manifest=*) manifest=${line#manifest=} ;;
+    esac
+done < "$pinf"
+[[ $n -eq 2 && "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$manifest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || refuse "the kit user pin is malformed" "It holds two lines: release=vX.Y.Z and manifest=sha256:<64 hex>."
 uf=${KIT_USER_CLAUDE_MD:-${HOME:-}/.claude/CLAUDE.md}
-[[ -r "$uf" ]] || refuse "the user-level CLAUDE.md can't be read"
-pins=$(grep -E '^<!-- kit pin:' "$uf")
-[[ -n "$pins" ]] || refuse "no kit pin line in the user-level CLAUDE.md" \
-    "The import edit writes one beside the import lines: <!-- kit pin: release=vX.Y.Z manifest=sha256:<64 hex> -->"
-re='^<!-- kit pin: release=(v[0-9]+\.[0-9]+\.[0-9]+) manifest=(sha256:[0-9a-f]{64}) -->$'
-[[ $(printf '%s\n' "$pins" | wc -l) -eq 1 && "$pins" =~ $re ]] || refuse "the kit pin line is malformed" \
-    "It reads: <!-- kit pin: release=vX.Y.Z manifest=sha256:<64 hex> -->, once."
-release=${BASH_REMATCH[1]}; manifest=${BASH_REMATCH[2]}
-if why=$(kit_no_sha256); then refuse "$why, so the install can't be checked against the pin line"; fi
-kit_verify_install "$root/$release" "$release" "$manifest" || refuse "$KV_ERROR"
+ufarg=()
+if [[ -e "$uf" || -L "$uf" ]]; then
+    [[ -r "$uf" ]] || refuse "the user-level CLAUDE.md can't be read"
+    ufarg=(--user-file "$uf")
+fi
+if why=$(kit_no_sha256); then ping_why="$why, so the install can't be checked against the user pin"; refuse "$ping_why"; fi
+# The verifier's reason (one text in its three homes, LS9) can name what the kit didn't write: the tag an install's
+# RELEASE holds, a file someone put in the install, a path, the pinned release. The report on this machine keeps it;
+# the ping says only what kind of problem it is, in fixed words, and of unlisted files how many, so nothing read from
+# the machine leaves it (load_check_test LS14, LP1). The endings are read first, since a file's name can begin like
+# another reason.
+if ! kit_verify_install "$root/$release" "$release" "$manifest"; then
+    case "$KV_ERROR" in
+        *" is in the install but not in its manifest")
+            nx=$(cd "$root/$release" && find . ! -type d ! -path ./MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+                 | LC_ALL=C comm -23 - <(awk '{print $2}' MANIFEST.sha256 | LC_ALL=C sort) | wc -l) || nx=""
+            nx=${nx//[!0-9]/}
+            case "$nx" in
+                1)      ping_why="1 file is in the install but not in its manifest (the report on the machine names it; the ping names none)" ;;
+                [1-9]*) ping_why="$nx files are in the install but not in its manifest (the report on the machine names the first; the ping names none)" ;;
+                *)      ping_why="files are in the install but not in its manifest, how many couldn't be counted (the report on the machine names the first; the ping names none)" ;;
+            esac ;;
+        *" is missing from the install")                  ping_why="a file the install's manifest lists is missing from the install" ;;
+        *" in the install doesn't match its manifest line") ping_why="a file in the install doesn't match its manifest line" ;;
+        "the install's manifest doesn't match the pin")    ping_why="the install's manifest doesn't match the pin" ;;
+        "the install's manifest lists no files")           ping_why="the install's manifest lists no files" ;;
+        "the install's RELEASE names "*)                   ping_why="the install's RELEASE names a release other than the pin's" ;;
+        "no install for "*)                                ping_why="no install for the pinned release" ;;
+        *)                                                 ping_why="the install doesn't match the kit user pin" ;;
+    esac
+    refuse "$KV_ERROR"
+fi
 command -v python3 >/dev/null 2>&1 || refuse "python3 is not installed, so the load check can't run"
 
 export KIT_INSTALL="$root/$release"
 # Isolated (-I): no PYTHON* variable, no user site-packages, no script folder on its path, so no module the environment
-# plants runs in the check's place (decisions log §147, §148; load_check_test LS13).
-exec python3 -I "$KIT_INSTALL/bin/kit-load-check" --install "$KIT_INSTALL" --release "$release" --user-file "$uf" "$@"
+# plants runs in the check's place (load_check_test LS13).
+exec python3 -I "$KIT_INSTALL/bin/kit-load-check" --install "$KIT_INSTALL" --release "$release" ${ufarg[@]+"${ufarg[@]}"} "$@"

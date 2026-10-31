@@ -11,14 +11,15 @@
 #          kit's own CLAUDE.md is the kit's sessions' file, and a spawn's comes from templates/; LICENSE covers
 #          the kit only, and a spawn chooses its own; kit.binaries turns the binary scan on for the kit's own
 #          pushes, and a project turns its own on; .github/secret_scanning.yml is the kit's repositories' GitHub
-#          setting for the kit's own fixture)
+#          setting for the kit's own fixture; kit.list-id names the kit's own do-not-publish list, and kit-pin
+#          gives each project its own)
 #   spawn  copied once, at spawn; the spawn owns it from then on, and an upgrade never overwrites it. A file
 #          under templates/ lands at the spawn's top level under its own name (templates/CLAUDE.md -> CLAUDE.md)
 #   owned  kit-owned: ships in the install and runs from there, and a project holds no copy. A copy it does
 #          hold must equal the release's, or be declared in kit.forks (the checked-copies layer)
 #   example  a code pattern: ships in the install for a project to copy and change as its own. Nothing copies it
-#          into a project, and the checked-copies layer doesn't police a copy (decisions log §274 ruling 6). Listed
-#          before owned patterns/, since the first entry that matches a path decides its class
+#          into a project, and the checked-copies layer doesn't police a copy. Listed before owned patterns/, since
+#          the first entry that matches a path decides its class
 #
 # EVERY tracked path is covered, by its own entry or by its directory's. tests/kit_docs_test.sh fails on
 # a tracked path no entry covers (K18): a file added without a class would otherwise travel to every
@@ -29,6 +30,7 @@
 kit    kit-manifest.txt
 kit    .gitattributes
 kit    README.md
+kit    CHANGELOG.md
 kit    tests/kit_docs_test.sh
 kit    tests/smoke_test.sh
 kit    tests/standin/
@@ -37,6 +39,7 @@ kit    LICENSE
 kit    .github/leak-pattern.pin
 kit    .github/secret_scanning.yml
 kit    kit.binaries
+kit    kit.list-id
 
 spawn  .gitignore
 spawn  records/
@@ -47,10 +50,13 @@ example  patterns/dry_run_gated_runner.sh
 example  patterns/counted_skip_loader.py
 
 owned  .claude/skills/
+owned  docs/
+owned  rules/
 owned  .github/
 owned  .gitleaks.toml
 owned  bin/
 owned  ci/
+owned  claude-hooks/
 owned  leak-detection/
 owned  patterns/
 owned  skills/

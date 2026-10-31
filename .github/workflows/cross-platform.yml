@@ -8,13 +8,13 @@ name: cross-platform
 # PATH, which is what a stock Mac has.
 #
 # These jobs alert, so they are gates: they were shown to go red on a planted failing case, on a scratch branch,
-# before they were relied on (decisions log §98). When each runs:
+# before they were relied on. When each runs:
 # - Linux's smoke job, on every push to main.
-# - macOS's suites and smoke, by dispatch and once a week, never on a push: a macOS minute is billed as ten (§120,
-#   which replaces §103's code pushes). A release dispatches them on its final commit before the tag.
-# - Windows', by hand only, until its suites are green (§99, §102).
+# - macOS's suites and smoke, by dispatch and once a week, never on a push: a macOS minute is billed as ten, so the
+#   code pushes it once ran on cost too much. A release dispatches them on its final commit before the tag.
+# - Windows', by hand only, until its suites are green.
 # A dispatch runs one OS's jobs, named by its os input: macos (the default), windows or linux. A Windows suites job
-# takes about 30 to 45 minutes, so checking macOS never starts it (§100, §102).
+# takes about 30 to 45 minutes, so checking macOS never starts it.
 
 on:
   push:
@@ -33,8 +33,8 @@ permissions:
   contents: read
 
 jobs:
-  # Monday's macOS run is skipped when main hasn't changed since the last green macOS run (the owner's ruling of 10-24,
-  # decisions log §310 (f)): this job reads this workflow's recent successful runs and takes, newest first, the first
+  # Monday's macOS run is skipped when main hasn't changed since the last green macOS run, since a run on the same
+  # commit can only repeat its answer: this job reads this workflow's recent successful runs and takes, newest first, the first
   # whose macOS suites job succeeded; when its commit is main's, both macOS jobs skip, and this job says why. Anything it
   # can't read means they run, and they run unless it says exactly false, so a gate that didn't run skips nothing
   # (kit_docs MS1 to MS6 test the decision and the wiring). It runs on the schedule only, reading the Actions API.
@@ -87,18 +87,18 @@ jobs:
           printf '%s\n' "$out" | sed -n '/^run=/p' >> "${GITHUB_OUTPUT:?}"
 
   # macOS weekly and by dispatch; Windows by dispatch only: a push once ran about 110 billed minutes here, almost all of
-  # it Windows' suites (decisions log §98, §99), and macOS, weighted ten to one, was nearly half of October's billed
-  # weight to 10-18 (§120, §121). Linux runs the suites on every push, in gitleaks.yml.
+  # it Windows' suites, and macOS, weighted ten to one, was nearly half of October's billed
+  # weight to 10-18. Linux runs the suites on every push, in gitleaks.yml.
   suites:
     name: suites (${{ matrix.os }})
     needs: [mac-gate]
     if: >-
       ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.os != 'linux') ||
       (github.event_name == 'schedule' && needs.mac-gate.outputs.run != 'false')) }}
-    # macOS 30, the owner's ruling of 10-24 (decisions log §305 (d)): a run on 10-24 took 14 min 57 s of the 15 set at
-    # about three times §127's longest (4.8 minutes), and a run cut off spends its minutes and answers nothing.
-    # Windows keeps its 90: its suites have never passed, and their limit waits on the owner (queue 457).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 30 }}
+    # macOS 50: about 1.5 times its longest run, rounded up: 19 min 54 s on 10-26, on code whose Linux suites have
+    # grown 1.6 times since (an estimate), and a run cut off spends its minutes and answers nothing.
+    # Windows keeps its 90: its suites have never passed, and their limit waits on the owner.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 50 }}
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +139,7 @@ jobs:
       # One gitleaks version on every runner, each archive checked against the sha256 written here, which is the one
       # the release publishes (gitleaks_8.30.1_checksums.txt, matching GitHub's own asset digests on 2026-10-17).
       # A checksum read at run time from the release would come from the same place as the archive. Moving the pin
-      # moves the version and every sum together, test-first (decisions log §69, §98).
+      # moves the version and every sum together, test-first.
       - name: Install gitleaks
         run: |
           set -euo pipefail
@@ -170,7 +170,7 @@ jobs:
           "$dir/gitleaks" version
           if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
 
-      # What the suites' Windows fixes rest on, printed for the record (decisions log §102): Git Bash's execute and write
+      # What the suites' Windows fixes rest on, printed for the record: Git Bash's execute and write
       # bits, git init's fileMode, a Windows Python's line endings, and git and python3 started from a folder of a few
       # links. Informational: it never fails the job.
       - name: Facts the suites rely on (Windows)
@@ -222,9 +222,9 @@ jobs:
     needs: [mac-gate]
     if: >-
       ${{ !cancelled() && (github.event_name != 'schedule' || needs.mac-gate.outputs.run != 'false') }}
-    # About three times the longest run measured from 10-01 to 10-18 (§127): Linux 2.0 minutes and macOS 1.9, so 6.
-    # Windows keeps its 30 (queue 457).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 6 }}
+    # About 1.5 times the longest run measured, rounded up: Linux 2.9 minutes on 10-31, macOS 3.8 on 10-26 on older
+    # code (about 4.2 now, an estimate), so 10. Windows keeps its 30.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -280,7 +280,7 @@ jobs:
 
       # On macOS, a stock Mac: PATH is the system's four folders and the pinned gitleaks folder, nothing else, so bash
       # is /bin/bash 3.2, the tools are BSD's, and git and python3 are the system's (the runner's own Python and
-      # Homebrew's folders came ahead of /usr/bin before; decisions log §104, §105). Homebrew's bash is named in
+      # Homebrew's folders came ahead of /usr/bin before). Homebrew's bash is named in
       # SMOKE_INSTALL_BASH, which the smoke test uses only to build the install again if the stock install fails, so the
       # user's later steps still run with the stock tools.
       - name: Smoke test, the user's path

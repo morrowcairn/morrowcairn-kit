@@ -16,7 +16,7 @@
 # The files a project keeps for its CI are held to what the release ships for a project, which the install's
 # ci/copies.txt names (PROJECT-PATH RELEASE-PATH): its workflows to the ci/ variants, which run the scans and none
 # of the kit's suites, and its .gitleaks.toml to leak-detection/spawn.gitleaks.toml, not the kit's own config, which
-# allowlists the kit's credential fixture by path (decisions log §51, §54, §57). A project copy that is the kit's own
+# allowlists the kit's credential fixture by path. A project copy that is the kit's own
 # file is refused for that, and any refusal there names the release file the copy is held to.
 #
 set -uo pipefail
@@ -26,8 +26,8 @@ at=${2:-}
 refuse() { echo "$label: REFUSING -- $1." >&2; exit 1; }
 
 # A pass comes only from the pass point at the end of this file. Any other exit 0 -- an early exit, or a stop on an
-# unset variable that the shell reports as 0, as bash 3.2 did here before 2e0ffbd -- is turned into a refusal
-# (decisions log §96, §100). A refusal's own non-zero exit is left as it is.
+# unset variable that the shell reports as 0, as bash 3.2 once did here -- is turned into a refusal.
+# A refusal's own non-zero exit is left as it is.
 kit_passed=0
 kit_guard() {
     local rc=$?
@@ -58,7 +58,7 @@ tag=$(sed -n 's/^tag=//p' "$KIT_INSTALL/RELEASE")
 obj() { if [[ -n "$at" ]]; then printf '%s:%s' "$at" "$1"; else printf ':%s' "$1"; fi; }
 
 # Each table is lists side by side, searched by exact path, so bash 3.2 runs this: macOS's /bin/bash has no
-# associative arrays, and with them this layer stopped there with exit 0, passing every copy (decisions log §96).
+# associative arrays, and with them this layer stopped there with exit 0, passing every copy.
 # Where a table names a path twice, its last line counts.
 mpath=(); msum=()
 while read -r sum path; do mpath+=("$path"); msum+=("$sum"); done < "$KIT_INSTALL/MANIFEST.sha256"

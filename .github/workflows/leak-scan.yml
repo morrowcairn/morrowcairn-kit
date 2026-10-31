@@ -17,7 +17,7 @@ name: leak-scan
 # nothing. A check that cannot fail is worse than no check, because it ends the search.
 #
 # FAILS CLOSED, too, when the secret isn't the list the tracked .github/leak-pattern.pin names (its
-# rows and a hash; decisions log §108, §112): a secret cut or changed would scan for less while every
+# rows and a hash): a secret cut or changed would scan for less while every
 # run kept passing. bin/kit-pin repin ci writes the pin from .git/leak-pattern.ci, the secret's record.
 
 on:
@@ -32,7 +32,7 @@ jobs:
   scan-tree:
     runs-on: ubuntu-latest
     # Its longest run measured from 10-01 to 10-18 took 6 seconds, so 5 minutes is a floor, not three times it: a slow
-    # checkout shouldn't fail the scan (decisions log §127). A job past its limit fails.
+    # checkout shouldn't fail the scan. A job past its limit fails.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

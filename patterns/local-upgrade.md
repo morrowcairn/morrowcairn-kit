@@ -18,11 +18,52 @@ project's own session does both; the kit's session writes nothing in a project.
 `kit-pin to` refuses a release with no install or one that fails its own manifest, a work tree with
 uncommitted changes, a hooks path set in the clone itself, and a project with no `kit-pin.tests`. Under
 an org's hooks path, set at the system or global level, it sets the clone's own path to the stubs, which
-run the org's hooks first (`leak-detection/README.md`). It writes `kit.pin` and the stubs, keeping a
-hook the project already has as `<hook>.project`, then runs the release's list reader's selftest, the checked-copies layer (every kit-owned file
-the project still holds must equal the release's, or be declared in `kit.forks`), and each command in
-`kit-pin.tests`. On any red it puts `kit.pin` and the stubs back byte for byte. On green it leaves
-`kit.pin` for you to commit, and that commit runs through the new stubs.
+run the org's pre-commit and pre-push first, and writes a relay for each other hook the org's folder
+holds then; one added there later makes every commit refuse until `to` runs again
+(`leak-detection/README.md`). It writes `kit.pin` and the stubs, keeping a
+hook the project already has as `<hook>.project`, then runs the release's list reader's selftest. It then
+takes the project's CI copies across: each file the release's `ci/copies.txt` names that the project
+holds, and that is still the held release's file byte for byte, becomes the release's, staged. A copy
+declared in `kit.forks` stays the project's own, and the held release counts only once its install
+passes its own manifest. Then it runs the checked-copies layer (every kit-owned file the project still
+holds must equal the release's, or be declared in `kit.forks`, so a CI copy equal to neither release's is
+refused by name) and each command in `kit-pin.tests`. On any red it puts `kit.pin`, the stubs and any
+copy it took back byte for byte. On green it leaves `kit.pin`, with any copy it took, for you to commit
+together, and that commit runs through the new stubs.
+
+**The list's place (from v0.12.0).** A project's do-not-publish list is one file outside every repository,
+`~/.config/morrowcairn/lists/<id>` (the folder mode 700, the file 600; `~` the home folder the user database gives),
+named by the one line of the project's tracked `kit.list-id`, a random id, the same for every clone. `to` onto a
+release that reads it there gives the project its place first: `kit.list-id` where it has none, and a copy of
+`.git/leak-pattern` at the new place, byte for byte. It never writes over a list there that differs, refusing before
+it changes anything, and it leaves `.git/leak-pattern` for you to delete once nothing reads it. Commit `kit.list-id`
+with `kit.pin`. The list's pin stays `.git/leak-pattern.pin`. `kit-pin move-list` runs the same step on its own.
+
+**What a new project starts with (from v0.12.0).** A project made from such a release starts with two checks off: no
+do-not-publish list (local-spawn writes the line saying so, `kit:no-identity-list`, and pins it) and no identity guard
+(commit one goes under the identity git resolves). A move changes neither for the project it moves, which keeps its own
+list and its own identity. `to` and `migrate` say so as they finish, with the one setting for each: the list's file at
+its place, by this project's id, and repo-genesis's sentinel identity in the clone (`patterns/local-spawn.md`,
+`patterns/repo-genesis.md`).
+
+**Going back** is the same command, naming an older release whose install is still on the machine. Run
+the newer release's kit-pin, either way: from v0.12.0, `to` takes a CI copy across forward and back. A
+kit-pin from v0.11.0 or older doesn't: it refuses a CI copy that differs from its target release ("differs
+from release …, and kit.forks doesn't declare it"). With one, a release that changes a CI copy is crossed
+in three commits: (1) a temporary `kit.forks` line declaring the project's copy (its path, `sha256:` and
+the hash of the project's copy, and a § of the project's decisions log), committed through the stubs the
+project holds; (2) `kit-pin to` the other release; (3) that release's copy in and the fork line out,
+committed with `kit.pin` through the new stubs. From v0.12.0, `to` says so as it finishes wherever `kit.forks` declares
+the held release's own copy. A release's install is the only way back to it: an install removed is rebuilt only from a
+clone of the kit that holds its tag.
+
+**Undoing a move partway**, before anything is pushed (one of those three commits made, or `to` run and its commit not
+made): put back what git tracks, `kit.pin`, any copy `to` staged and any of those commits (`git reset --hard` to the
+commit before the move does all three, and discards everything after it). The stubs are not among them: they live in
+the clone's hooks folder, outside every commit, so they stay the newer release's, and where those differ from the
+older release's, every commit refuses ("this stub differs from release …'s copy"), and so does `kit-pin check`.
+`kit-pin to` the release `kit.pin` names again, on the clean tree, writes that release's stubs back; `kit-pin check`
+then passes.
 
 ## Moving a project made before v0.8.0 onto an install
 
@@ -74,7 +115,7 @@ the list's value would see every fingerprint lapse.
 
 ### 1b. The list's pins
 
-From v0.9.0 pre-push refuses unless the identity list is the one its pin names, and CI's scan refuses unless
+From v0.9.0 pre-push refuses unless the do-not-publish list is the one its pin names, and CI's scan refuses unless
 the `LEAK_PATTERN` secret is the one its tracked pin names (`leak-detection/README.md`, Setup). A project takes
 both pins in this move. First check the list against a source it didn't come from, never against itself: rows
 copied from another list (the kit's, say) by exact text against that list, and the project's own rows against
@@ -88,7 +129,8 @@ DST=/path/to/project          # the project, its list checked as above
 : "${REL:?}" "${DST:?}"
 INST="${KIT_INSTALL_ROOT:-$HOME/.local/share/morrowcairn/releases}/${REL:?}"
 cd "${DST:?}"
-"${INST:?}/bin/kit-pin" repin local --first      # .git/leak-pattern.pin, untracked, beside the list
+"${INST:?}/bin/kit-pin" move-list                # kit.list-id, and the list copied to ~/.config/morrowcairn/lists/<id>
+"${INST:?}/bin/kit-pin" repin local --first      # .git/leak-pattern.pin, untracked
 # A project with CI: the LEAK_PATTERN secret's exact value, kept untracked in .git/leak-pattern.ci with no trailing
 # newline; its pin, .github/leak-pattern.pin, is committed with the move.
 if [[ -f .github/workflows/leak-scan.yml ]]; then "${INST:?}/bin/kit-pin" repin ci --first; fi
@@ -131,6 +173,7 @@ cd "${DST:?}"
         esac
     done
     git add kit.pin kit-pin.tests && { [[ ! -f kit.forks ]] || git add kit.forks; } \
+        && { [[ ! -f kit.list-id ]] || git add kit.list-id; } \
         && { [[ ! -f .github/leak-pattern.pin ]] || git add .github/leak-pattern.pin; }
     git commit -q -m "Onto kit ${REL:?}: pinned to its install, hooks from the stubs, CI held to the release, other kit-owned copies removed"
 }
@@ -142,11 +185,11 @@ with exit 3, the move is made and every push is refused until the list and its p
 
 ### 3. The doctrine
 
-On a machine whose user-level `CLAUDE.md` imports the kit's doctrine from the pinned install, and holds
-its triggered skills (the kit's design, section k), the project's copies are a second load of the same
-rules. Once that user-level step has run, remove the project's `@skills/...` lines from its `CLAUDE.md`,
-and its `skills/` and `.claude/skills/` copies, in one commit through the stubs. Before it has run they
-are the project's only doctrine, so they stay, as the release's copies step 2 made them.
+On a machine where `bin/kit-pin user vX.Y.Z` has linked the kit's rules file and skills into Claude Code's
+folder, the project's copies are a second load of the same rules. Once that user-level step has run, remove the
+project's `@skills/...` lines from its `CLAUDE.md`, and its `skills/` and `.claude/skills/` copies, in one commit
+through the stubs. Before it has run they are the project's only doctrine, so they stay, as the release's copies step
+2 made them.
 
 ### 4. Record
 

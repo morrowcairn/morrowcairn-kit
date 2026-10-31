@@ -28,8 +28,8 @@ BASH_BIN=$(command -v bash)
 TMP=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
-export LEAK_PATTERN='SYNTH-MARKER-7F3A'     # synthetic identity marker for every case
-MARK='SYNTH-MARKER-7F3A'
+unset LEAK_PATTERN                          # a hook reads its list from the file at its place, never the environment
+MARK='SYNTH-MARKER-7F3A'                    # synthetic identity marker for every case
 Z=0000000000000000000000000000000000000000
 PASS=0; FAIL=0; SKIP=0
 
@@ -44,6 +44,13 @@ want_ok() { if [[ $2 -eq 0 && ( -z "${4:-}" || "$3" == *"$4"* ) ]]; then result 
             else result "$1" 1 "exit $2${4:+, want '$4'}: $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-160)"; fi; }
 want_refused() { if [[ $2 -ne 0 && "$3" == *"$4"* ]]; then result "$1" 0
                  else result "$1" 1 "exit $2, want refusal '$4': $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-160)"; fi; }
+# want_says NAME RC OUTPUT LINE...: a refusal (RC non-zero) whose output holds each LINE: the lines a refusal adds after
+# its first, each labelled for who acts on it ("You can:", "If IT manages this machine:", "The project's owner:"), in
+# the do-not-publish wording.
+want_says() { local n=$1 rc=$2 o=$3 l miss=""; shift 3
+              for l in "$@"; do [[ "$o" == *"$l"* ]] || miss="$miss '$l'"; done
+              if [[ $rc -ne 0 && -z "$miss" ]]; then result "$n" 0
+              else result "$n" 1 "exit $rc, want a refusal saying$miss: $(printf '%s' "$o" | tr '\n' ' ' | cut -c1-160)"; fi; }
 no_leak() { if [[ "$2" == *SYNTH-MARKER* ]]; then result "$1" 1 "output quotes the pattern"; else result "$1" 0; fi; }
 # no_leak_at NAME STDOUT STDERR: no_leak over each stream apart; a red names the stream, the line number and the line,
 # the marker shown as <M> and every byte outside printable ASCII as ?.
@@ -63,6 +70,30 @@ no_leak_at() {
 # A refusal says what to fix, never "--no-verify": that flag skips every check, so a hook that
 # offers it as the way on invites the one step that switches off the scans for the whole push.
 no_bypass() { if [[ "$2" == *--no-verify* ]]; then result "$1" 1 "the refusal suggests --no-verify"; else result "$1" 0; fi; }
+# want_split NAME RC OUTPUT: a sandbox refusal's two lines split who acts: "You can:" covers
+# only a read block the person set themselves, adding the folder in their user settings; "If IT manages this
+# machine:" says a sandbox read policy may block it, and to ask IT rather than change it in their own settings.
+want_split() { local you="" it="" l
+               while IFS= read -r l; do case "$l" in "  You can:"*) you+=$l ;; "  If IT manages this machine:"*) it+=$l ;; esac; done <<< "$3"
+               if [[ $2 -ne 0 && "$you" == *"you set yourself"* && "$you" == *"sandbox.filesystem.allowRead in your user settings"* \
+                     && "$you" != *"IT's settings allow"* && "$it" == *"sandbox read policy may block"* \
+                     && "$it" == *"rather than changing it in your own settings"* ]]; then result "$1" 0
+               else result "$1" 1 "exit $2: you [$(echo $you | cut -c1-140)] it [$(echo $it | cut -c1-140)]"; fi; }
+
+# A project's list lives under the home folder the user database gives, never $HOME's (the gates skill, procedure 13).
+# Every copy of the reader this suite runs is rswap's: kit_list_home's body alone swapped for this suite's scratch
+# home, TH (MS41's after the shipped routine's python3 check), so no case reads or writes the real one; LH7 reads the shipped routine against the user database, read-only,
+# and LH8 checks each copy differs from the shipped reader in that body only. A copy whose swap didn't take would send
+# a case to the real home, so rswap stops the suite before it runs one.
+TH="$TMP/home"; mkdir -p "$TH"
+rswap() {  # SRC DST: SRC, kit_list_home's body swapped for printing TH; a SRC with no kit_list_home is copied as it is
+    RS_BODY="    printf '%s\\n' '$TH'   # a suite's test copy: its scratch home" \
+        awk '/^kit_list_home\(\) \{/ {print; print ENVIRON["RS_BODY"]; s=1; next} s && /^\}/ {s=0} !s {print}' "$1" > "$2" || exit 1
+    chmod 0644 "$2"
+    "$BASH_BIN" --norc --noprofile -c '. "$1" && declare -F kit_list_home' _ "$1" >/dev/null 2>&1 || return 0
+    [[ "$("$BASH_BIN" --norc --noprofile -c '. "$1" && kit_list_home' _ "$2" 2>/dev/null)" == "$TH" ]] \
+        || { echo "hooks_test: the reader copy $2 doesn't find its home in the scratch home; stopping before any case" >&2; exit 1; }
+}
 
 # Executable copies of the hooks under test, plus a variant with a malformed allowlist.
 HK="$TMP/hooks"; HKB="$TMP/hooks-badallow"; mkdir -p "$HK" "$HKB"
@@ -74,14 +105,39 @@ for d in "$HK" "$HKB"; do   # pre-push finds both beside itself
     [[ -f "$H/scan-binaries.py" ]] && cp "$H/scan-binaries.py" "$d/"
     # The scan's own rules sit beside it, as in an install (BC1 to BC4).
     [[ -f "$H/spawn.gitleaks.toml" ]] && cp "$H/spawn.gitleaks.toml" "$d/"
-    # Writable whatever the source's mode, so EG6 can plant into a copy of it under a read-only install (§255).
-    [[ -f "$H/read-leak-pattern.sh" ]] && install -m 0644 "$H/read-leak-pattern.sh" "$d/"
+    # Writable whatever the source's mode, so EG6 can plant into a copy of it under a read-only install.
+    [[ -f "$H/read-leak-pattern.sh" ]] && rswap "$H/read-leak-pattern.sh" "$d/read-leak-pattern.sh"
 done
+# MS41's hooks: kit_list_home keeps the shipped routine's first line, so with no python3 the place fails as the shipped
+# one does, and with python3 it gives TH; no case reaches the real home either way. LH8 checks it with the others.
+HKP="$TMP/hooks-pycheck"; mkdir -p "$HKP"; [[ -f "$H/pre-push" ]] && install -m 0755 "$H/pre-push" "$HKP/pre-push"
+for f in scan-binaries.py spawn.gitleaks.toml; do [[ -f "$H/$f" ]] && cp "$H/$f" "$HKP/"; done
+if [[ -f "$H/read-leak-pattern.sh" ]]; then
+    RS_BODY="    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\\n' '$TH'   # a suite's test copy: the shipped routine's python3 check, then its scratch home" \
+        awk '/^kit_list_home\(\) \{/ {print; print ENVIRON["RS_BODY"]; s=1; next} s && /^\}/ {s=0} !s {print}' \
+        "$H/read-leak-pattern.sh" > "$HKP/read-leak-pattern.sh" || exit 1
+    ! command -v python3 >/dev/null 2>&1 \
+        || [[ "$("$BASH_BIN" --norc --noprofile -c '. "$1" && kit_list_home' _ "$HKP/read-leak-pattern.sh" 2>/dev/null)" == "$TH" ]] \
+        || { echo "hooks_test: the reader copy $HKP doesn't find its home in the scratch home; stopping before any case" >&2; exit 1; }
+fi
+# MS43's hooks: kit_list_home keeps the shipped routine's python3 check, then fails as the shipped routine does where
+# python3 runs but the user database gives no usable home (LH11 shows it does); no case reaches any home. LH8 checks it.
+HKU="$TMP/hooks-nohome"; mkdir -p "$HKU"; [[ -f "$H/pre-push" ]] && install -m 0755 "$H/pre-push" "$HKU/pre-push"
+for f in scan-binaries.py spawn.gitleaks.toml; do [[ -f "$H/$f" ]] && cp "$H/$f" "$HKU/"; done
+if [[ -f "$H/read-leak-pattern.sh" ]]; then
+    RS_BODY="    command -v python3 >/dev/null 2>&1 || return 1
+    return 1   # a suite's test copy: python3 is there, and the user database gives no usable home" \
+        awk '/^kit_list_home\(\) \{/ {print; print ENVIRON["RS_BODY"]; s=1; next} s && /^\}/ {s=0} !s {print}' \
+        "$H/read-leak-pattern.sh" > "$HKU/read-leak-pattern.sh" || exit 1
+    [[ -z "$("$BASH_BIN" --norc --noprofile -c '. "$1" && kit_list_home' _ "$HKU/read-leak-pattern.sh" 2>/dev/null)" ]] \
+        || { echo "hooks_test: the reader copy $HKU gives a home; stopping before any case" >&2; exit 1; }
+fi
 
 # PATHs without git (symlinks to the few tools the hooks need before they look for git), and without gitleaks or
 # python3: a link to the first command of each name on PATH but the ones left out. Git Bash runs name.exe as name, so
 # a name is left out with its .exe; and on Windows git started from a folder of a few links exits 127 without a word,
-# so those two folders hold every command (decisions log §102). One ln per folder of PATH: on Windows each process
+# so those two folders hold every command. One ln per folder of PATH: on Windows each process
 # start costs, and a link per command took about 3 minutes a folder.
 mkbin() { mkdir -p "$1"; shift; local t p; for t in "$@"; do p=$(command -v "$t") && ln -sf "$p" "$BIN/$t"; done; }
 pathless() {   # DIR NAME...: links in DIR to the first command of each name on PATH, except each NAME and NAME.exe
@@ -102,22 +158,30 @@ BIN="$TMP/nogit";  mkbin "$BIN" bash grep head awk sort sed tr cut cat wc env
 pathless "$TMP/nogl" gitleaks
 pathless "$TMP/nopy" python3
 
-# A list's pin (decisions log §108, §112): its rows and the SHA-256 of its value. The suite writes its own pins, with a
+# A list's pin: its rows and the SHA-256 of its value. The suite writes its own pins, with a
 # row count it knows, so a counting fault in the hooks can't agree with itself.
 tsum() { local s; if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum); else s=$(shasum -a 256); fi; printf '%s' "${s%% *}"; }
 tpin() { mkdir -p "${1%/*}"; printf '# a test pin\nrows=%s\nsha256=%s\n' "$3" "$(printf '%s' "$2" | tsum)" > "$1"; }   # PINFILE VALUE ROWS
-mk_repo() {  # DIR [HOOKSDIR]: with a pin for the suite's one-row list beside where its list would be
+# A project's list is one file in TH's lists folder, named by the project's kit.list-id (the LH cases); its pin stays in
+# .git. mk_repo gives every repository an id of its own, so lp names where its list goes.
+LHL="$TH/.config/morrowcairn/lists"; mkdir -p "$LHL"; chmod 700 "$TH/.config/morrowcairn" "$LHL"
+lid() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }                     # a fresh list id: 32 hex digits
+lp() { printf '%s/%s' "$LHL" "$(cat "$1/kit.list-id")"; }                   # DIR: where DIR's list lives in TH
+mk_repo() {  # DIR [HOOKSDIR]: with a list id, the suite's one-row list at its place, and its pin in .git
     git init -q "$1"
     git -C "$1" config user.name hooks-test; git -C "$1" config user.email hooks-test@invalid.local
     git -C "$1" config core.hooksPath "${2:-$HK}"
     [[ -f "$ROOT/.gitleaks.toml" ]] && cp "$ROOT/.gitleaks.toml" "$1/"
-    tpin "$1/.git/leak-pattern.pin" "$MARK" 1
+    printf '%s\n' "$(lid)" > "$1/kit.list-id"
+    tlist "$1" "$MARK"
 }
+tlist() {  # DIR VALUE [ROWS]: DIR's list at its place set to VALUE, and its pin to match
+    (umask 077 && printf "LEAK_PATTERN='%s'\n" "$2" > "$(lp "$1")"); tpin "$1/.git/leak-pattern.pin" "$2" "${3:-1}"; }
 commit() { git -C "$1" add -A && git -C "$1" commit -q --no-verify -m "$2"; }
 chk() {  # DIR NAME EXIT [BODY]  -- write an executable check that runs BODY, then exits EXIT
     mkdir -p "$1"; printf '#!/usr/bin/env bash\n%s\nexit %s\n' "${4:-:}" "$3" > "$1/$2"; chmod +x "$1/$2"; }
 # FILE: an entry that would pass if run (exit 0), not executable: 0 when the file system says so. Git Bash reads a
-# file's execute bit from a #! first line, whatever chmod says, so the entry has none (decisions log §102).
+# file's execute bit from a #! first line, whatever chmod says, so the entry has none.
 nonexec() { mkdir -p "${1%/*}"; printf 'exit 0\n' > "$1"; chmod a-x "$1"; [[ ! -x "$1" ]]; }
 
 # Synthetic images, written byte for byte at run time: nothing binary is committed to the kit.
@@ -204,17 +268,19 @@ review() {  # PATH...: add each file's blob id to the reviewed list in the worki
     for p in "$@"; do printf '%s  %s  2026-09-26  hooks-test  synthetic fixture\n' "$(git -C "$C" hash-object "$C/$p")" "$p" >> "$C/$LIST"; done; }
 FIXTURE="$ROOT/leak-detection/fixtures/synthetic_config.txt"
 
-# ============================== pre-push, identity layer (97e7280) ==============================
+# ============================== pre-push, identity layer ========================================
 R="$TMP/l1"; mk_repo "$R"; echo "plain text" > "$R/a.txt"; commit "$R" base
 git init -q --bare "$TMP/l1.git"; git -C "$R" push -q --no-verify "$TMP/l1.git" HEAD:refs/heads/main
 SHA=$(git -C "$R" rev-parse HEAD)
-direct() {  # HOOK SHA [PATTERN] [PATH]  -- the pre-push stdin protocol, no push; the pattern's pin beside it
-    tpin "$R/.git/leak-pattern.pin" "${3:-$MARK}" 1
-    (cd "$R" && printf 'refs/heads/main %s refs/heads/main %s\n' "$2" "$Z" \
-        | env PATH="${4:-$PATH}" LEAK_PATTERN="${3:-$MARK}" "$BASH_BIN" "$1" r "$TMP/l1.git" 2>&1); }
+# The stdin protocol's ref lines go to a file first and reach the hook by redirection, here and in every helper below,
+# never through a pipe: a hook that refuses before reading them can't cut a producer off, so no case's status races.
+direct() {  # HOOK SHA [PATTERN] [PATH]  -- the pre-push stdin protocol, no push; the pattern the list at its place
+    tlist "$R" "${3:-$MARK}"
+    (cd "$R" && printf 'refs/heads/main %s refs/heads/main %s\n' "$2" "$Z" > "$TMP/pp.in" \
+        && env PATH="${4:-$PATH}" "$BASH_BIN" "$1" r "$TMP/l1.git" 2>&1 < "$TMP/pp.in"); }
 out=$(direct "$HK/pre-push" "$SHA");                    want_ok      "L1 identity: clean tree passes" $? "$out"
 echo "has $MARK here" > "$R/m.txt"; commit "$R" marker; MSHA=$(git -C "$R" rev-parse HEAD)
-out=$(direct "$HK/pre-push" "$MSHA");                   want_refused "L2 identity: marker in tree is blocked" $? "$out" "identity markers"
+out=$(direct "$HK/pre-push" "$MSHA");                   want_refused "L2 identity: marker in tree is blocked" $? "$out" "listed terms"
 out=$(direct "$HK/pre-push" 1111111111111111111111111111111111111111)
                                                         want_refused "L3 identity: unreadable commit refuses" $? "$out" "could not be read"
 out=$(direct "$HK/pre-push" "$SHA" "$MARK(");  rc=$?;   want_refused "L4 identity: malformed pattern refuses" $rc "$out" "did not compile"
@@ -226,22 +292,22 @@ out=$(direct "$HKB/pre-push" "$MSHA");                  want_refused "L6 identit
 out=$(direct "$HK/pre-push" "$MSHA"); rc=$?;            want_refused "L7 identity: a block still refuses, and names the file and line" $rc "$out" "m.txt:1"
                                                         no_leak      "L7b identity: a block does not print the matched text" "$out"
 echo "also $MARK here" > "$R/$MARK-named.txt"; commit "$R" named; NSHA=$(git -C "$R" rev-parse HEAD)
-out=$(direct "$HK/pre-push" "$NSHA"); rc=$?;            want_refused "L8 identity: a hit in a file whose name matches the list still refuses" $rc "$out" "identity markers"
+out=$(direct "$HK/pre-push" "$NSHA"); rc=$?;            want_refused "L8 identity: a hit in a file whose name matches the list still refuses" $rc "$out" "listed terms"
                                                         no_leak      "L8b identity: a block does not print a file name that matches the list" "$out"
 # The same with invalid UTF-8 beside the marker in the name, which git prints raw with core.quotePath off: BSD grep in
-# a UTF-8 locale missed the marker on such a line (decisions log §155), so pre-push matches a name in two passes
-# (§157). The file goes into git's index only, never onto disk: a Mac's file system refuses such a name.
+# a UTF-8 locale missed the marker on such a line, so pre-push matches a name in two passes.
+# The file goes into git's index only, never onto disk: a Mac's file system refuses such a name.
 LI="$TMP/l9.index"; GIT_INDEX_FILE="$LI" git -C "$R" read-tree "$SHA"
 blob=$(printf 'x %s\n' "$MARK" | git -C "$R" hash-object -w --stdin)
 GIT_INDEX_FILE="$LI" git -C "$R" update-index --add --cacheinfo "100644,$blob,bad$(printf '\377\376')$MARK.txt"
 BSHA=$(git -C "$R" commit-tree "$(GIT_INDEX_FILE="$LI" git -C "$R" write-tree)" -p "$SHA" -m badname)
 git -C "$R" config core.quotePath false
 # Its two streams apart, so a red names where the marker came from: the stream, the line and the line itself, the
-# marker shown as <M> and every byte outside printable ASCII as ? (decisions log §157, §158).
-tpin "$R/.git/leak-pattern.pin" "$MARK" 1
-l9o=$(cd "$R" && printf 'refs/heads/main %s refs/heads/main %s\n' "$BSHA" "$Z" \
-      | env LEAK_PATTERN="$MARK" "$BASH_BIN" "$HK/pre-push" r "$TMP/l1.git" 2>"$TMP/l9.err"); rc=$?; l9e=$(cat "$TMP/l9.err")
-                                                        want_refused "L9 identity: a hit in a file whose name holds invalid UTF-8 beside the marker refuses" $rc "$l9o$l9e" "identity markers"
+# marker shown as <M> and every byte outside printable ASCII as ?.
+tlist "$R" "$MARK"
+l9o=$(cd "$R" && printf 'refs/heads/main %s refs/heads/main %s\n' "$BSHA" "$Z" > "$TMP/pp.in" \
+      && "$BASH_BIN" "$HK/pre-push" r "$TMP/l1.git" 2>"$TMP/l9.err" < "$TMP/pp.in"); rc=$?; l9e=$(cat "$TMP/l9.err")
+                                                        want_refused "L9 identity: a hit in a file whose name holds invalid UTF-8 beside the marker refuses" $rc "$l9o$l9e" "listed terms"
                                                         no_leak_at   "L9b identity: a block does not print that file name, printed raw (core.quotePath off)" "$l9o" "$l9e"
 git -C "$R" config --unset core.quotePath
 
@@ -249,18 +315,18 @@ git -C "$R" config --unset core.quotePath
 # A list row bounded on a side keeps a letter there from joining the term into another word, and lets anything
 # else separate it: a digit, an underscore, punctuation, a line's start or end. The bound is (^|[^[:alpha:]]) on the
 # left and ([^[:alpha:]]|$) on the right; the \b and [^[:alnum:]...] bounds it replaced let an ad hoc tag (a term run
-# into a digit) and a snake_case name through (decisions log §89, §93). Stand-in rows for the sides the kit's list
+# into a digit) and a snake_case name through. Stand-in rows for the sides the kit's list
 # bounds a name on: both, left only, and right only after a path.
 LB='(^|[^[:alpha:]])zqone([^[:alpha:]]|$)|(^|[^[:alpha:]])zqtwo([^[:alpha:]]|$)|(^|[^[:alpha:]])zqthree|/zqfour([^[:alpha:]]|$)'
-LBR="$TMP/lb"; mk_repo "$LBR"; echo "plain text" > "$LBR/a.txt"; commit "$LBR" base; tpin "$LBR/.git/leak-pattern.pin" "$LB" 4
+LBR="$TMP/lb"; mk_repo "$LBR"; echo "plain text" > "$LBR/a.txt"; commit "$LBR" base; tlist "$LBR" "$LB" 4
 git init -q --bare "$TMP/lb.git"; git -C "$LBR" push -q --no-verify "$TMP/lb.git" HEAD:refs/heads/main
 lbeach() {  # WANT LINE...: each LINE alone in the tip's tree, pushed with the stand-in list; prints those not WANT
     local want=$1 l sha out rc bad=(); shift
     for l in "$@"; do
         printf '%s\n' "$l" > "$LBR/f.txt"; commit "$LBR" lb; sha=$(git -C "$LBR" rev-parse HEAD)
-        out=$(cd "$LBR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$Z" \
-              | env LEAK_PATTERN="$LB" "$BASH_BIN" "$HK/pre-push" r "$TMP/lb.git" 2>&1); rc=$?
-        if [[ $want == refused ]]; then [[ $rc -ne 0 && "$out" == *"identity markers in the tree"* ]] || bad+=("$l")
+        out=$(cd "$LBR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$Z" > "$TMP/pp.in" \
+              && "$BASH_BIN" "$HK/pre-push" r "$TMP/lb.git" 2>&1 < "$TMP/pp.in"); rc=$?
+        if [[ $want == refused ]]; then [[ $rc -ne 0 && "$out" == *"listed terms in the tree"* ]] || bad+=("$l")
         else [[ $rc -eq 0 ]] || bad+=("$l"); fi
     done
     printf '%s' "${bad[*]}"; }
@@ -273,8 +339,71 @@ bad=$(lbeach passes zqonex xzqone zqtwox xzqtwo xzqthree /zqfourx)
 bad=$(lbeach refused "a zqone here" zqone "a zqtwo here" zqtwo "a zqthree here" zqthree "at /zqfour/ here" /zqfour)
 [[ -z "$bad" ]];                                        want_ok      "LB4 bounded row: the bare term is blocked" $? "passed: $bad"
 
+# ============================== pre-push, an address row's sides ================================
+# A number row is bounded by digits only: a digit beside the number joins it into a longer one, and anything else
+# separates it, a full stop, a letter, an underscore, a line's start or end. The kit's
+# address row once kept a full stop out of its bounds too, `[^0-9.]`, so an address ending a sentence or before a file
+# extension passed (LA1 and LA2 red on that form). The stand-in is the row's form now. Every address is built at
+# run time from RFC 5737's TEST-NET-1, so this file holds none.
+LA='(^|[^0-9])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9]|$)'
+LAD=$(printf '%s.%s.%s.%s' 192 0 2 $((100 + 23)))
+LAR="$TMP/la"; mk_repo "$LAR"; echo "plain text" > "$LAR/a.txt"; commit "$LAR" base; tlist "$LAR" "$LA"
+git init -q --bare "$TMP/la.git"; git -C "$LAR" push -q --no-verify "$TMP/la.git" HEAD:refs/heads/main
+LABASE=$(git -C "$LAR" rev-parse HEAD)
+laeach() {  # WANT LINE...: each LINE alone in the tip's tree, pushed with the address stand-in; prints those not WANT,
+    local want=$1 l sha out rc bad=(); shift    # the address shown as <addr>, so a red quotes no address
+    for l in "$@"; do
+        printf '%s\n' "$l" > "$LAR/f.txt"; commit "$LAR" la; sha=$(git -C "$LAR" rev-parse HEAD)
+        out=$(cd "$LAR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$Z" > "$TMP/pp.in" \
+              && "$BASH_BIN" "$HK/pre-push" r "$TMP/la.git" 2>&1 < "$TMP/pp.in"); rc=$?
+        if [[ $want == refused ]]; then [[ $rc -ne 0 && "$out" == *"listed terms in the tree"* ]] || bad+=("${l//$LAD/<addr>}")
+        else [[ $rc -eq 0 ]] || bad+=("${l//$LAD/<addr>}"); fi
+    done
+    printf '%s' "${bad[*]}"; }
+bad=$(laeach refused "reach it at $LAD.")
+[[ -z "$bad" ]];                                        want_ok      "LA1 address row: an address ending a sentence is blocked" $? "passed: $bad"
+bad=$(laeach refused "see $LAD.txt")
+[[ -z "$bad" ]];                                        want_ok      "LA2 address row: an address before a file extension is blocked" $? "passed: $bad"
+bad=$(laeach refused "$LAD is the host")
+[[ -z "$bad" ]];                                        want_ok      "LA3 address row: an address at a line's start is blocked" $? "passed: $bad"
+bad=$(laeach refused "the host is $LAD")
+[[ -z "$bad" ]];                                        want_ok      "LA4 address row: an address at a line's end is blocked" $? "passed: $bad"
+bad=$(laeach refused "$LAD")
+[[ -z "$bad" ]];                                        want_ok      "LA5 address row: an address alone on a line is blocked" $? "passed: $bad"
+bad=$(laeach refused "host$LAD" "${LAD}x")
+[[ -z "$bad" ]];                                        want_ok      "LA6 address row: an address joined to a letter is blocked" $? "passed: $bad"
+bad=$(laeach refused "host_$LAD" "${LAD}_a")
+[[ -z "$bad" ]];                                        want_ok      "LA7 address row: an address joined to an underscore is blocked" $? "passed: $bad"
+bad=$(laeach passes "${LAD}45" "45$LAD")
+[[ -z "$bad" ]];                                        want_ok      "LA8 address row: a longer digit run passes" $? "blocked: $bad"
+bad=$(laeach passes "$(printf '%s.%s.%s.%s' 192 1000 2 123)")
+[[ -z "$bad" ]];                                        want_ok      "LA9 address row: a part with four digits passes" $? "blocked: $bad"
+# A file of its own: a branch from the base holding PATH with TEXT, a final newline left off with nonl, pushed with the
+# stand-in. pre-push reads no file name in its identity scan (its header); it reads one only to name a blocked file, and
+# withholds a name the list matches, so a name holding an address is tested there. Prints the exit, whether the
+# address shows in the output (named) or not (withheld), then the output with the address as <addr>.
+lafile() {  # PATH TEXT [nonl]
+    local sha out rc
+    git -C "$LAR" checkout -q -B la-file "$LABASE"
+    if [[ ${3:-} == nonl ]]; then printf '%s' "$2" > "$LAR/$1"; else printf '%s\n' "$2" > "$LAR/$1"; fi
+    commit "$LAR" la-file; sha=$(git -C "$LAR" rev-parse HEAD)
+    out=$(cd "$LAR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$Z" > "$TMP/pp.in" \
+          && "$BASH_BIN" "$HK/pre-push" r "$TMP/la.git" 2>&1 < "$TMP/pp.in"); rc=$?
+    git -C "$LAR" checkout -q -
+    if [[ "$out" == *"$LAD"* ]]; then printf '%s named\n' "$rc"; else printf '%s withheld\n' "$rc"; fi
+    printf '%s' "${out//$LAD/<addr>}"; }
+la_blocked() { [[ "${1%% *}" != 0 && "$1" == *"listed terms in the tree"* ]]; }    # LAFILE-OUTPUT
+out=$(lafile f.txt "host$LAD.");                        la_blocked "$out"
+                                                        want_ok      "LA10 address row: an address with a letter before it and a full stop after it is blocked" $? "$out"
+out=$(lafile f.txt "the host is $LAD" nonl);            la_blocked "$out"
+                                                        want_ok      "LA11 address row: an address ending a file with no final newline is blocked" $? "$out"
+out=$(lafile "$LAD.log" "see $LAD here");               la_blocked "$out" && [[ "$out" == *" withheld"$'\n'* && "$out" == *"file name withheld"* ]]
+                                                        want_ok      "LA12 address row: a file whose name starts with an address is blocked, and its name withheld from the report" $? "$out"
+out=$(lafile "$LAD" "see $LAD here");                   la_blocked "$out" && [[ "$out" == *" withheld"$'\n'* && "$out" == *"file name withheld"* ]]
+                                                        want_ok      "LA13 address row: a file whose name is an address is blocked, and its name withheld from the report" $? "$out"
+
 # ============================== pre-push, the list file read as data ============================
-# With no LEAK_PATTERN in the environment, pre-push reads .git/leak-pattern. v0.6.0 ran that file as
+# pre-push reads its list from the file at the list's place, never from the environment. v0.6.0 ran that file as
 # shell: an apostrophe in a term ended its quoting, and the rest ran as a command or quietly changed
 # the list, and a second LEAK_PATTERN line silently dropped every term of the first. It is read as
 # data now: blank lines, full-line comments, and one assignment in a shape the kit documents (the
@@ -294,23 +423,23 @@ LF_CLEAN=$(lfc clean "nothing listed here"); LF_MARK=$(lfc mark "has $MARK here"
 # A command named from list text: if the file is ever run as shell, this runs and leaves a trace.
 FBIN="$TMP/listbin"; RAN="$TMP/list-text-ran"; mkdir -p "$FBIN"
 printf '#!/bin/sh\ntouch "%s"\n' "$RAN" > "$FBIN/zqcmdz"; chmod +x "$FBIN/zqcmdz"
-lfile() { if (( $# )); then printf '%s\n' "$@"; fi > "$LF/.git/leak-pattern"; }   # LINE...: the list file
-fpush() {  # SHA  -- the pre-push stdin protocol, with the pattern from .git/leak-pattern only
-    (cd "$LF" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "$Z" \
-        | env -u LEAK_PATTERN PATH="$FBIN:$PATH" "$BASH_BIN" "$HK/pre-push" r "$TMP/lf.git" 2>&1); }
+lfile() { if (( $# )); then printf '%s\n' "$@"; fi > "$(lp "$LF")"; }   # LINE...: the list file
+fpush() {  # SHA  -- the pre-push stdin protocol, with the pattern from the list at its place only
+    (cd "$LF" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "$Z" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN PATH="$FBIN:$PATH" "$BASH_BIN" "$HK/pre-push" r "$TMP/lf.git" 2>&1 < "$TMP/pp.in"); }
 SETUP="LEAK_PATTERN='$MARK'"; EXPORT="export LEAK_PATTERN='$MARK'"
 NOTES=("# a note" "   # an indented note" "	# a tabbed note" "" " 	 ")
 lfile "$SETUP"
-out=$(fpush "$LF_MARK");                                want_refused "LP1 list file, setup form: a marker is blocked" $? "$out" "identity markers"
+out=$(fpush "$LF_MARK");                                want_refused "LP1 list file, setup form: a marker is blocked" $? "$out" "listed terms"
 out=$(fpush "$LF_CLEAN");                               want_ok      "LP2 list file, setup form: a clean tree passes" $? "$out"
 lfile "$EXPORT"
-out=$(fpush "$LF_MARK");                                want_refused "LP3 list file, export form: a marker is blocked" $? "$out" "identity markers"
+out=$(fpush "$LF_MARK");                                want_refused "LP3 list file, export form: a marker is blocked" $? "$out" "listed terms"
 out=$(fpush "$LF_CLEAN");                               want_ok      "LP4 list file, export form: a clean tree passes" $? "$out"
 lfile "${NOTES[@]}" "$SETUP	 " "${NOTES[@]}"
-out=$(fpush "$LF_MARK");                                want_refused "LP5 list file, setup form among comments and blank lines: a marker is blocked" $? "$out" "identity markers"
+out=$(fpush "$LF_MARK");                                want_refused "LP5 list file, setup form among comments and blank lines: a marker is blocked" $? "$out" "listed terms"
 out=$(fpush "$LF_CLEAN");                               want_ok      "LP6 list file, setup form among comments and blank lines: a clean tree passes" $? "$out"
 lfile "${NOTES[@]}" "$EXPORT 	" "${NOTES[@]}"
-out=$(fpush "$LF_MARK");                                want_refused "LP7 list file, export form among comments and blank lines: a marker is blocked" $? "$out" "identity markers"
+out=$(fpush "$LF_MARK");                                want_refused "LP7 list file, export form among comments and blank lines: a marker is blocked" $? "$out" "listed terms"
 out=$(fpush "$LF_CLEAN");                               want_ok      "LP8 list file, export form among comments and blank lines: a clean tree passes" $? "$out"
 lfile
 out=$(fpush "$LF_CLEAN");                               want_refused "LP9 list file: an empty file refuses" $? "$out" "not configured"
@@ -333,14 +462,13 @@ lfile "$SETUP  # a trailing note"
 out=$(fpush "$LF_CLEAN");                               want_refused "LP16 list file: a comment after the assignment refuses" $? "$out" "not a blank line"
 lfile "  $SETUP"
 out=$(fpush "$LF_CLEAN");                               want_refused "LP17 list file: an assignment not at the line's start refuses" $? "$out" "not a blank line"
-rm -f "$LF/.git/leak-pattern"
+rm -f "$(lp "$LF")"
 
 # ============================== the list reader file ============================================
 # leak-detection/read-leak-pattern.sh defines read_leak_pattern and read_leak_pattern_selftest and nothing
 # else. A reader the hooks can't trust stops them before they read a list or scan anything: missing, not
-# loading, short of a function, or failing its selftest. They refuse even with the pattern in the
-# environment, which the reader isn't needed for: a reader in that state was cut or edited, and a scan
-# run on a list read wrong would let through what the list exists to stop.
+# loading, short of a function, or failing its selftest: a reader in that state was cut or edited, and a
+# scan run on a list read wrong would let through what the list exists to stop.
 RD="$H/read-leak-pattern.sh"; RQ="$TMP/rdq"; RV="$TMP/readers"; mkdir -p "$RQ" "$RV"
 # What sourcing leaves, measured against a bare shell that sourced an empty file the same way (the shell's
 # own variables, PIPESTATUS among them, appear in both).
@@ -348,9 +476,10 @@ sourced() {  # FILE DIR
     mkdir -p "$2"; "$BASH_BIN" --norc --noprofile -c '. "$1" > "$2/out" 2>&1 || : > "$2/failed"
         compgen -v | sort > "$2/vars"; declare -F | sort > "$2/fns"' _ "$1" "$2" 2>/dev/null; }
 : > "$RQ/empty.sh"; sourced "$RQ/empty.sh" "$RQ/e"; sourced "$RD" "$RQ/r"
-[[ ! -e "$RQ/r/failed" && ! -s "$RQ/r/out" && "$(cat "$RQ/r/fns")" == $'declare -f read_leak_pattern\ndeclare -f read_leak_pattern_selftest' ]] \
+[[ ! -e "$RQ/r/failed" && ! -s "$RQ/r/out" \
+   && "$(cat "$RQ/r/fns")" == $'declare -f kit_list_file\ndeclare -f kit_list_home\ndeclare -f read_leak_pattern\ndeclare -f read_leak_pattern_selftest' ]] \
     && cmp -s "$RQ/e/vars" "$RQ/r/vars"
-                                                        want_ok      "RF1 reader file: sourcing prints nothing, sets no variable and defines exactly its two functions" $? "$(cat "$RQ/r/out" "$RQ/r/fns" 2>/dev/null)"
+                                                        want_ok      "RF1 reader file: sourcing prints nothing, sets no variable and defines exactly its four functions" $? "$(cat "$RQ/r/out" "$RQ/r/fns" 2>/dev/null)"
 out=$("$BASH_BIN" --norc --noprofile -c '. "$1" && read_leak_pattern_selftest' _ "$RD" 2>&1)
                                                         want_ok      "RF2 reader file: the selftest passes on the reader as shipped" $? "$out"
 # The suite's own copy of the must-refuse set, so an edit to the reader file can't weaken its selftest and
@@ -370,7 +499,7 @@ selftest_red() {  # FILE: 0 only if FILE differs from the reader, defines both f
         read_leak_pattern_selftest && exit 0; exit 1' _ "$1"; (( $? == 1 )); }
 selftest_red "$RV/twice.sh";                            want_ok      "RF4 reader file: the selftest goes red when a second assignment no longer refuses" $? ""
 selftest_red "$RV/shape.sh";                            want_ok      "RF5 reader file: the selftest goes red when no line is refused for its shape" $? ""
-# pre-push beside a reader it can't use: a clean tree, the pattern in the environment, still refused, and refused
+# pre-push beside a reader it can't use: a clean tree, the list at its place, still refused, and refused
 # for that reason. A hook that lost its exit on a reader fault can still refuse for another reason further on (a
 # list it then can't read), and a test that accepted any refusal would stay green with the protection gone. So the
 # fault, with its stated reason, must be the only refusal and the last thing printed.
@@ -391,15 +520,15 @@ out=$(direct "$TMP/hk-cut/pre-push" "$SHA");            reader_stop  "RC2 pre-pu
 out=$(direct "$TMP/hk-nohelper/pre-push" "$SHA");       reader_stop  "RC3 pre-push: a reader file without its selftest refuses" $? "$out" "it does not define both read_leak_pattern and read_leak_pattern_selftest"
 out=$(direct "$TMP/hk-twice/pre-push" "$SHA");          reader_stop  "RC4 pre-push: a reader file failing its selftest refuses" $? "$out" "it failed its selftest"
 lfile "$SETUP"
-out=$(cd "$LF" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LF_CLEAN" "$Z" \
-        | env -u LEAK_PATTERN "$BASH_BIN" "$TMP/hk-noreader/pre-push" r "$TMP/lf.git" 2>&1)
-                                                        reader_stop  "RC5 pre-push: no reader file, the pattern in .git/leak-pattern: refuses" $? "$out" "it is missing"
-rm -f "$LF/.git/leak-pattern"
+out=$(cd "$LF" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LF_CLEAN" "$Z" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN "$BASH_BIN" "$TMP/hk-noreader/pre-push" r "$TMP/lf.git" 2>&1 < "$TMP/pp.in")
+                                                        reader_stop  "RC5 pre-push: no reader file, the list in its file: refuses" $? "$out" "it is missing"
+rm -f "$(lp "$LF")"
 
-# ============================== pre-push, credential layer (e8ff771) ============================
+# ============================== pre-push, credential layer ======================================
 C="$TMP/push"; mk_repo "$C"
 mkdir -p "$C/leak-detection/fixtures"; cp "$FIXTURE" "$C/leak-detection/fixtures/"   # allowlisted path
-# The binary scan runs only where a project switches it on (R4 (b), below), so this repository does, at its base: every
+# The binary scan runs only where a project switches it on (below), so this repository does, at its base: every
 # B, BC, V, PY and MG case that branches from BASE runs with the scan on.
 printf 'readme\n' > "$C/README.md"; printf 'scan=on\n' > "$C/kit.binaries"; commit "$C" c1
 printf 'doomed\n' > "$C/doomed.txt"; commit "$C" c2
@@ -424,8 +553,8 @@ from_base mg; echo m > "$C/mg.txt"; commit "$C" mg; git -C "$C" merge -q --no-ff
 out=$(push "mg:refs/heads/mg"); rc=$?; on_remote refs/heads/mg || rc=1
                                                want_ok      "MG0 a clean merge is scanned, against its first parent, and goes through" $rc "$out" "3 of 3 commit(s) adding text scanned, clean"
 # A merge's own changes go through every layer an ordinary commit's do. Its own changes are read as its diff against
-# its first parent, which holds everything it adds in neither parent and more (the stricter of the readings, decisions
-# log §281). Each case below was refused before as a merge, and must stay refused now for what it carries: MGn checks
+# its first parent, which holds everything it adds in neither parent and more (the stricter of the readings). Each
+# case below was refused before as a merge, and must stay refused now for what it carries: MGn checks
 # the refusal, MGnb its reason. mpush BRANCH: push it; rc 0 only if it reached the remote.
 mpush() { out=$(push "$1:refs/heads/$1"); rc=$?; on_remote "refs/heads/$1" && rc=0; }
 mconflict() {  # BRANCH: a branch that conflicts with a side branch on mg-conf.txt, mid-merge, MERGE_HEAD set
@@ -440,7 +569,7 @@ mconflict mg1; cp "$FIXTURE" "$C/mg-conf.txt"; mcommit; mpush mg1
                                                no_bypass    "N1  that refusal does not suggest --no-verify" "$out"
 mconflict mg2; printf 'owner=%s\n' "$MARK" > "$C/mg-conf.txt"; mcommit; mpush mg2
                                                want_refused "MG2 a merge whose conflict resolution adds an identity term is refused" $rc "$out" "pre-push: "
-                                               want_refused "MG2b ... by the identity layer" $rc "$out" "identity markers in the tree"
+                                               want_refused "MG2b ... by the identity layer" $rc "$out" "listed terms in the tree"
 from_base mg3-side; cp "$FIXTURE" "$C/mg3.cfg"; commit "$C" "mg3 side"
 from_base mg3; echo m3 > "$C/mg3.txt"; commit "$C" "mg3 main"; git -C "$C" merge -q --no-ff --no-edit mg3-side; mpush mg3
                                                want_refused "MG3 a merge bringing in a branch whose commit carries a credential is refused" $rc "$out" "pre-push: "
@@ -457,12 +586,17 @@ git -C "$C" merge -q --no-ff --no-commit mg5-side >/dev/null 2>&1; mkpng "$C/mg5
                                                want_refused "MG5 a merge whose own changes add an unreviewed binary is refused" $rc "$out" "pre-push: "
                                                want_refused "MG5b ... by the binary scan, which reads the merge" $rc "$out" "is not on the reviewed list"
 from_base gp; echo g > "$C/gp.txt"; commit "$C" gp
-out=$(push "gp:refs/heads/gp" "$TMP/nogl");    want_refused "P6  gitleaks off PATH is refused" $? "$out" "gitleaks was not found"
+out=$(push "gp:refs/heads/gp" "$TMP/nogl"); p6rc=$?; want_refused "P6  gitleaks off PATH is refused" $p6rc "$out" "gitleaks was not found"
+want_says "MS5 pre-push: gitleaks missing says what you can do and what to ask IT for" $p6rc "$out" \
+    "You can: install gitleaks 8.30.1" "If IT manages this machine: ask IT to install or allow gitleaks 8.30.1"
+# No refusal points a commit or a push outside the sandbox: IT may forbid it, and a block goes to IT, not around it.
+[[ "$out" != *"outside the sandbox"* ]];        want_ok "MS33 pre-push: that refusal points nothing outside the sandbox" $? "$out"
                                                no_bypass    "N2  pre-push's gitleaks refusal does not suggest --no-verify" "$out"
-# Under Claude Code's sandbox read block a gitleaks in a hidden folder looks missing, as the install does to the stub
-# (decisions log §292), so the refusal names both causes and what to let sandboxed commands read.
+# Under Claude Code's sandbox read block a gitleaks in a hidden folder looks missing, as the install does to the stub,
+# so the refusal names both causes and what to let sandboxed commands read.
 rc=1; [[ "$out" == *"missing, or hidden"* && "$out" == *"sandbox.filesystem.allowRead"* ]] || rc=0
                                                want_refused "P6b pre-push: that refusal names both causes, missing or hidden, and what to allow" $rc "$out" "gitleaks was not found"
+want_split "MS37 pre-push: that refusal's sandbox lines split, your own block in your user settings, IT's through IT" $p6rc "$out"
 from_base del; git -C "$C" rm -q README.md; commit "$C" "deletion only"
 out=$(push "del:refs/heads/del");              want_ok "P7  deletion-only commit passes unscanned" $? "$out" "none adding text"
 from_base cred; cp "$FIXTURE" "$C/config.local.txt"; commit "$C" creds
@@ -470,7 +604,7 @@ out=$(push "cred:refs/heads/cred");            rc=$?; on_remote refs/heads/cred 
 from_base bin; printf 'bin\000ary\000%.0s' 1 2 3 4 5 6 7 8 > "$C/blob.bin"; commit "$C" binary
 out=$(push "bin:refs/heads/bin");              want_refused "P10 binary file in range is refused" $? "$out" "binary file"
 from_base idt; echo "names $MARK" > "$C/idt.txt"; commit "$C" idt
-out=$(push "idt:refs/heads/idt");              want_refused "P11 identity marker is blocked at push" $? "$out" "identity markers"
+out=$(push "idt:refs/heads/idt");              want_refused "P11 identity marker is blocked at push" $? "$out" "listed terms"
 from_base rn; git -C "$C" mv README.md READ.md; commit "$C" rename
 out=$(push "rn:refs/heads/rn");                want_ok "P12 rename-only commit passes unscanned" $? "$out" "none adding text"
 # P9: a remote-tracking ref left pointing at a commit the remote no longer has.
@@ -481,7 +615,7 @@ git clone -q "$TMP/stale.git" "$TMP/other" 2>/dev/null
 git -C "$TMP/other" push -q --no-verify --force origin "$BASE:refs/heads/main" 2>/dev/null
 out=$(push "stale:refs/heads/feat" "" s);      rc=$?; on_remote refs/heads/feat stale && rc=0
                                                want_refused "P9  stale tracking ref: the commit is still scanned and blocked" $rc "$out" "gitleaks found credential shapes"
-out=$( (cd "$C" && printf 'refs/heads/x %s refs/heads/x %s\n' "$BASE" "$Z" | "$BASH_BIN" "$HK/pre-push" r "$TMP/no-such.git" 2>&1) )
+out=$( (cd "$C" && printf 'refs/heads/x %s refs/heads/x %s\n' "$BASE" "$Z" > "$TMP/pp.in" && "$BASH_BIN" "$HK/pre-push" r "$TMP/no-such.git" 2>&1 < "$TMP/pp.in") )
                                                want_refused "P13 remote refs cannot be listed: refused" $? "$out" "could not list the remote"
 # The project's own pre-push checks (hook-checks/pre-push/), made after each commit so `commit`'s
 # `add -A` never tracks them. They get the hook's arguments and the same ref lines git sent.
@@ -492,7 +626,7 @@ out=$(push "xp1:refs/heads/xp1");              rc=$?; on_remote refs/heads/xp1 &
 rm -rf "$C/hook-checks"; from_base xp2; echo y > "$C/xp2.txt"; commit "$C" xp2; XSHA=$(git -C "$C" rev-parse HEAD)
 chk "$XP" 20-record 0 "{ echo \"args: \$1 \$2\"; cat; } > '$TMP/x8.out'"
 out=$(push "xp2:refs/heads/xp2");              rc=$?
-# The URL as git holds it: Git for Windows stores the remote's path in Windows form (decisions log §102).
+# The URL as git holds it: Git for Windows stores the remote's path in Windows form.
 printf 'args: r %s\nrefs/heads/xp2 %s refs/heads/xp2 %s\n' "$(git -C "$C" remote get-url r)" "$XSHA" "$Z" | cmp -s - "$TMP/x8.out" || rc=$((rc + 1))
                                                want_ok      "X8 pre-push: a project check gets the hook's arguments and ref lines, and the push goes through" $rc "$out"
 rm -rf "$C/hook-checks"; from_base xp3; echo z > "$C/xp3.txt"; commit "$C" xp3
@@ -503,7 +637,7 @@ else skip "X9 pre-push: a non-executable entry refuses, never skips" "chmod -x l
 rm -rf "$C/hook-checks"; from_base xp4; echo "names $MARK" > "$C/xp4.txt"; commit "$C" xp4
 chk "$XP" 40-pass 0 "touch '$TMP/x10-ran'"
 out=$(push "xp4:refs/heads/xp4");              rc=$?; [[ -f "$TMP/x10-ran" ]] && rc=0
-                                               want_refused "X10 pre-push: the kit's refusal stands, and no project check runs" $rc "$out" "identity markers"
+                                               want_refused "X10 pre-push: the kit's refusal stands, and no project check runs" $rc "$out" "listed terms"
 rm -rf "$C/hook-checks"
 
 # Binaries: cleared only when reviewed by blob id on the list at the pushed tip, structurally plain,
@@ -529,13 +663,13 @@ bcase b7; mkpngf "$C/c.png" "$FIXTURE"; review c.png; commit "$C" b7; bpush b7
 # UTF-16 text: the identity layer's raw-bytes grep cannot see it (measured), so this is the scan's.
 bcase b8; for ((i = 0; i < ${#MARK}; i++)); do printf '%s\0' "${MARK:i:1}"; done > "$TMP/utf16.payload"
 mkpngf "$C/m.png" "$TMP/utf16.payload"; review m.png; commit "$C" b8; bpush b8
-[[ "$out" != *"identity markers in the tree"* ]] || rc=0
+[[ "$out" != *"listed terms in the tree"* ]] || rc=0
                                                want_refused "B8  a reviewed PNG with LEAK_PATTERN in UTF-16 text is refused by the binary scan" $rc "$out" "matches LEAK_PATTERN"
                                                no_leak      "B8b binary refusal does not quote the pattern" "$out"
 # The scan's credential rules are the project's .gitleaks.toml, or else the kit's spawn rules beside the scanner:
 # never a config the caller's environment names. Given no --config, gitleaks 8.30.1 takes one from GITLEAKS_CONFIG
 # or GITLEAKS_CONFIG_TOML (its help), so a clone without a .gitleaks.toml let the environment choose the rules
-# (decisions log §273 item 3, rule 13 (a)). BC0 shows the planted config allows everything, so BC1 and BC2 can't pass
+# (gates procedure 13, item 1). BC0 shows the planted config allows everything, so BC1 and BC2 can't pass
 # for want of a working plant; BC4 shows a clean binary still clears there.
 printf 'title = "allows everything"\n[extend]\nuseDefault = true\n[allowlist]\nregexes = [%s.*%s]\n' "'''" "'''" > "$TMP/allow-all.toml"
 glin() { (cd "$TMP" && env "$@" gitleaks stdin --no-banner --no-color --redact --exit-code 3 < "$FIXTURE" >/dev/null 2>&1); }
@@ -549,10 +683,10 @@ export GITLEAKS_CONFIG="$TMP/allow-all.toml"; bpush bc1; unset GITLEAKS_CONFIG
 bcase bc2; git -C "$C" rm -q .gitleaks.toml; mkpngf "$C/bc2.png" "$FIXTURE"; review bc2.png; commit "$C" bc2
 export GITLEAKS_CONFIG_TOML="$(cat "$TMP/allow-all.toml")"; bpush bc2; unset GITLEAKS_CONFIG_TOML
                                                want_refused "BC2 no .gitleaks.toml: GITLEAKS_CONFIG_TOML holding that config doesn't clear it either" $rc "$out" "credential shapes in its strings"
-# No .gitleaks.toml and no spawn rules beside the scanner: the rules can't load, so the scan refuses (rule 13 (d)),
+# No .gitleaks.toml and no spawn rules beside the scanner: the rules can't load, so the scan refuses (gates item 4),
 # even for a binary that gitleaks' defaults would clear.
 HKN="$TMP/hk-norules"; mkdir -p "$HKN"; install -m 0755 "$H/pre-push" "$HKN/pre-push"
-cp "$H/scan-binaries.py" "$HKN/"; install -m 0644 "$H/read-leak-pattern.sh" "$HKN/"
+cp "$H/scan-binaries.py" "$HKN/"; rswap "$H/read-leak-pattern.sh" "$HKN/read-leak-pattern.sh"
 bcase bc3; git -C "$C" rm -q .gitleaks.toml; mkpng "$C/bc3.png" '\x33'; review bc3.png; commit "$C" bc3
 git -C "$C" config core.hooksPath "$HKN"; bpush bc3; git -C "$C" config core.hooksPath "$HK"
                                                want_refused "BC3 no .gitleaks.toml and no spawn rules beside the scanner: refused, the scan did not run" $rc "$out" "the scan did not run"
@@ -560,8 +694,8 @@ bcase bc4; git -C "$C" rm -q .gitleaks.toml; mkpng "$C/bc4.png" '\x34'; review b
 out=$(push "bc4:refs/heads/bc4")
                                                want_ok      "BC4 control: no .gitleaks.toml, the spawn rules beside the scanner: a clean reviewed PNG is cleared" $? "$out" "1 of 1 binary file(s) cleared"
 # pre-push's own credential scan, run without the stub (no KIT_INSTALL) in a clone with no .gitleaks.toml: the spawn
-# rules beside the hook, never a config the environment names, and a refusal when there are none (decisions log
-# §282, §286; rule 13 (a) and (d)). fpush BRANCH [VAR=VALUE]: push it so; rc 0 only if it reached the remote.
+# rules beside the hook, never a config the environment names, and a refusal when there are none (gates procedure 13,
+# items 1 and 4). fpush BRANCH [VAR=VALUE]: push it so; rc 0 only if it reached the remote.
 fpush() { out=$( (cd "$C" && env -u KIT_INSTALL ${2:+"$2"} git push r "$1:refs/heads/$1") 2>&1 ); rc=$?; on_remote "refs/heads/$1" && rc=0; }
 fcase() { from_base "$1"; git -C "$C" rm -q .gitleaks.toml; cp "$FIXTURE" "$C/$1.cfg"; commit "$C" "$1"; }
 fcase fp1; fpush fp1 GITLEAKS_CONFIG="$TMP/allow-all.toml"
@@ -580,6 +714,7 @@ bcase b10; mkpng "$C/w.png" '\x10'; commit "$C" b10; review w.png; bpush b10
                                                want_refused "B10 a reviewed-list entry in the working tree only does not clear" $rc "$out" "is not on the reviewed list"
 bcase b11; mkpng "$C/p.png" '\x11'; review p.png; commit "$C" b11; bpush b11 "$TMP/nopy"
                                                want_refused "B11 python3 absent: a push with a binary is refused" $rc "$out" "python3 is not installed"
+want_says "MS42 pre-push: a binary push with no python3 says what you can do" $rc "$out" "  You can: install python3 where you may, then push again."
 bcase b11b; echo "text only" > "$C/b11b.txt"; commit "$C" b11b; out=$(push "b11b:refs/heads/b11b" "$TMP/nopy")
                                                want_ok      "B11b python3 absent: a push with no binary is unaffected" $? "$out" "1 of 1 commit(s) adding text scanned, clean"
 bcase b12; printf '%b' 'GIF89a\x02\x00\x02\x00\x00\x00\x00;' > "$C/g.gif"; review g.gif; commit "$C" b12; bpush b12
@@ -590,13 +725,13 @@ commit "$C" b13; bpush b13
 bcase b14; mkpng "$C/k.png" '\x14'; review k.png; cp "$FIXTURE" "$C/b14.local.txt"; commit "$C" b14; bpush b14
                                                want_refused "B14 a push with a cleared binary still has its text scanned for credentials" $rc "$out" "gitleaks found credential shapes"
 # A binary at a path holding invalid UTF-8: the scan names the path and must still refuse for its reason, not stop
-# with "did not run", in the caller's locale or under LC_ALL=C (decisions log §158). The file goes into git's index
+# with "did not run", in the caller's locale or under LC_ALL=C. The file goes into git's index
 # only: a Mac's file system refuses such a name.
 bcase b15; mkpng "$TMP/b15.png" '\x15'; blob=$(git -C "$C" hash-object -w "$TMP/b15.png")
 git -C "$C" update-index --add --cacheinfo "100644,$blob,u$(printf '\377\376').png"; git -C "$C" commit -q --no-verify -m b15; bpush b15
                                                want_refused "B15 a binary at a path holding invalid UTF-8 is refused for its reason, and the scan runs" $rc "$out" "is not on the reviewed list"
 # A binary whose path holds the marker: the binary scan names each binary it refuses or clears, and must withhold a
-# name that matches the list, as pre-push's own naming does (L8, L9; decisions log §158, §159). Both streams apart.
+# name that matches the list, as pre-push's own naming does (L8, L9). Both streams apart.
 bcase b16; mkpng "$C/p-$MARK.png" '\x16'; commit "$C" b16
 b16o=$(cd "$C" && git push r b16:refs/heads/b16 2>"$TMP/b16.err"); rc=$?; on_remote refs/heads/b16 && rc=0; b16e=$(cat "$TMP/b16.err")
                                                want_refused "B16 a binary whose path holds the marker is refused for its reason" $rc "$b16o$b16e" "is not on the reviewed list"
@@ -606,14 +741,14 @@ b17o=$(cd "$C" && git push r b17:refs/heads/b17 2>"$TMP/b17.err"); b17e=$(cat "$
 [[ "$b17o$b17e" == *"1 of 1 binary file(s) cleared"* ]]; want_ok "B17 a reviewed binary whose path holds the marker is cleared" $? "$(printf '%s' "$b17o$b17e" | tr '\n' ' ' | cut -c1-160)"
                                                no_leak_at   "B17b the binary scan doesn't print that path, clearing it" "$b17o" "$b17e"
 # The same with colour forced in the user's config: the scan's git grep, whose output decides which names to withhold,
-# must ask for no colour itself, or a coloured line misses the parse and the path is printed (decisions log §290).
+# must ask for no colour itself, or a coloured line misses the parse and the path is printed.
 CH="$TMP/colour-home"; mkdir -p "$CH"; git config -f "$CH/.gitconfig" color.ui always; git config -f "$CH/.gitconfig" color.diff always
 bcase bw1; mkpng "$C/w-$MARK.png" '\x1a'; commit "$C" bw1
 bw1o=$(cd "$C" && env HOME="$CH" git push r bw1:refs/heads/bw1 2>"$TMP/bw1.err"); rc=$?; on_remote refs/heads/bw1 && rc=0; bw1e=$(cat "$TMP/bw1.err")
                                                want_refused "BW1 with colour forced, a binary whose path holds the marker is refused for its reason" $rc "$bw1o$bw1e" "is not on the reviewed list"
                                                no_leak_at   "BW1b the binary scan doesn't print that path, with colour forced" "$bw1o" "$bw1e"
 # The scan runs isolated (python3 -I: no PYTHON* variable, no user site-packages, no script folder on its path), so a
-# module the caller's environment plants can't clear a binary (decisions log §145 step 2, §147). PY1 shadows re, which
+# module the caller's environment plants can't clear a binary. PY1 shadows re, which
 # the scan imports, from PYTHONPATH; PY2 plants usercustomize, which the user site runs at start, under PYTHONUSERBASE.
 # Each plant exits 0 at once, so a scan that ran it reports clean. PY2 needs the python3 this hook resolves to have its
 # user site on: it asks that interpreter, run as v0.9.0's hook ran it, and fails naming the precondition if not, never
@@ -636,7 +771,7 @@ elif [[ -n "${KIT_INSTALL_CHECK:-}" ]]; then
     # variant, and it can't be exercised when this machine's python3 has its user site off. Report it
     # loudly, but do not fail the install over a machine setting the gate does not depend on. In CI and a
     # direct run the marker is unset, so the branch below fails instead: a gate check is never silently
-    # skipped there (decisions log §152).
+    # skipped there.
     skip "$PY2" "precondition unmet at install time: this machine's python3 has its user site off (exit $urc); the isolation is the interpreter's -I flag, shown by PY1. Set it on to exercise the user-site variant"
 else
     result "$PY2" 1 "precondition unmet: the python3 first on PATH, which this hook runs, has its user site off (exit $urc), so the plant can't be shown refused; run the suite with a python3 whose user site is on (not a venv's), or let tools/install-release.sh run it, which reports this as a skip rather than a failure"
@@ -650,7 +785,7 @@ for f in c0 c1 c3 c5 c6 c7 c9 ca cb cd ce cf; do mkjpg "$C/w-sof-$f.jpg" '' "$f"
 mkjpg "$C/w-dri-rst.jpg" '\xff\xdd\x00\x04\x00\x01' c0 '\x12\xff\xd0\x34\xff\xd1\x56'; W+=(w-dri-rst.jpg)
 review "${W[@]}"; commit "$C" w; out=$(push "w:refs/heads/w"); rc=$?
 want_ok "W0  every structural chunk type below is cleared, and the push goes through" $rc "$out" "${#W[@]} of ${#W[@]} binary file(s) cleared"
-# Each file's line ends at its name. A Windows Python ends its lines with CRLF, so the CRs go first (decisions log §102).
+# Each file's line ends at its name. A Windows Python ends its lines with CRLF, so the CRs go first.
 out=${out//$'\r'/}
 for f in "${W[@]}"; do [[ "$out" == *"  $f"$'\n'* && "$out" != *"  $f: "* ]]
     want_ok "W   $f is cleared" $? "$out"; done
@@ -747,8 +882,8 @@ for e in "${VQ[@]}"; do f=${e%%|*}; line=$(printf '%s\n' "$out" | grep -F -- "  
                                                want_ok      "VQb video refusals quote no refused field and not the pattern" $? "$out"
 git -C "$C" clean -qfd
 
-# ============================== pre-push, the binary scan's switch (R4 (b)) =====================
-# The binary scan runs only where a project turns it on (decisions log §274 ruling 4, §280 (b)): a tracked kit.binaries
+# ============================== pre-push, the binary scan's switch ==============================
+# The binary scan runs only where a project turns it on: a tracked kit.binaries
 # at the pushed tip holding the one line scan=on, or a tracked records/reviewed_binaries.txt there, even an empty one,
 # so a project that relies on the scan keeps it at its move onto v0.11.0. Anything else in kit.binaries refuses a push
 # that carries a binary. Off, such a push says so on one line, and the identity and credential layers still run (the
@@ -764,18 +899,22 @@ swreview() { mkdir -p "$SW/records"; printf '%s  %s  2026-10-25  hooks-test  syn
 swcase bs0; mkpng "$SW/r.png" '\x60'; swreview r.png; swon; commit "$SW" bs0
 out=$(swpush bs0);                             want_ok      "BS0 switch on: a reviewed plain PNG passes (control)" $? "$out" "1 of 1 binary file(s) cleared"
 swcase bs1; mkpdf "$SW/u.pdf"; swon; commit "$SW" bs1
-out=$(swpush bs1);                             want_refused "BS1 switch on: an unreviewed PDF is refused" $? "$out" "not cleared"
+out=$(swpush bs1); rc=$?;                      want_refused "BS1 switch on: an unreviewed PDF is refused" $rc "$out" "not cleared"
+want_says "MS14 pre-push: that refusal says what you can do and what to ask the project's owner" $rc "$out" \
+    "You can: review each binary named above" "The project's owner: whether this project scans binaries"
 swcase bs2; mkpdf "$SW/l.pdf"; mkdir -p "$SW/records"; printf '%s  other.png  2026-10-25  hooks-test  another file\n' "$Z" > "$SW/$LIST"
 commit "$SW" bs2
 out=$(swpush bs2);                             want_refused "BS2 no kit.binaries but a tracked reviewed list: the scan runs, and an unreviewed PDF is refused" $? "$out" "not cleared"
 swcase bs3; mkdir -p "$SW/records"; : > "$SW/$LIST"; mkpdf "$SW/e.pdf"; commit "$SW" bs3
 out=$(swpush bs3);                             want_refused "BS3 an empty tracked reviewed list counts as on too" $? "$out" "not cleared"
 swcase bs4; mkpng "$SW/g.png" '\x61'; swreview g.png; printf 'scan=yes\n' > "$SW/kit.binaries"; commit "$SW" bs4
-out=$(swpush bs4);                             want_refused "BS4 a kit.binaries that isn't the one line scan=on refuses a push carrying a binary, naming it" $? "$out" "kit.binaries"
+out=$(swpush bs4); rc=$?;                      want_refused "BS4 a kit.binaries that isn't the one line scan=on refuses a push carrying a binary, naming it" $rc "$out" "kit.binaries"
+want_says "MS15 pre-push: that refusal says what you can do and what to ask the project's owner" $rc "$out" \
+    "You can: make kit.binaries the one line scan=on" "The project's owner: whether this project scans binaries"
 swcase bs5; mkpdf "$SW/o.pdf"; commit "$SW" bs5
 out=$(swpush bs5);                             want_ok      "BS5 switch off, no list: a PDF push passes, saying the binary scan is off" $? "$out" "binary scan off for this project"
 swcase bs6; mkpng "$SW/m.png" "$MARK"; commit "$SW" bs6
-out=$(swpush bs6);                             want_refused "BS6 switch off: a binary whose raw bytes hold a listed term is still refused, by the identity layer" $? "$out" "identity markers"
+out=$(swpush bs6);                             want_refused "BS6 switch off: a binary whose raw bytes hold a listed term is still refused, by the identity layer" $? "$out" "listed terms"
 swcase bs7; mkpdf "$SW/c.pdf"; cp "$FIXTURE" "$SW/cred.local.txt"; commit "$SW" bs7
 out=$(swpush bs7);                             want_refused "BS7 switch off: the credential layer still scans the same push" $? "$out" "credential shapes"
 swcase bs8; mkpdf "$SW/w.pdf"; swon; commit "$SW" bs8; rm -f "$SW/kit.binaries"
@@ -797,7 +936,7 @@ mc() {  # FILE MESSAGE [VAR=VALUE...]: a commit adding FILE, with any identity v
 mfrom md0; mc md0.txt "clean change"
 out=$(mpush md0:refs/heads/md0);               want_ok      "MD0 metadata: a clean new commit passes, and the layer says what it read" $? "$out" "metadata scan"
 mfrom md1; mc md1.txt "c" GIT_AUTHOR_NAME="Dev $MARK"
-out=$(mpush md1:refs/heads/md1);               want_refused "MD1 metadata: a marker in the author name is blocked" $? "$out" "identity markers in the metadata"
+out=$(mpush md1:refs/heads/md1);               want_refused "MD1 metadata: a marker in the author name is blocked" $? "$out" "listed terms in the metadata"
                                                no_bypass    "N4  the metadata refusal does not suggest --no-verify" "$out"
 mfrom md2; mc md2.txt "c" GIT_AUTHOR_EMAIL="dev@$MARK.invalid"
 out=$(mpush md2:refs/heads/md2);               want_refused "MD2 metadata: a marker in the author email is blocked" $? "$out" "author of"
@@ -822,12 +961,12 @@ out=$(mpush "refs/tags/lt-$MARK");             want_refused "MD10 metadata: a ma
 mfrom md13; mc md13.txt "names $MARK"; git -C "$M" tag -a md13t -m "clean" md13
 out=$(mpush refs/tags/md13t);                  want_refused "MD13 metadata: a new commit pushed by its tag alone is read" $? "$out" "message of"
 # A marker beside invalid UTF-8, in a pushed ref's name and on a tag message's line: BSD grep in a UTF-8 locale missed
-# such a line (decisions log §155), so pre-push matches ref names and tag objects in two passes (§157).
+# such a line, so pre-push matches ref names and tag objects in two passes.
 mfrom md14; mc md14.txt "clean"
 out=$(mpush "md14:refs/heads/feature-$(printf '\377\376')$MARK"); want_refused "MD14 metadata: a marker beside invalid UTF-8 in a pushed branch name is blocked" $? "$out" "ref name"
 printf 'release notes\nbad \377\376 %s here\n' "$MARK" > "$TMP/md15.msg"; git -C "$M" tag -a md15 -F "$TMP/md15.msg" "$MBASE"
 out=$(mpush refs/tags/md15);                   want_refused "MD15 metadata: a marker on a tag message's line holding invalid UTF-8 is blocked" $? "$out" "tag object"
-# And in an author name and on a commit message's line: git's own matcher, run in the caller's locale (§159), which a
+# And in an author name and on a commit message's line: git's own matcher, run in the caller's locale, which a
 # Mac's run measures on Apple's git.
 mfrom md16; mc md16.txt "c" GIT_AUTHOR_NAME="Dev $(printf '\377\376')$MARK"
 out=$(mpush md16:refs/heads/md16);             want_refused "MD16 metadata: a marker beside invalid UTF-8 in an author name is blocked" $? "$out" "author of"
@@ -838,13 +977,14 @@ out=$(mpush md17:refs/heads/md17);             want_refused "MD17 metadata: a ma
 mfrom md11; mc md11a.txt "old $MARK"; git -C "$M" push -q --no-verify r md11:refs/heads/md11
 mc md11b.txt "clean on top"
 out=$(mpush md11:refs/heads/md11);             want_ok      "MD11 metadata: a marker the remote already has is not read again" $? "$out" "metadata scan"
-mfrom md12; mc md12.txt "clean"; tpin "$M/.git/leak-pattern.pin" "$MARK(" 1
-out=$( (cd "$M" && LEAK_PATTERN="$MARK(" git push r md12:refs/heads/md12 2>&1) ); rc=$?; tpin "$M/.git/leak-pattern.pin" "$MARK" 1
+mfrom md12; mc md12.txt "clean"; tlist "$M" "$MARK("
+out=$( (cd "$M" && git push r md12:refs/heads/md12 2>&1) ); rc=$?; tlist "$M" "$MARK"
                                                want_refused "MD12 metadata: a pattern that does not compile refuses the metadata scan" $rc "$out" "metadata scan did not run"
+want_says "MS13 pre-push: the tree's scan of that pattern refuses too, naming the do-not-publish scan" $rc "$out" "REFUSING -- the do-not-publish scan did not run"
                                                no_leak      "MD12b metadata: that refusal does not quote the pattern" "$out"
 git -C "$M" checkout -q main 2>/dev/null || git -C "$M" checkout -q -B main "$MBASE"
 
-# ============================== tree scan run by CI (34903e3) ===================================
+# ============================== tree scan run by CI =============================================
 T="$TMP/scan"; mk_repo "$T"; echo "plain" > "$T/a.txt"; commit "$T" base
 SCAN="$H/scan-tree.sh"
 scan() { [[ -z "${2:-}" ]] || tpin "$T/.github/leak-pattern.pin" "$2" 1     # CI's pin, for the pattern given
@@ -869,7 +1009,7 @@ out=$(scan "$SCAN" "$MARK("); rc=$?;           want_refused "S4 tree scan: malfo
 out=$(scan "$TMP/scan-badallow.sh" "$MARK");   want_refused "S5 tree scan: malformed ALLOW with a marker fails" $? "$out" "allowlist filter did not run"
 
 # ============================== the list's pin: pre-push and the tree scan ======================
-# Each reads its list against a pin (decisions log §108, §112): pre-push the local list against .git/leak-pattern.pin
+# Each reads its list against a pin: pre-push the local list against .git/leak-pattern.pin
 # beside it, the tree scan CI's list against the tracked .github/leak-pattern.pin. A list cut to one row (the row a
 # canary would keep), the full count with one row changed, and a missing pin each refuse, in rows, never printing a
 # term or a hash; the list its pin names passes. A row is a top-level alternative: groups, bracket expressions and
@@ -878,12 +1018,15 @@ PL="ZQCANARYROW|$MARK|zqthirdrow"
 PL3='zq(ab|cd)e|zq[[:digit:]|]f|zq\.g'
 PR="$TMP/pin"; mk_repo "$PR"; echo "plain text" > "$PR/a.txt"; commit "$PR" base
 git init -q --bare "$TMP/pin.git"; PSHA=$(git -C "$PR" rev-parse HEAD)
-ppin() { (cd "$PR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$PSHA" "$Z" \
-          | env PATH="${2:-$PATH}" LEAK_PATTERN="$1" "$BASH_BIN" "$HK/pre-push" r "$TMP/pin.git" 2>&1); }   # LIST [PATH]
+ppin() { [[ -z "$1" ]] || (umask 077 && printf "LEAK_PATTERN='%s'\n" "$1" > "$(lp "$PR")")   # LIST [PATH]: LIST at its place
+          (cd "$PR" && printf 'refs/heads/main %s refs/heads/main %s\n' "$PSHA" "$Z" > "$TMP/pp.in" \
+          && env PATH="${2:-$PATH}" "${@:3}" "$BASH_BIN" "$HK/pre-push" r "$TMP/pin.git" 2>&1 < "$TMP/pp.in"); }    # [VAR=VALUE...]
 nohash() { [[ "$1" != *SYNTH-MARKER* && "$1" != *ZQCANARYROW* && "$1" != *zqthirdrow* && ! "$1" =~ [0-9a-f]{64} ]]; }
 tpin "$PR/.git/leak-pattern.pin" "$PL" 3
 out=$(ppin "$PL");                             want_ok      "PN1 pre-push: the list its pin names passes" $? "$out"
 out=$(ppin "ZQCANARYROW"); rc=$?;              want_refused "PN2 pre-push: a list cut to one row refuses, giving the rows" $rc "$out" "holds 1 row(s) where its pin expects 3"
+want_says "MS11 pre-push: that refusal names the do-not-publish list, what you can do and what to ask the project's owner" $rc "$out" \
+    "the do-not-publish list (from" "You can: if the list changed on purpose" "The project's owner: whether the change to the list was meant"
 nohash "$out";                                 want_ok      "PN2b that refusal prints no term and no hash" $? "$out"
 out=$(ppin "ZQCANARYROW|$MARK|zqchanged");     want_refused "PN3 pre-push: the full count with one row changed refuses" $? "$out" "but not the same ones"
 rm -f "$PR/.git/leak-pattern.pin"
@@ -891,13 +1034,13 @@ out=$(ppin "$PL");                             want_refused "PN4 pre-push: no pi
 tpin "$PR/.git/leak-pattern.pin" "$PL3" 3
 out=$(ppin "$PL3");                            want_ok      "PN5 pre-push: groups, bracket expressions and escapes don't split a row (3 rows)" $? "$out"
 pathless "$TMP/nohash" sha256sum shasum; tpin "$PR/.git/leak-pattern.pin" "$PL" 3
-out=$(ppin "$PL" "$TMP/nohash");               want_refused "PN6 pre-push: with neither hashing tool it refuses, naming both" $? "$out" "neither sha256sum (GNU coreutils) nor shasum (Perl) is installed"
-# A list in the environment never stands in for the file's unchecked (queue 145): with the full list in .git/leak-pattern
-# and its pin beside it, pre-push reads the environment's list, so a cut one there must refuse; the file alone passes.
-printf "LEAK_PATTERN='%s'\n" "$PL" > "$PR/.git/leak-pattern"
-out=$(ppin "");                                want_ok      "PN7b pre-push: the full list in .git/leak-pattern, its pin beside it, passes" $? "$out"
-out=$(ppin "ZQCANARYROW");                     want_refused "PN7 pre-push: a cut list in the environment beside that file refuses, naming the environment" $? "$out" "identity list (from the environment) doesn't match its pin"
-rm -f "$PR/.git/leak-pattern"
+out=$(ppin "$PL" "$TMP/nohash"); rc=$?;        want_refused "PN6 pre-push: with neither hashing tool it refuses, naming both" $rc "$out" "neither sha256sum (GNU coreutils) nor shasum (Perl) is installed"
+want_says "MS12 pre-push: that refusal names the do-not-publish list" $rc "$out" "so the do-not-publish list can't be checked against its pin"
+# A list in the environment never stands in for the file's: pre-push reads no list from the environment,
+# so with the full list at its place and its pin beside it, a cut list there changes nothing.
+out=$(ppin "$PL");                             want_ok      "PN7b pre-push: the full list at its place, its pin beside it, passes" $? "$out"
+out=$(ppin "" "" LEAK_PATTERN=ZQCANARYROW);    want_ok      "PN7 pre-push: a cut list in the environment beside that file is ignored, and the file's list passes" $? "$out"
+rm -f "$(lp "$PR")"
 TS="$TMP/pinscan"; mk_repo "$TS"; echo "plain" > "$TS/a.txt"; commit "$TS" base
 tscan() { (cd "$TS" && env LEAK_PATTERN="$1" "$BASH_BIN" "$SCAN" 2>&1); }                                       # LIST
 tpin "$TS/.github/leak-pattern.pin" "$PL" 3
@@ -912,8 +1055,8 @@ out=$( (cd "$TS" && env -u LEAK_PATTERN "$BASH_BIN" "$SCAN" 2>&1) )
 
 # ============================== a hit on a line that isn't plain text ===========================
 # Both gates pass git grep's hits through the allowlist filter, then name them. Without -a, grep in a UTF-8 locale takes
-# a line holding invalid UTF-8 as binary and prints nothing for it, so v0.9.0 let such a hit through in both (decisions
-# log §145 step 2). Its NUL forms were caught only because bash drops NUL bytes from a command substitution; a direct
+# a line holding invalid UTF-8 as binary and prints nothing for it, so v0.9.0 let such a hit through in both. Its NUL
+# forms were caught only because bash drops NUL bytes from a command substitution; a direct
 # pipe from git grep would hide every hit beside one. ML1 to ML4: a hit on a line holding invalid UTF-8, in a UTF-8
 # locale and with no LANG. NB: a NUL past git's 8,000-byte look, on the hit's line; NC: the same with the allowlist's
 # string on that line too; ND: a NUL inside it, where git grep names the file as binary and prints no NUL (so a direct
@@ -930,8 +1073,8 @@ ntenv() { if [[ $1 == u8 ]]; then printf '%s\n' "LC_ALL=$U8" "LANG=$U8"; else pr
 ntrun() {  # MODE GATE: pre-push on the tip by the stdin protocol, or the tree scan over the checkout; MODE u8 or none
     local -a e; local l; e=(); while IFS= read -r l; do e+=("$l"); done < <(ntenv "$1")
     if [[ $2 == pre-push ]]; then
-        (cd "$NT" && printf 'refs/heads/nt %s refs/heads/nt %s\n' "$(git rev-parse HEAD)" "$Z" \
-            | env "${e[@]}" LEAK_PATTERN="$MARK" "$BASH_BIN" "$HK/pre-push" r "$TMP/nt.git" 2>&1)
+        (cd "$NT" && printf 'refs/heads/nt %s refs/heads/nt %s\n' "$(git rev-parse HEAD)" "$Z" > "$TMP/pp.in" \
+            && env "${e[@]}" "$BASH_BIN" "$HK/pre-push" r "$TMP/nt.git" 2>&1 < "$TMP/pp.in")
     else (cd "$NT" && env "${e[@]}" LEAK_PATTERN="$MARK" "$BASH_BIN" "$SCAN" 2>&1); fi; }
 nt_named() {  # NAME RC OUTPUT BLOCK NEEDLE...: refused, saying BLOCK, naming each NEEDLE; a NEEDLE written !X must not appear
     local name=$1 rc=$2 out=$3 blk=$4 n miss=""; shift 4
@@ -941,7 +1084,7 @@ nt_named() {  # NAME RC OUTPUT BLOCK NEEDLE...: refused, saying BLOCK, naming ea
     done
     if [[ $rc -ne 0 && -z "$miss" ]]; then result "$name" 0
     else result "$name" 1 "exit $rc, missing:$miss: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"; fi; }
-PPB="identity markers in the tree"; STB="match LEAK_PATTERN"; NOU8="no UTF-8 locale: locale -a lists neither C.UTF-8 nor en_US.UTF-8"
+PPB="listed terms in the tree"; STB="match LEAK_PATTERN"; NOU8="no UTF-8 locale: locale -a lists neither C.UTF-8 nor en_US.UTF-8"
 ntcase; printf 'plain\nx \377\376 %s\n' "$MARK" > "$NT/a.txt"; commit "$NT" ml
 if [[ -n "$U8" ]]; then
     out=$(ntrun u8 pre-push); rc=$?;           nt_named     "ML1 pre-push: a hit on a line holding invalid UTF-8, in a UTF-8 locale, is blocked and named" $rc "$out" "$PPB" a.txt:2
@@ -974,53 +1117,59 @@ git -C "$P" reset -q; rm -f "$P/config.local.txt"
 echo ok > "$P/b.txt"; git -C "$P" add b.txt
 out=$(pc);                                     want_ok      "C2 pre-commit: clean content commits" $? "$out"
 echo more > "$P/c.txt"; git -C "$P" add c.txt
-out=$(pc "$TMP/nogl");                         want_refused "C3 pre-commit: gitleaks missing is refused" $? "$out" "gitleaks was not found"
+out=$(pc "$TMP/nogl"); c3rc=$?;                want_refused "C3 pre-commit: gitleaks missing is refused" $c3rc "$out" "gitleaks was not found"
+want_says "MS6 pre-commit: gitleaks missing says what you can do and what to ask IT for" $c3rc "$out" \
+    "You can: install gitleaks 8.30.1" "If IT manages this machine: ask IT to install or allow gitleaks 8.30.1"
+[[ "$out" != *"outside the sandbox"* ]];        want_ok "MS34 pre-commit: that refusal points nothing outside the sandbox" $? "$out"
                                                no_bypass    "N3  pre-commit's gitleaks refusal does not suggest --no-verify" "$out"
 rc=1; [[ "$out" == *"missing, or hidden"* && "$out" == *"sandbox.filesystem.allowRead"* ]] || rc=0
                                                want_refused "C3b pre-commit: that refusal names both causes, missing or hidden, and what to allow" $rc "$out" "gitleaks was not found"
+want_split "MS38 pre-commit: that refusal's sandbox lines split, your own block in your user settings, IT's through IT" $c3rc "$out"
 git -C "$P" reset -q; rm -f "$P/c.txt"
 mkdir -p "$P/.local"; echo "notes" > "$P/.local/operator-notes.md"; git -C "$P" add -f .local/operator-notes.md
 out=$(pc);                                     want_refused "C4 pre-commit: anything staged under .local/ is refused" $? "$out" ".local/"
 git -C "$P" reset -q; rm -rf "$P/.local"
 # The same with a staged path holding invalid UTF-8, which pre-commit lists through its text tools: refused for the same
-# reason, whatever the locale (decisions log §159). Put into git's index only: a Mac's file system refuses the name.
+# reason, whatever the locale. Put into git's index only: a Mac's file system refuses the name.
 blob=$(printf 'notes\n' | git -C "$P" hash-object -w --stdin)
 git -C "$P" update-index --add --cacheinfo "100644,$blob,.local/n$(printf '\377\376').md"
 out=$(pc);                                     want_refused "C4b pre-commit: a staged .local/ path holding invalid UTF-8 is refused for the same reason" $? "$out" "staged paths under .local/"
 git -C "$P" reset -q
 # A staged .local/ path holding the marker: still refused, and the refusal lists it only if the list, read from
-# .git/leak-pattern, doesn't match it (decisions log §160, §161); with no list to check against, it lists no name. Both
+# .git/leak-pattern, doesn't match it; with no list to check against, it lists no name. Both
 # streams apart, as L9.
 mkdir -p "$P/.local"; echo "notes" > "$P/.local/n-$MARK.md"; git -C "$P" add -f ".local/n-$MARK.md"
-printf "LEAK_PATTERN='%s'\n" "$MARK" > "$P/.git/leak-pattern"
+printf "LEAK_PATTERN='%s'\n" "$MARK" > "$(lp "$P")"
 c4o=$(cd "$P" && git commit -q -m test 2>"$TMP/c4.err"); rc=$?; c4e=$(cat "$TMP/c4.err")
                                                want_refused "C4c pre-commit: a staged .local/ path holding the marker is refused" $rc "$c4o$c4e" "staged paths under .local/"
+want_says "MS16 pre-commit: that refusal withholds the name, naming the do-not-publish list" $rc "$c4o$c4e" "it matches the do-not-publish list"
                                                no_leak_at   "C4d pre-commit: that refusal doesn't print the path, the list matching it" "$c4o" "$c4e"
-rm -f "$P/.git/leak-pattern"
+rm -f "$(lp "$P")"
 c4o=$(cd "$P" && git commit -q -m test 2>"$TMP/c4.err"); rc=$?; c4e=$(cat "$TMP/c4.err")
                                                want_refused "C4e pre-commit: with no list, the same path is refused" $rc "$c4o$c4e" "staged paths under .local/"
+want_says "MS17 pre-commit: and says no do-not-publish list was there to check names against" $rc "$c4o$c4e" "no do-not-publish list in its place"
                                                no_leak_at   "C4f pre-commit: and the refusal prints no staged name, none checkable" "$c4o" "$c4e"
-# A list it can't use to check a name (queue 583): one that doesn't compile, and one that sets LEAK_PATTERN twice, the
+# A list it can't use to check a name: one that doesn't compile, and one that sets LEAK_PATTERN twice, the
 # second assignment the one holding the marker. Either way the path is refused, and its name withheld.
-printf "LEAK_PATTERN='%s('\n" "$MARK" > "$P/.git/leak-pattern"
+printf "LEAK_PATTERN='%s('\n" "$MARK" > "$(lp "$P")"
 c4o=$(cd "$P" && git commit -q -m test 2>"$TMP/c4.err"); rc=$?; c4e=$(cat "$TMP/c4.err")
                                                want_refused "C4g pre-commit: with a list that doesn't compile, the path is refused" $rc "$c4o$c4e" "staged paths under .local/"
                                                no_leak_at   "C4h pre-commit: and its name withheld, since it can't be checked" "$c4o" "$c4e"
-printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='$MARK'" > "$P/.git/leak-pattern"
+printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='$MARK'" > "$(lp "$P")"
 c4o=$(cd "$P" && git commit -q -m test 2>"$TMP/c4.err"); rc=$?; c4e=$(cat "$TMP/c4.err")
                                                want_refused "C4i pre-commit: with a list that sets LEAK_PATTERN twice, the path is refused" $rc "$c4o$c4e" "staged paths under .local/"
                                                no_leak_at   "C4j pre-commit: and its name withheld, never checked against the first assignment alone" "$c4o" "$c4e"
-rm -f "$P/.git/leak-pattern"
+rm -f "$(lp "$P")"
 git -C "$P" reset -q; rm -rf "$P/.local"
 # pre-commit run without the stub (no KIT_INSTALL), in a clone with no .gitleaks.toml: the spawn rules beside the hook,
-# never a config the environment names, and a refusal when there are none (decisions log §282, §286; rule 13 (a), (d)).
+# never a config the environment names, and a refusal when there are none (gates procedure 13, items 1 and 4).
 # fstage NAME: back to the clone's base, then the fixture staged as NAME.cfg; fc VAR=VALUE: commit what's staged so.
 # FC0 is the control.
 FC="$TMP/fc"; mk_repo "$FC"; echo plain > "$FC/a.txt"; commit "$FC" base; git -C "$FC" rm -q .gitleaks.toml; commit "$FC" "no config"
 FCB=$(git -C "$FC" rev-parse HEAD)
 fstage() { git -C "$FC" reset -q --hard "$FCB"; cp "$FIXTURE" "$FC/$1.cfg"; git -C "$FC" add "$1.cfg"; }
 fc() { (cd "$FC" && env -u KIT_INSTALL "$1" git commit -q -m test 2>&1); }
-HKC="$TMP/hk-norules-pc"; mkdir -p "$HKC"; install -m 0755 "$H/pre-commit" "$HKC/pre-commit"; install -m 0644 "$H/read-leak-pattern.sh" "$HKC/"
+HKC="$TMP/hk-norules-pc"; mkdir -p "$HKC"; install -m 0755 "$H/pre-commit" "$HKC/pre-commit"; rswap "$H/read-leak-pattern.sh" "$HKC/read-leak-pattern.sh"
 fstage fc1; out=$(fc GITLEAKS_CONFIG="$TMP/allow-all.toml")
                                                want_refused "FC1 pre-commit, no stub, no .gitleaks.toml: GITLEAKS_CONFIG allowing everything doesn't clear a credential" $? "$out" "credential shapes"
 fstage fc2; out=$(fc GITLEAKS_CONFIG_TOML="$(cat "$TMP/allow-all.toml")")
@@ -1031,7 +1180,7 @@ fstage fc3; git -C "$FC" config core.hooksPath "$HKC"; out=$(fc GITLEAKS_CONFIG=
 git -C "$FC" reset -q --hard "$FCB"; echo clean > "$FC/fc0.txt"; git -C "$FC" add fc0.txt
 out=$(fc GITLEAKS_CONFIG="$TMP/allow-all.toml");  want_ok      "FC0 control: no stub, no .gitleaks.toml, the spawn rules beside the hook: a clean commit goes through" $? "$out"
 # A scan that read nothing is not a clean one: when the staged diff adds text and gitleaks reports ~0 bytes scanned, or
-# no count, pre-commit refuses (decisions log §290 (c), §292). The blind scans come from stand-in gitleaks binaries first
+# no count, pre-commit refuses. The blind scans come from stand-in gitleaks binaries first
 # on PATH, never from a switch in the hook; with the real gitleaks, commits that add no text (a deletion, a binary, a
 # rename) still go through, reading nothing being right for them.
 glstand() { mkdir -p "$1"; { printf '#!/bin/sh\n'; printf '%s\n' "${@:2}"; printf 'exit 0\n'; } > "$1/gitleaks"; chmod 0755 "$1/gitleaks"; }
@@ -1118,7 +1267,7 @@ git -C "$CI" check-ignore -q --no-index .local/operator-notes.md
 # ============================== a pass only from the pass point =================================
 # pre-commit and pre-push report success only from the pass point at their end: an EXIT trap turns any other exit 0
 # into a refusal, whether an early exit, a sourced file's exit, or a stop on an unset variable that a shell reports
-# as 0, as bash 3.2 can (decisions log §96, §100). Copies with one line put right after their first check must
+# as 0, as bash 3.2 can. Copies with one line put right after their first check must
 # refuse, and so must pre-push beside a list reader that exits 0 while sourced; the hooks' legitimate passes must
 # still pass. KIT_TEST_BASH3 names a bash 3 to run them under too (a test tool, never a kit dependency); without it
 # those runs are skipped, counted.
@@ -1130,9 +1279,9 @@ early() {  # NAME FILE ANCHOR LINE: prints $TMP/early-NAME, a copy of the hooks'
     local d="$TMP/early-$1"; rm -rf "$d"; mkdir -p "$d"; cp -p "$HK"/* "$d/"
     awk -v a="$3" -v l="$4" '!done && index($0, a) == 1 {print l; done = 1} {print}' "$HK/$2" > "$d/$2"; chmod +x "$d/$2"
     echo "$d"; [[ $(( $(wc -l < "$d/$2") - $(wc -l < "$HK/$2") )) -eq 1 ]]; }
-egc() { (cd "$P" && env LEAK_PATTERN="$MARK" "$1" "$2" 2>&1); }                                        # BASH HOOK
-egp() { tpin "$R/.git/leak-pattern.pin" "$MARK" 1                                                       # BASH HOOK [REF-LINES]
-        (cd "$R" && printf '%s' "${3:-}" | env LEAK_PATTERN="$MARK" "$1" "$2" r "$TMP/l1.git" 2>&1); }
+egc() { (cd "$P" && "$1" "$2" 2>&1); }                                                                  # BASH HOOK
+egp() { tlist "$R" "$MARK"                                                                              # BASH HOOK [REF-LINES]
+        (cd "$R" && printf '%s' "${3:-}" > "$TMP/pp.in" && "$1" "$2" r "$TMP/l1.git" 2>&1 < "$TMP/pp.in"); }
 STOPPED="stopped before it finished"
 PC_X=$(early pc-exit pre-commit '# ---- 0b.' 'exit 0'); pcx=$?
 PC_U=$(early pc-unset pre-commit '# ---- 0b.' ': "$zq_unset_probe"'); pcu=$?
@@ -1153,7 +1302,7 @@ eg_run() {  # SUFFIX BASH
     want_refused "EG4$s pre-push: an exit 0 right after its first check refuses" $rc "$out" "$STOPPED"
     out=$(egp "$b" "$PP_U/pre-push" "refs/heads/main $SHA refs/heads/main $Z"$'\n'); rc=$?; (( ppu == 0 )) || rc=0
     want_refused "EG5$s pre-push: an unset variable right after its first check refuses" $rc "$out" "zq_unset_probe"
-    # A plant that didn't go in fails the case by name: the copy it ran would be the unaltered reader (§255).
+    # A plant that didn't go in fails the case by name: the copy it ran would be the unaltered reader.
     if (( ppr == 0 )); then
         out=$(egp "$b" "$PP_R/pre-push" "refs/heads/main $SHA refs/heads/main $Z"$'\n'); rc=$?
         want_refused "EG6$s pre-push: a list reader that exits 0 while sourced refuses" $rc "$out" "$STOPPED"
@@ -1180,6 +1329,10 @@ modes=$(git -C "$ROOT" ls-files -s -- leak-detection/pre-commit leak-detection/p
 bad=$(printf '%s\n' "$modes" | awk 'NF && $1 != "100755" {print $4}'); n=$(printf '%s\n' "$modes" | awk 'NF' | wc -l)
 if [[ "$n" -eq 4 && -z "$bad" ]]; then result "M1 hooks, scan and tests are tracked executable" 0
 else result "M1 hooks, scan and tests are tracked executable" 1 "tracked $n of 4; not 100755: $(echo $bad)"; fi
+elif [[ -n "${KIT_INSTALL_CHECK:-}" ]]; then
+    # Run as part of an install (tools/install-release.sh sets the marker): an install is the release's files with no
+    # git history, so the modes are checked in the kit's repository, where the release was tagged.
+    skip "M1 hooks, scan and tests are tracked executable" "this install has no git history of its own: M1 runs in the kit's repository"
 else
     skip "M1 hooks, scan and tests are tracked executable" "no commits yet in $ROOT: rerun after commit one"
 fi
@@ -1211,13 +1364,14 @@ echo b > "$G/b.txt"; git -C "$G" add b.txt
 out=$(gc);                                     want_refused "ID1 the genesis sentinel identity is refused" $? "$out" "genesis sentinel"
 git -C "$G" config user.name hooks-test; git -C "$G" config user.email hooks-test@invalid.local
 out=$(gc);                                     want_ok      "ID2 a real identity commits" $? "$out"
-# E5 (decisions log §6 item 9, §116): the sentinel email repo-genesis sets, unset@invalid.local, is refused as the
+# E5: the sentinel email repo-genesis sets, unset@invalid.local, is refused as the
 # sentinel name is, and read the same way: from the identity git will record (git var), so a config entry, an
 # environment override and --author all count. A real address on the same reserved domain is no sentinel.
 # Each case stages a change of its own, so a commit the old hook let through can't leave the next case nothing to commit.
 gstage() { echo "$1" > "$G/$1.txt"; git -C "$G" add "$1.txt"; }
 gstage e3; git -C "$G" config user.email unset@invalid.local
-out=$(gc);                                     want_refused "ID3 the sentinel email with a real name is refused" $? "$out" "genesis sentinel"
+out=$(gc); id3rc=$?;                           want_refused "ID3 the sentinel email with a real name is refused" $id3rc "$out" "genesis sentinel"
+want_says "MS7 pre-commit: the sentinel's refusal says what you can do" $id3rc "$out" "You can: if the environment or --author sets it, drop that"
 git -C "$G" config user.email hooks-test@invalid.local
 gstage e4; out=$( (cd "$G" && GIT_AUTHOR_EMAIL=unset@invalid.local git commit -q -m x) 2>&1 )
                                                want_refused "ID4 the sentinel email as the author, from the environment, is refused" $? "$out" "genesis sentinel"
@@ -1227,18 +1381,18 @@ gstage e6; out=$( (cd "$G" && git commit -q -m x --author='Real Name <unset@inva
                                                want_refused "ID6 the sentinel email given with --author is refused" $? "$out" "genesis sentinel"
 gstage e7; out=$(gc);                          want_ok      "ID7 a real name with a real address on the same domain commits" $? "$out"
 
-# ============================== rule 13 (c): replace refs, grafts, inherited git settings =======
+# ============================== gates item 3: replace refs, grafts, inherited git settings =====
 # A content gate reads what git will send or record, never what a replace ref or a graft makes git show, and a scan run
-# outside a hook follows no git setting it inherits (the user-level rule 13 (c); decisions log §119 to §121). A hook
+# outside a hook follows no git setting it inherits (the gates skill's procedure 13, item 3). A hook
 # keeps what git sets for it: in a linked worktree git gives it GIT_DIR, and the hooks must still work there.
 X="$TMP/rc"; mk_repo "$X"; echo "plain" > "$X/a.txt"; commit "$X" base; XB=$(git -C "$X" rev-parse HEAD)
 git init -q --bare "$TMP/rc.git"; git -C "$X" remote add r "$TMP/rc.git"
-xdirect() { (cd "$X" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "${2:-$Z}" \
-              | env LEAK_PATTERN="$MARK" "$BASH_BIN" "$HK/pre-push" r "$TMP/rc.git" 2>&1); }   # SHA [REMOTE-SHA]
+xdirect() { (cd "$X" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "${2:-$Z}" > "$TMP/pp.in" \
+              && "$BASH_BIN" "$HK/pre-push" r "$TMP/rc.git" 2>&1 < "$TMP/pp.in"); }   # SHA [REMOTE-SHA]
 echo "has $MARK" > "$X/m.txt"; commit "$X" marker; XM=$(git -C "$X" rev-parse HEAD)
 git -C "$X" rm -q --cached m.txt; XC=$(git -C "$X" commit-tree "$(git -C "$X" write-tree)" -p "$XB" -m marker)
 git -C "$X" reset -q --hard "$XM"; git -C "$X" replace "$XM" "$XC"
-out=$(xdirect "$XM");                          want_refused "RG1 pre-push: a replace ref pointing the pushed commit at a clean one hides no marker" $? "$out" "identity markers"
+out=$(xdirect "$XM");                          want_refused "RG1 pre-push: a replace ref pointing the pushed commit at a clean one hides no marker" $? "$out" "listed terms"
 git -C "$X" replace -d "$XM" >/dev/null
 git -C "$X" checkout -q -B g "$XB"; git -C "$X" commit -q --allow-empty --no-verify -m "names $MARK"
 git -C "$X" commit -q --allow-empty --no-verify -m clean; XG=$(git -C "$X" rev-parse HEAD)
@@ -1247,11 +1401,11 @@ printf '%s %s\n' "$XG" "$XB" > "$X/.git/info/grafts"
 git -C "$X" push -q --no-verify r "$XB:refs/heads/main"
 out=$(xdirect "$XG" "$XB");                    want_refused "RG2 pre-push: a graft hiding a commit whose message holds a marker refuses" $? "$out" "grafts"
 rm -f "$X/.git/info/grafts"
-out=$(xdirect "$XG" "$XB");                    want_refused "RG2b and without the graft, the same push is blocked for the marker" $? "$out" "identity markers"
+out=$(xdirect "$XG" "$XB");                    want_refused "RG2b and without the graft, the same push is blocked for the marker" $? "$out" "listed terms"
 git -C "$X" checkout -q main
 # pre-commit reads one staged blob through git, the first commit's CLAUDE.md: a replace ref there must not hide the
 # frame's TODO. gitleaks reads the staged content its own way, so a replace ref over a staged credential hid nothing
-# even before (RG3b, measured red-free on 7b1d581); it stays as a control.
+# even before (RG3b, which passed on the hook before replace refs were turned off); it stays as a control.
 YF="$TMP/rcf"; mk_repo "$YF"
 printf '# Project conventions\n\n## Stakes frame\n\n<!-- TODO: write this project'"'"'s stakes frame fresh, in one or two sentences. -->\n' > "$YF/CLAUDE.md"
 git -C "$YF" add CLAUDE.md; YT=$(git -C "$YF" rev-parse :CLAUDE.md)
@@ -1280,17 +1434,17 @@ echo "w" > "$WT/w.txt"; git -C "$WT" add w.txt
 out=$( (cd "$WT" && git commit -q -m w) 2>&1 ); want_ok "WT1 pre-commit in a linked worktree: a clean commit passes" $? "$out"
 out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_ok "WT2 pre-push in a linked worktree: a clean push passes" $? "$out"
 echo "has $MARK" > "$WT/m2.txt"; git -C "$WT" add m2.txt; git -C "$WT" commit -q --no-verify -m m2
-out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_refused "WT3 pre-push in a linked worktree: a marker is still blocked" $? "$out" "identity markers"
+out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_refused "WT3 pre-push in a linked worktree: a marker is still blocked" $? "$out" "listed terms"
 
-# ============================== git config a gate's git calls read (§152) =======================
+# ============================== git config a gate's git calls read ==============================
 # A mailmap maps a commit's author to another name; git log --author matches the mapped name, so
 # pre-push's metadata scan missed a marker author until it read the identity git recorded
 # (--no-use-mailmap). Forced colour (color.ui or color.diff = always, in any config file) colourises
 # the diff gitleaks parses, so gitleaks found nothing until the gates forced colour off in the
 # environment of their git calls. Routes: the work tree, HOME's config, the XDG config, the repo's
-# .git/config (decisions log §151, §152). The attribute routes measured there (a *.png diff passing a
-# binary, a -diff line passing a credential) are queued for v0.11.0 (owner queue 505): their fix is not
-# a few lines in a gate this relay changes -- an attribute from .git/info/attributes reaches no config
+# .git/config. The attribute routes measured there (a *.png diff passing a
+# binary, a -diff line passing a credential) are left for a later release: their fix is not
+# a few lines in a gate -- an attribute from .git/info/attributes reaches no config
 # override. pushes and commits run under empty scratch HOME/XDG, so the real user's config never bleeds in.
 GM="$TMP/gm"; mk_repo "$GM"; echo plain > "$GM/base.txt"; commit "$GM" base
 git init -q --bare "$TMP/gm.git"; git -C "$GM" remote add r "$TMP/gm.git"
@@ -1319,7 +1473,7 @@ for route in tree home xdg repo; do
     echo x > "$GM/mm.txt"; git -C "$GM" add mm.txt
     git -C "$GM" -c user.name="$MARK a" -c user.email=c@invalid.local commit -q --no-verify -m "mm $route"
     out=$(gcpush "mm-$route:refs/heads/mm-$route"); rc=$?; on_remote "refs/heads/mm-$route" gm && rc=0
-    want_refused "MP-$route pre-push: a marker author mapped by a mailmap ($route) is still blocked" $rc "$out" "identity markers in the metadata"
+    want_refused "MP-$route pre-push: a marker author mapped by a mailmap ($route) is still blocked" $rc "$out" "listed terms in the metadata"
 done
 for route in home xdg repo; do
     gc_clear
@@ -1336,8 +1490,8 @@ done
 gc_clear
 # The same routes under a git that drops the config the environment gives it (GIT_CONFIG_COUNT and its pairs), as a
 # git older than 2.31 ignores it: the gates must ask for uncoloured output on the command line too, not only through
-# the environment (decisions log §288, §290). The hooks run directly here, so the wrapper first on PATH is the git they
-# and gitleaks find: a hook that git runs finds git's own exec-path first (measured, §290).
+# the environment. The hooks run directly here, so the wrapper first on PATH is the git they
+# and gitleaks find: a hook that git runs finds git's own exec-path first.
 GW="$TMP/git-noenv"; mkdir -p "$GW"
 { cat <<'W'
 #!/bin/sh
@@ -1349,8 +1503,8 @@ W
 printf 'exec "%s" "$@"\n' "$(command -v git)"; } > "$GW/git"; chmod 0755 "$GW/git"
 gcdirect() { (cd "$GM" && env HOME="$gc_home" XDG_CONFIG_HOME="$gc_xdg" PATH="$1:$PATH" "$BASH_BIN" "$HK/pre-commit") 2>&1; }
 gpdirect() {  # GITDIR BRANCH: pre-push by the stdin protocol, that git first on PATH
-    (cd "$GM" && printf 'refs/heads/%s %s refs/heads/%s %s\n' "$2" "$(git rev-parse "$2")" "$2" "$Z" \
-        | env HOME="$gc_home" XDG_CONFIG_HOME="$gc_xdg" PATH="$1:$PATH" "$BASH_BIN" "$HK/pre-push" r "$TMP/gm.git") 2>&1; }
+    (cd "$GM" && printf 'refs/heads/%s %s refs/heads/%s %s\n' "$2" "$(git rev-parse "$2")" "$2" "$Z" > "$TMP/pp.in" \
+        && env HOME="$gc_home" XDG_CONFIG_HOME="$gc_xdg" PATH="$1:$PATH" "$BASH_BIN" "$HK/pre-push" r "$TMP/gm.git" < "$TMP/pp.in") 2>&1; }
 for route in home xdg repo; do
     gc_clear
     git -C "$GM" checkout -q -B "cw-$route" "$GMB"; git -C "$GM" clean -qfd
@@ -1368,7 +1522,7 @@ for route in home xdg repo; do
 done
 gc_clear
 # A git older than 2.31, or one whose version can't be read, is refused by name in both hooks, before anything is
-# scanned (decisions log §288, §290). gitver DIR VERSION: a git that reports VERSION and is otherwise the real one.
+# scanned. gitver DIR VERSION: a git that reports VERSION and is otherwise the real one.
 gitver() { mkdir -p "$1"; { printf '#!/bin/sh\ncase "$1" in --version|version) echo "git version %s"; exit 0 ;; esac\n' "$2"
                             printf 'exec "%s" "$@"\n' "$(command -v git)"; } > "$1/git"; chmod 0755 "$1/git"; }
 gitver "$TMP/git-old" 2.30.2; gitver "$TMP/git-odd" banana
@@ -1376,29 +1530,34 @@ git -C "$GM" checkout -q -B og "$GMB"; git -C "$GM" clean -qfd
 echo og > "$GM/og.txt"; git -C "$GM" add og.txt
 out=$(gcdirect "$TMP/git-old"); rc=$?
 want_refused "OG1 pre-commit: a git older than 2.31 is refused, naming both versions" $rc "$out" "git 2.30.2 is older than 2.31"
+GITSAYS=("You can: install git 2.31 or later" "If IT manages this machine: ask IT for git 2.31 or later")
+want_says "MS1 pre-commit: that refusal says what you can do and what to ask IT for" $rc "$out" "${GITSAYS[@]}"
 out=$(gcdirect "$TMP/git-odd"); rc=$?
 want_refused "OG3 pre-commit: a git whose version can't be read is refused" $rc "$out" "could not read git's version"
+want_says "MS2 pre-commit: so does that one" $rc "$out" "${GITSAYS[@]}"
 git -C "$GM" commit -q --no-verify -m og
 out=$(gpdirect "$TMP/git-old" og); rc=$?
 want_refused "OG2 pre-push: a git older than 2.31 is refused, naming both versions" $rc "$out" "git 2.30.2 is older than 2.31"
+want_says "MS3 pre-push: that refusal says what you can do and what to ask IT for" $rc "$out" "${GITSAYS[@]}"
 out=$(gpdirect "$TMP/git-odd" og); rc=$?
 want_refused "OG4 pre-push: a git whose version can't be read is refused" $rc "$out" "could not read git's version"
+want_says "MS4 pre-push: so does that one" $rc "$out" "${GITSAYS[@]}"
 gc_clear
 
-# ============================== locale: text byte-wise, matching in the caller's (§158, §159) =================
+# ============================== locale: text byte-wise, matching in the caller's ==============================
 # Each gate runs its text tools under LC_ALL=C and its matchers in the locale its caller set, so a list row written
 # with a non-ASCII letter still blocks that letter's other case in a UTF-8 locale: in pre-push's tree scan, its
-# metadata scan and a ref name, and in the tree scan CI runs. A forced C locale folds only ASCII (measured, §158).
+# metadata scan and a ref name, and in the tree scan CI runs. A forced C locale folds only ASCII.
 NA_LO=$(printf 'synth-mark\303\251r-7f3a'); NA_UP=$(printf 'SYNTH-MARK\303\211R-7F3A')   # the stand-in with an e acute
 if [[ -n "$U8" ]]; then
-    NA="$TMP/na"; mk_repo "$NA"; tpin "$NA/.git/leak-pattern.pin" "$NA_LO" 1; echo base > "$NA/base.txt"; commit "$NA" base
+    NA="$TMP/na"; mk_repo "$NA"; tlist "$NA" "$NA_LO"; echo base > "$NA/base.txt"; commit "$NA" base
     git init -q --bare "$TMP/na.git"; git -C "$NA" push -q --no-verify "$TMP/na.git" HEAD:refs/heads/main; NAB=$(git -C "$NA" rev-parse HEAD)
     napush() {  # LOCALREF REMOTEREF: pre-push by the stdin protocol, in the UTF-8 locale, the list that one row
-        (cd "$NA" && printf '%s %s %s %s\n' "$1" "$(git rev-parse "$1")" "$2" "$Z" \
-            | env LC_ALL="$U8" LANG="$U8" LEAK_PATTERN="$NA_LO" "$BASH_BIN" "$HK/pre-push" r "$TMP/na.git" 2>&1); }
+        (cd "$NA" && printf '%s %s %s %s\n' "$1" "$(git rev-parse "$1")" "$2" "$Z" > "$TMP/pp.in" \
+            && env LC_ALL="$U8" LANG="$U8" "$BASH_BIN" "$HK/pre-push" r "$TMP/na.git" 2>&1 < "$TMP/pp.in"); }
     git -C "$NA" checkout -q -B na1 "$NAB"; printf 'has %s here\n' "$NA_UP" > "$NA/na1.txt"; commit "$NA" na1
     out=$(napush refs/heads/na1 refs/heads/na1)
-                                               want_refused "ML5 pre-push: a row with a non-ASCII letter blocks its other case in the tree, UTF-8 locale" $? "$out" "identity markers in the tree"
+                                               want_refused "ML5 pre-push: a row with a non-ASCII letter blocks its other case in the tree, UTF-8 locale" $? "$out" "listed terms in the tree"
     git -C "$NA" checkout -q -B na2 "$NAB"; echo x > "$NA/na2.txt"; git -C "$NA" add -A
     git -C "$NA" -c user.name="Dev $NA_UP" commit -q --no-verify -m na2
     out=$(napush refs/heads/na2 refs/heads/na2)
@@ -1413,15 +1572,15 @@ else
     for c in ML5 MD18 MD19 ML6; do skip "$c" "locale -a lists no UTF-8 locale"; done
 fi
 
-# ============================== grep forms over files a search may skip (§152, §155, procedure 11) ====
+# ============================== grep forms over files a search may skip (procedure 11) ================
 # procedure 11 tells a reader which search forms see a NUL file, a non-UTF-8 file and an unreadable file, and
 # runs its grep forms under LC_ALL=C on every platform. This runs those forms on the stock /usr/bin/grep: GNU
-# grep on Linux, BSD grep in the macOS install smoke; a difference there is a red to report, not to paper over
-# (decisions log §145 step 4, §152, §155). Expected set, measured on GNU grep 3.11 under LC_ALL=C and C.utf8
+# grep on Linux, BSD grep in the macOS install smoke; a difference there is a red to report, not to paper over.
+# Expected set, measured on GNU grep 3.11 under LC_ALL=C and C.utf8
 # alike: -l and -a -l name every readable file; -I drops the NUL file; -q exits 0 on each non-UTF-8 file
 # alone, the invalid bytes on the marker's line (bad) or on the line before it (bad2); a count sees every
 # readable file; an unreadable file in range exits 2. GF8 records the same -rl in a UTF-8 locale without
-# LC_ALL=C: on BSD grep it missed the ASCII marker on a line holding invalid UTF-8 (§155). That miss is why
+# LC_ALL=C: on BSD grep it missed the ASCII marker on a line holding invalid UTF-8. That miss is why
 # procedure 11 sets LC_ALL=C, so GF8 is printed as a note and counted nowhere, never as coverage.
 GF="$TMP/grepforms"; rm -rf "$GF"; mkdir -p "$GF"
 printf 'plain %s here\n' "$MARK" > "$GF/plain.txt"
@@ -1449,14 +1608,14 @@ if [[ -n "$U8" ]]; then
 else printf 'note  %s\n' "GF8 not recorded: locale -a lists no UTF-8 locale"; fi
 chmod 0644 "$GF/noread.txt"
 
-# ============================== a project with no identity list: the reserved line (§308, §310 (a)) ======
-# A project with no identity list says so with one deliberate line in .git/leak-pattern, a reserved value pinned like
-# any list. A missing list still refuses, naming that line; a list file that exists but can't be read refuses with a
-# message of its own; with the line, pre-push turns its identity layers off, says so on every push, and still runs the
+# ============================== a project with no do-not-publish list: the reserved line =================
+# A project with no do-not-publish list says so with one deliberate line in .git/leak-pattern, a reserved value pinned
+# like any list. A missing list still refuses, naming that line; a list file that exists but can't be read refuses with
+# a message of its own; with the line, pre-push turns its identity layers off, says so on every push, and still runs the
 # credential scan. The pin guards the line: written over a real list, it doesn't match that list's pin. CI's scan reads
 # the same value from its secret, against its tracked pin. This line is the suites' one definition of the value:
 # install_test reads it from here (its NV0), so each of the four readers' cases (NL4, NS2 and HA30 here, KL10 there)
-# is fed the same value, and a change to any one reader's copy fails its case (queue 700 item 3).
+# is fed the same value, and a change to any one reader's copy fails its case.
 NOLIST='kit:no-identity-list'
 NL="$TMP/nl"; mk_repo "$NL"; echo "plain text" > "$NL/a.txt"; commit "$NL" base
 git init -q --bare "$TMP/nl.git"; git -C "$NL" push -q --no-verify "$TMP/nl.git" HEAD:refs/heads/main
@@ -1464,53 +1623,88 @@ NLB=$(git -C "$NL" rev-parse HEAD)
 nlc() { git -C "$NL" checkout -q -B "$1" "$NLB"; printf '%s\n' "$2" > "$NL/f.txt"; commit "$NL" "$1"; git -C "$NL" rev-parse HEAD; }
 NL_CLEAN=$(nlc nlclean "nothing listed here"); NL_MARK=$(nlc nlmark "has $MARK here")
 git -C "$NL" checkout -q -B nlcred "$NLB"; cp "$FIXTURE" "$NL/cred.txt"; commit "$NL" nlcred; NL_CRED=$(git -C "$NL" rev-parse HEAD)
-nlpush() {  # SHA: pre-push by the stdin protocol over the remote's main, the list from .git/leak-pattern only
-    (cd "$NL" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "$NLB" \
-        | env -u LEAK_PATTERN "$BASH_BIN" "$HK/pre-push" r "$TMP/nl.git" 2>&1); }
-nllist() { printf "LEAK_PATTERN='%s'\n" "$1" > "$NL/.git/leak-pattern"; tpin "$NL/.git/leak-pattern.pin" "$1" "${2:-1}"; }   # VALUE [ROWS]
-rm -f "$NL/.git/leak-pattern"
-out=$(nlpush "$NL_CLEAN");                     want_refused "NL1 pre-push: no list file refuses, naming the reserved line and where it goes" $? "$out" "LEAK_PATTERN='$NOLIST'"
-nllist "$MARK"; chmod 000 "$NL/.git/leak-pattern"
-if [[ -r "$NL/.git/leak-pattern" ]]; then skip "NL2 pre-push: a list file it can't read refuses with its own message" "the file stays readable at mode 000 (root)"
-else out=$(nlpush "$NL_CLEAN");                want_refused "NL2 pre-push: a list file it can't read refuses with its own message, not the missing list's" $? "$out" "exists but can't be read"; fi
-chmod 600 "$NL/.git/leak-pattern"
-printf '%s\n' "LEAK_PATTERN='$MARK'" "LEAK_PATTERN='zqother'" > "$NL/.git/leak-pattern"
-out=$(nlpush "$NL_CLEAN");                     want_refused "NL3 pre-push: a list it can't parse refuses" $? "$out" "not in a shape"
+nlpush() {  # SHA: pre-push by the stdin protocol over the remote's main, the list at its place only
+    (cd "$NL" && printf 'refs/heads/main %s refs/heads/main %s\n' "$1" "$NLB" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN "$BASH_BIN" "$HK/pre-push" r "$TMP/nl.git" 2>&1 < "$TMP/pp.in"); }
+nllist() { printf "LEAK_PATTERN='%s'\n" "$1" > "$(lp "$NL")"; tpin "$NL/.git/leak-pattern.pin" "$1" "${2:-1}"; }   # VALUE [ROWS]
+rm -f "$(lp "$NL")"
+out=$(nlpush "$NL_CLEAN"); rc=$?;              want_refused "NL1 pre-push: no list file refuses, naming the reserved line and where it goes" $rc "$out" "LEAK_PATTERN='$NOLIST'"
+want_says "MS8 pre-push: no list says what you can do and what to ask the project's owner" $rc "$out" \
+    "You can: if this project has a do-not-publish list, put it in" "The project's owner: whether this project keeps a do-not-publish list"
+# A sandbox read policy over the list's folder hides the file, as an absent one (measured with bubblewrap's tmpfs, the
+# Linux sandbox's tool): so the refusals for a list absent or unreadable say IT's policy may be the cause, naming the folder.
+LISTSAYS="If IT manages this machine: a sandbox read policy may block the do-not-publish list's folder, ~/.config/morrowcairn/lists/"
+want_says "MS30 pre-push: no list says a sandbox read policy may hide the list's folder, naming it" $rc "$out" "$LISTSAYS"
+[[ "$out" != *"outside the sandbox"* ]];        want_ok "MS35 pre-push: that refusal points nothing outside the sandbox" $? "$out"
+want_split "MS39 pre-push: the no-list refusal's sandbox lines split, your own block in your user settings, IT's through IT" $rc "$out"
+# A printed step never writes over a list that is there (one a sandbox hides is still there): each line of the no-list
+# steps that writes the list, run with the suite's home against a stand-in list at its place, refuses and leaves it as
+# it was.
+printf '%s\n' "LEAK_PATTERN='zqkeepterm'" > "$(lp "$NL")"; nlsum=$(tsum < "$(lp "$NL")"); nw=0; nbad=""
+while IFS= read -r l; do
+    [[ "$l" == *"echo \"LEAK_PATTERN="*">"* ]] || continue
+    nw=$((nw + 1))
+    printf '%s\n' "$l" | (cd "$NL" && HOME="$TH" "$BASH_BIN") >/dev/null 2>&1 && nbad+=" a write exited 0"
+done <<< "$out"
+[[ $nw -ge 1 && -z "$nbad" && "$(tsum < "$(lp "$NL")")" == "$nlsum" ]]
+want_ok "MS32 pre-push: each no-list step that writes the list refuses a list already there, leaving it unchanged" $? "writes $nw;$nbad"
+rm -f "$(lp "$NL")"
+nllist "$MARK"; chmod 000 "$(lp "$NL")"
+if [[ -r "$(lp "$NL")" ]]; then skip "NL2 pre-push: a list file it can't read refuses with its own message" "the file stays readable at mode 000 (root)"
+     skip "MS9 pre-push: that refusal names the do-not-publish list and says what you can do" "the file stays readable at mode 000 (root)"
+     skip "MS31 pre-push: and says a sandbox read policy may block the list's folder" "the file stays readable at mode 000 (root)"
+     skip "MS36 pre-push: that refusal points nothing outside the sandbox" "the file stays readable at mode 000 (root)"
+     skip "MS40 pre-push: and its sandbox lines split, your own block in your user settings, IT's through IT" "the file stays readable at mode 000 (root)"
+else out=$(nlpush "$NL_CLEAN"); rc=$?;         want_refused "NL2 pre-push: a list file it can't read refuses with its own message, not the missing list's" $rc "$out" "exists but can't be read"
+     want_says "MS9 pre-push: that refusal names the do-not-publish list and says what you can do" $rc "$out" \
+         "so the do-not-publish list can't be checked" "You can: make it a file this user can read"
+     want_says "MS31 pre-push: and says a sandbox read policy may block the list's folder" $rc "$out" "$LISTSAYS"
+     [[ "$out" != *"outside the sandbox"* ]];   want_ok "MS36 pre-push: that refusal points nothing outside the sandbox" $? "$out"
+     want_split "MS40 pre-push: and its sandbox lines split, your own block in your user settings, IT's through IT" $rc "$out"; fi
+chmod 600 "$(lp "$NL")"
+printf '%s\n' "LEAK_PATTERN='$MARK'" "LEAK_PATTERN='zqother'" > "$(lp "$NL")"
+out=$(nlpush "$NL_CLEAN"); rc=$?;              want_refused "NL3 pre-push: a list it can't parse refuses" $rc "$out" "not in a shape"
+want_says "MS10 pre-push: that refusal says what you can do" $rc "$out" "You can: give it the shape this hook reads"
 nllist "$NOLIST"
-out=$(nlpush "$NL_CLEAN");                     want_ok      "NL4 pre-push: the pinned reserved line passes a clean push and says identity checks are off" $? "$out" "identity checks are off for this project"
-out=$(nlpush "$NL_MARK");                      want_ok      "NL5 pre-push: with the reserved line the identity layers don't run, and the push says so" $? "$out" "identity checks are off for this project"
+out=$(nlpush "$NL_CLEAN");                     want_ok      "NL4 pre-push: the pinned reserved line passes a clean push and says the do-not-publish check is off" $? "$out" "the do-not-publish check is off for this project"
+out=$(nlpush "$NL_MARK");                      want_ok      "NL5 pre-push: with the reserved line the do-not-publish check doesn't run, and the push says so" $? "$out" "the do-not-publish check is off for this project"
 out=$(nlpush "$NL_CRED");                      want_refused "NL6 pre-push: with the reserved line, a planted credential is still refused" $? "$out" "credential shapes"
 tpin "$NL/.git/leak-pattern.pin" "$MARK" 1
 out=$(nlpush "$NL_CLEAN");                     want_refused "NL7 pre-push: the reserved line written over a pinned real list is refused by the pin" $? "$out" "doesn't match its pin"
 nllist "$MARK"
-out=$(nlpush "$NL_MARK");                      want_refused "NL8 pre-push: a real list still catches a planted term (control)" $? "$out" "identity markers"
+out=$(nlpush "$NL_MARK");                      want_refused "NL8 pre-push: a real list still catches a planted term (control)" $? "$out" "listed terms"
 NS="$TMP/ns"; mk_repo "$NS"; echo "plain" > "$NS/a.txt"; tpin "$NS/.github/leak-pattern.pin" "$NOLIST" 1; commit "$NS" base
 out=$( (cd "$NS" && env -u LEAK_PATTERN "$BASH_BIN" "$SCAN" 2>&1) )
                                                want_refused "NS1 tree scan: no secret refuses, naming the reserved value" $? "$out" "$NOLIST"
+[[ "$out" == *"If this project has no do-not-publish list, set the secret"* ]]
+                                               want_ok      "MS18 tree scan: that refusal names the do-not-publish list" $? "$out"
 out=$( (cd "$NS" && env LEAK_PATTERN="$NOLIST" "$BASH_BIN" "$SCAN" 2>&1) )
-                                               want_ok      "NS2 tree scan: the pinned reserved value passes and says identity checks are off" $? "$out" "identity checks are off"
+                                               want_ok      "NS2 tree scan: the pinned reserved value passes and says the do-not-publish check is off" $? "$out" "the do-not-publish check is off"
 tpin "$NS/.github/leak-pattern.pin" "$MARK" 1
 out=$( (cd "$NS" && env LEAK_PATTERN="$NOLIST" "$BASH_BIN" "$SCAN" 2>&1) )
                                                want_refused "NS3 tree scan: the reserved value against a real list's pin refuses" $? "$out" "doesn't match its pin"
-# A list that doesn't compile, pinned (queue 583): the scan refuses, never prints the list, and never reports clean.
+# A list that doesn't compile, pinned: the scan refuses, never prints the list, and never reports clean.
 tpin "$NS/.github/leak-pattern.pin" "$MARK(" 1
 out=$( (cd "$NS" && env LEAK_PATTERN="$MARK(" "$BASH_BIN" "$SCAN" 2>&1) ); rc=$?
                                                want_refused "NS4 tree scan: a pinned list that doesn't compile refuses" $rc "$out" "may not compile"
                                                no_leak      "NS4b tree scan: and that refusal doesn't print the list" "$out"
 
-# ============================== the full-history identity check: bin/kit-history-audit (§284) =============
+# ============================== the full-history identity check: bin/kit-history-audit ====================
 # Before a repository goes public, every commit reachable from any ref, and every one only its reflog still holds, is
 # read against the project's own list: each commit's author and committer (names and emails), its message, the paths
 # it touches and the content it adds (a merge's against its first parent), every tag object's tagger and message, and
-# every ref name (decisions log §284 ruling 2, queue 538; the kit's own .local audit, shipped). A hit is named by its
+# every ref name (the kit's own .local audit, shipped). A hit is named by its
 # commit, or tag object, and its field, never by the matched text or a path; a content line passes only when the
 # project's allow file pins it. Each history below plants the suite's marker in one field of an older commit, under a
 # clean tip. The control, --control, plants a term made from the project's own list in all ten fields of a throwaway
 # repository and passes only when the audit refuses all ten.
-HA="$ROOT/bin/kit-history-audit"
+# The audit runs from a copy beside an rswap'd reader, as it sits beside the install's, so it finds lists in TH.
+HAK="$TMP/ha-kit"; mkdir -p "$HAK/bin" "$HAK/leak-detection"; HA="$HAK/bin/kit-history-audit"
+[[ -f "$ROOT/bin/kit-history-audit" ]] && install -m 0755 "$ROOT/bin/kit-history-audit" "$HA"
+rswap "$H/read-leak-pattern.sh" "$HAK/leak-detection/read-leak-pattern.sh"
 har() { "$BASH_BIN" "$HA" "$@" 2>&1; }                                     # ARGS...: the audit, both streams
 ha_repo() {  # DIR: the suite's one-row list in .git/leak-pattern, its pin beside it, one clean commit
-    mk_repo "$1"; printf '%s\n' "$SETUP" > "$1/.git/leak-pattern"; echo base > "$1/base.txt"; commit "$1" base; }
+    mk_repo "$1"; printf '%s\n' "$SETUP" > "$(lp "$1")"; echo base > "$1/base.txt"; commit "$1" base; }
 ha_tip() { echo "${2:-tip}" > "$1/tip.txt"; commit "$1" tip; }            # DIR [WORD]: a clean commit on top
 ha_named() {  # OUTPUT ID FIELD: 0 when one refusal line names that commit or tag object (its first 12) and that field
     printf '%s\n' "$1" | awk -v h="${2:0:12}" -v f=" $3 " 'index($0, "REFUSED") && index($0, h) && index($0, f) {ok = 1} END {exit !ok}'; }
@@ -1569,21 +1763,25 @@ out=$(har "$d" --remote none --allow "$TMP/ha-allow3"); rc=$?
 [[ $rc -eq 3 ]] && ha_named "$out" "$p" message; result "HA14 history audit: the allow file pins content only; a message hit on that commit still refuses" $? "exit $rc"
 printf 'not a pin line\n' > "$TMP/ha-allow4"
 out=$(har "$HAC" --remote none --allow "$TMP/ha-allow4"); want_refused "HA15 history audit: an allow file line it can't read refuses" $? "$out" "allow file"
-# The list: read as data from the repository's own .git/leak-pattern, checked against its pin, never from the caller's
-# environment (rule 13 (a), (d); queue 462).
+# The list: read as data from the repository's own list at its place, checked against its pin, never from the caller's
+# environment (the gates skill's procedure 13, items 1 and 4).
 d="$TMP/ha-shell"; ha_repo "$d"; rm -f "$TMP/ha-ran"
-printf '%s\n' "LEAK_PATTERN='$MARK'" "\$(touch \"$TMP/ha-ran\")" > "$d/.git/leak-pattern"
+printf '%s\n' "LEAK_PATTERN='$MARK'" "\$(touch \"$TMP/ha-ran\")" > "$(lp "$d")"
 out=$(har "$d" --remote none); rc=$?
 [[ $rc -ne 0 && ! -e "$TMP/ha-ran" ]];         result       "HA16 history audit: a list holding shell code is read without running it, and refuses" $? "exit $rc, the command $([[ -e "$TMP/ha-ran" ]] && echo ran || echo did not run)"
 out=$(LEAK_PATTERN='zq-cut-list' "$BASH_BIN" "$HA" "$HAC" --remote none 2>&1); rc=$?
 [[ $rc -eq 3 ]] && ha_named "$out" "$HACP" content; result "HA17 history audit: a cut list in the environment is ignored; the repository's list finds the hit" $? "exit $rc"
-d="$TMP/ha-nolist"; ha_repo "$d"; rm -f "$d/.git/leak-pattern"
-out=$(har "$d" --remote none);                 want_refused "HA18 history audit: no list refuses, naming it" $? "$out" "no identity list"
-d="$TMP/ha-pinoff"; ha_repo "$d"; printf '%s\n' "LEAK_PATTERN='$MARK|zq-added-row'" > "$d/.git/leak-pattern"
-out=$(har "$d" --remote none);                 want_refused "HA19 history audit: a list that doesn't match its pin refuses" $? "$out" "doesn't match its pin"
-rm -f "$d/.git/leak-pattern.pin"; printf '%s\n' "$SETUP" > "$d/.git/leak-pattern"
+d="$TMP/ha-nolist"; ha_repo "$d"; rm -f "$(lp "$d")"
+out=$(har "$d" --remote none); rc=$?;          want_refused "HA18 history audit: no list refuses, naming it" $rc "$out" "no do-not-publish list"
+want_says "MS19 history audit: that refusal says what you can do and what to ask the project's owner" $rc "$out" \
+    "You can: put the project's list there" "The project's owner: whether this project keeps a do-not-publish list"
+d="$TMP/ha-pinoff"; ha_repo "$d"; printf '%s\n' "LEAK_PATTERN='$MARK|zq-added-row'" > "$(lp "$d")"
+out=$(har "$d" --remote none); rc=$?;          want_refused "HA19 history audit: a list that doesn't match its pin refuses" $rc "$out" "doesn't match its pin"
+want_says "MS20 history audit: that refusal names the do-not-publish list, what you can do and what to ask the project's owner" $rc "$out" \
+    "the do-not-publish list in" "You can: if the list changed on purpose" "The project's owner: whether the change to the list was meant"
+rm -f "$d/.git/leak-pattern.pin"; printf '%s\n' "$SETUP" > "$(lp "$d")"
 out=$(har "$d" --remote none);                 want_refused "HA19b history audit: a list with no pin refuses" $? "$out" "has no pin"
-# What git shows must be what history holds (rule 13 (c)).
+# What git shows must be what history holds (the gates skill's procedure 13, item 3).
 d="$TMP/ha-replace"; ha_repo "$d"; b=$(git -C "$d" rev-parse HEAD); printf 'has %s\n' "$MARK" > "$d/r.txt"; commit "$d" planted
 p=$(git -C "$d" rev-parse HEAD); s=$(git -C "$d" commit-tree "$(git -C "$d" rev-parse "$b^{tree}")" -p "$b" -m planted)
 git -C "$d" replace "$p" "$s"
@@ -1592,7 +1790,7 @@ d="$TMP/ha-graft"; ha_repo "$d"; git -C "$d" rev-parse HEAD > "$d/.git/info/graf
 out=$(har "$d" --remote none);                 want_refused "HA21 history audit: a repository with grafts refuses" $? "$out" "grafts"
 out=$(GIT_DIR="$TMP/ha-clean/.git" "$BASH_BIN" "$HA" "$HAC" --remote none 2>&1); rc=$?
 [[ $rc -eq 3 ]] && ha_named "$out" "$HACP" content; result "HA22 history audit: an inherited GIT_DIR naming another repository isn't followed" $? "exit $rc"
-# Content that isn't plain text (§145 step 3, §146 item 4, queue 462): the .local audit passed each of these.
+# Content that isn't plain text: the .local audit passed each of these.
 d="$TMP/ha-bad"; ha_repo "$d"; printf 'bad \377\376 %s here\n' "$MARK" > "$d/bad.txt"; commit "$d" bad; p=$(git -C "$d" rev-parse HEAD)
 git -C "$d" rm -q bad.txt; ha_tip "$d"
 if [[ -n "$U8" ]]; then
@@ -1609,7 +1807,7 @@ n=$(printf '%s\n' "$out" | awk -v h="${p:0:12}" 'index($0, "REFUSED") && index($
 d="$TMP/ha-bin"; ha_repo "$d"; printf '\000\001\002 %s \003\000' "$MARK" > "$d/blob.bin"; commit "$d" bin; p=$(git -C "$d" rev-parse HEAD)
 git -C "$d" rm -q blob.bin; ha_tip "$d"
 ha_case "HA25 history audit: a marker in a binary file's content refuses" "$d" "$p" content
-# A merge's own content, which neither parent holds (a conflict's resolution), read against its first parent (§281).
+# A merge's own content, which neither parent holds (a conflict's resolution), read against its first parent.
 d="$TMP/ha-merge"; ha_repo "$d"; b=$(git -C "$d" rev-parse HEAD)
 git -C "$d" checkout -q -b side; echo s > "$d/s.txt"; commit "$d" side
 git -C "$d" checkout -q -B trunk "$b"; echo t > "$d/t.txt"; commit "$d" trunk
@@ -1625,23 +1823,43 @@ git -C "$TMP/ha-rem2" push -q --no-verify origin HEAD:refs/heads/elsewhere
 out=$(har "$d" --remote origin);               want_refused "HA27 history audit: a remote ref whose commit isn't here refuses" $? "$out" "not here"
 out=$(har "$d");                               want_refused "HA27b history audit: origin, when there is one, is checked by default" $? "$out" "not here"
 git clone -q --depth 1 "file://$TMP/ha-clean" "$TMP/ha-shallow" 2>/dev/null
-cp "$TMP/ha-clean/.git/leak-pattern" "$TMP/ha-clean/.git/leak-pattern.pin" "$TMP/ha-shallow/.git/"
+cp "$TMP/ha-clean/.git/leak-pattern.pin" "$TMP/ha-shallow/.git/"   # the clone carries the id
 out=$(har "$TMP/ha-shallow" --remote none);    want_refused "HA28 history audit: a shallow clone refuses" $? "$out" "shallow"
 out=$(PATH="$TMP/git-old:$PATH" "$BASH_BIN" "$HA" "$TMP/ha-clean" --remote none 2>&1)
-                                               want_refused "HA29 history audit: a git older than 2.31 is refused, naming both versions" $? "$out" "git 2.30.2 is older than 2.31"
-d="$TMP/ha-nolist-line"; ha_repo "$d"; printf "LEAK_PATTERN='%s'\n" "$NOLIST" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$NOLIST" 1
-out=$(har "$d" --remote none);                 want_refused "HA30 history audit: the reserved line refuses: a project going public needs a real list" $? "$out" "needs a real list"
+ha29rc=$?;                                     want_refused "HA29 history audit: a git older than 2.31 is refused, naming both versions" $ha29rc "$out" "git 2.30.2 is older than 2.31"
+want_says "MS21 history audit: that refusal says what you can do and what to ask IT for" $ha29rc "$out" "${GITSAYS[@]}"
+d="$TMP/ha-nolist-line"; ha_repo "$d"; printf "LEAK_PATTERN='%s'\n" "$NOLIST" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$NOLIST" 1
+out=$(har "$d" --remote none); rc=$?;          want_refused "HA30 history audit: the reserved line refuses: a project going public needs a real list" $rc "$out" "needs a real list"
+want_says "MS22 history audit: that refusal names the do-not-publish list" $rc "$out" "the line saying it has no do-not-publish list"
+# The audit's other refusals over the list, each naming the do-not-publish list: no place for it, a list only at the old
+# place, one that sets no pattern, no hashing tool, a list that doesn't compile; and a git whose version can't be read.
+md="$TMP/ha-noid"; ha_repo "$md"; rm -f "$md/kit.list-id"; out=$(har "$md" --remote none); rc=$?
+want_says "MS23 history audit: no place for the list names it and says what you can do" $rc "$out" \
+    "the do-not-publish list's place can't be found" "You can: give the project its place"
+md="$TMP/ha-oldplace"; ha_repo "$md"; mv "$(lp "$md")" "$md/.git/leak-pattern"; out=$(har "$md" --remote none); rc=$?
+want_says "MS24 history audit: a list only at the old place names the do-not-publish list and says what you can do" $rc "$out" \
+    "no do-not-publish list at" "You can: move it ("
+md="$TMP/ha-empty"; ha_repo "$md"; printf "LEAK_PATTERN=''\n" > "$(lp "$md")"; out=$(har "$md" --remote none); rc=$?
+want_says "MS25 history audit: a list that sets no pattern names the do-not-publish list" $rc "$out" "the do-not-publish list in"
+md="$TMP/ha-nohash"; ha_repo "$md"; out=$(PATH="$TMP/nohash" "$BASH_BIN" "$HA" "$md" --remote none 2>&1); rc=$?
+want_says "MS26 history audit: with no hashing tool it names the do-not-publish list" $rc "$out" "so the do-not-publish list can't be checked against its pin"
+md="$TMP/ha-badre"; ha_repo "$md"; printf "LEAK_PATTERN='%s('\n" "$MARK" > "$(lp "$md")"; tpin "$md/.git/leak-pattern.pin" "$MARK(" 1
+out=$(har "$md" --remote none); rc=$?
+want_says "MS29 history audit: a list that doesn't compile names the do-not-publish list" $rc "$out" "the do-not-publish list doesn't compile"
+out=$(PATH="$TMP/git-odd:$PATH" "$BASH_BIN" "$HA" "$TMP/ha-clean" --remote none 2>&1); rc=$?
+want_says "MS28 history audit: a git whose version can't be read says what you can do and what to ask IT for" $rc "$out" \
+    "could not read git's version" "${GITSAYS[@]}"
 out=$(har --control "$d");                     want_refused "HC9 history control: the reserved line refuses too" $? "$out" "needs a real list"
-# A list it can't search with (queue 583): one that doesn't compile, pinned, and one that sets LEAK_PATTERN twice.
-d="$TMP/ha-nocompile"; ha_repo "$d"; printf "LEAK_PATTERN='%s('\n" "$MARK" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$MARK(" 1
+# A list it can't search with: one that doesn't compile, pinned, and one that sets LEAK_PATTERN twice.
+d="$TMP/ha-nocompile"; ha_repo "$d"; printf "LEAK_PATTERN='%s('\n" "$MARK" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$MARK(" 1
 out=$(har "$d" --remote none);                 want_refused "HA31 history audit: a pinned list that doesn't compile refuses" $? "$out" "doesn't compile"
                                                no_leak      "HA31b history audit: and that refusal doesn't print the list" "$out"
-d="$TMP/ha-twice"; ha_repo "$d"; printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='$MARK'" > "$d/.git/leak-pattern"
+d="$TMP/ha-twice"; ha_repo "$d"; printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='$MARK'" > "$(lp "$d")"
 out=$(har "$d" --remote none);                 want_refused "HA32 history audit: a list that sets LEAK_PATTERN twice refuses" $? "$out" "not in a shape"
 # The control: a term made from the project's own list, never printed, in all ten fields of a throwaway repository.
 out=$(har --control "$TMP/ha-clean");          want_ok      "HC1 history control: the project's own list goes red on 10 of 10 fields" $? "$out" "control: 10 of 10 fields red"
                                                no_leak_at   "HC1b and it prints no term" "$out" ""
-hm="$TMP/ha-mut"; mkdir -p "$hm/bin" "$hm/leak-detection"; cp "$H/read-leak-pattern.sh" "$hm/leak-detection/"
+hm="$TMP/ha-mut"; mkdir -p "$hm/bin" "$hm/leak-detection"; rswap "$H/read-leak-pattern.sh" "$hm/leak-detection/read-leak-pattern.sh"
 awk '/^    exit 3   # the refusal$/ {print "    exit 0"; next} {print}' "$HA" > "$hm/bin/kit-history-audit" 2>/dev/null
 if [[ -s "$HA" ]] && ! cmp -s "$HA" "$hm/bin/kit-history-audit"; then
     out=$("$BASH_BIN" "$hm/bin/kit-history-audit" --control "$TMP/ha-clean" 2>&1)
@@ -1654,27 +1872,27 @@ after=$(git -C "$e" for-each-ref --format='%(objectname) %(refname)'; git -C "$e
 [[ $rc -eq 0 && "$out" == *"control: 10 of 10 fields red"* && "$before" == "$after" ]]
                                                result       "HC3 history control: it follows no inherited GIT_DIR, and leaves that repository as it was" $? "exit $rc, the other repository $([[ "$before" == "$after" ]] && echo unchanged || echo CHANGED)"
 d="$TMP/ha-rows"; ha_repo "$d"; v='^zq-anchored|\bzq-[a-c]{3}[[:digit:]]+x\b'
-printf '%s\n' "LEAK_PATTERN='$v'" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$v" 2
+printf '%s\n' "LEAK_PATTERN='$v'" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$v" 2
 out=$(har --control "$d");                     want_ok      "HC4 history control: a term is made from a row of classes and counts, past one it can't plant" $? "$out" "control: 10 of 10 fields red"
 d="$TMP/ha-norow"; ha_repo "$d"; v='^zq-anchored|zq@mail\.invalid'
-printf '%s\n' "LEAK_PATTERN='$v'" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$v" 2
+printf '%s\n' "LEAK_PATTERN='$v'" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$v" 2
 out=$(har --control "$d");                     want_refused "HC5 history control: a list with no row it can plant in every field refuses, saying so" $? "$out" "no row of the list"
-# The control proves every row (§306 (c)): it makes a term from each, a branch at a time where a row alternates, plants
+# The control proves every row: it makes a term from each, a branch at a time where a row alternates, plants
 # each row's term in a commit of its own and passes only when the audit refuses them all. A list made only of rows
 # bounded by an anchor or a non-letter, the form most lists use, goes red on all of them (HC7); a row it can't make a
 # term from fails the control, named by number (HC8).
 d="$TMP/ha-anch"; ha_repo "$d"; v='(^|[^a-z0-9])zq-alpha([^a-z0-9]|$)|(^|[^a-z0-9])zq-beta([^a-z0-9]|$)'
-printf '%s\n' "LEAK_PATTERN='$v'" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$v" 2
+printf '%s\n' "LEAK_PATTERN='$v'" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$v" 2
 out=$(har --control "$d"); rc=$?
 [[ $rc -eq 0 && "$out" == *"terms made from 2 of the list's 2 rows"* && "$out" == *"control: 10 of 10 fields red"* \
    && "$out" == *"2 of 2 rows' terms refused"* ]]
                                                result       "HC7 history control: rows bounded by an anchor give terms, and the audit refuses each row's term" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-260)"
 [[ "$out" != *zq-alpha* && "$out" != *zq-beta* ]]; result "HC7b and it prints no term" $? "the output holds a planted term"
 d="$TMP/ha-backref"; ha_repo "$d"; v="$MARK|zq-(ab)\\1"
-printf '%s\n' "LEAK_PATTERN='$v'" > "$d/.git/leak-pattern"; tpin "$d/.git/leak-pattern.pin" "$v" 2
+printf '%s\n' "LEAK_PATTERN='$v'" > "$(lp "$d")"; tpin "$d/.git/leak-pattern.pin" "$v" 2
 out=$(har --control "$d");                     want_refused "HC8 history control: a row it can't make a term from fails the control, named by number" $? "$out" "row 2"
 d="$TMP/ha-cshell"; ha_repo "$d"; rm -f "$TMP/ha-ran"
-printf '%s\n' "LEAK_PATTERN='$MARK'" "\$(touch \"$TMP/ha-ran\")" > "$d/.git/leak-pattern"
+printf '%s\n' "LEAK_PATTERN='$MARK'" "\$(touch \"$TMP/ha-ran\")" > "$(lp "$d")"
 out=$(har --control "$d"); rc=$?
 [[ $rc -ne 0 && ! -e "$TMP/ha-ran" ]];         result       "HC6 history control: a list holding shell code is read without running it, and refuses" $? "exit $rc"
 if [[ -z "$b3why" ]]; then
@@ -1683,6 +1901,152 @@ if [[ -z "$b3why" ]]; then
     [[ $rc -eq 3 ]] && ha_named "$out" "$HACP" content; result "HA7 (bash 3) history audit: a marker in old content refuses" $? "exit $rc"
     out=$("$B3" "$HA" --control "$TMP/ha-clean" 2>&1); want_ok "HC1 (bash 3) history control: 10 of 10 fields red" $? "$out" "control: 10 of 10 fields red"
 else for c in "HA0 (bash 3)" "HA7 (bash 3)" "HC1 (bash 3)"; do skip "$c" "$b3why"; done; fi
+
+# ============================== the list's place: one file per project, outside every repository =========
+# A project's do-not-publish list is one file under the home folder's .config/morrowcairn/lists/, named by the
+# project's own random id, the one line of its tracked kit.list-id: every clone of the project reads the same file, and
+# no repository holds the list. The home folder comes from the user database by user id, never from HOME or
+# XDG_CONFIG_HOME. The list's pin stays in .git. Each case runs the suite's copies, so TH stands for the home.
+LH="$TMP/lh"; mk_repo "$LH"; echo "plain text" > "$LH/a.txt"; commit "$LH" base
+git init -q --bare "$TMP/lh.git"; git -C "$LH" push -q --no-verify "$TMP/lh.git" HEAD:refs/heads/main
+LHB=$(git -C "$LH" rev-parse HEAD)
+lhc() { git -C "$1" checkout -q -B "$2" "$LHB"; printf '%s\n' "$3" > "$1/f.txt"; commit "$1" "$2"; git -C "$1" rev-parse HEAD; }  # DIR BRANCH TEXT
+lhpush() {  # DIR SHA [VAR=VALUE...]: pre-push by the stdin protocol over the remote's main, no list in the environment
+    local d=$1 s=$2; shift 2
+    (cd "$d" && printf 'refs/heads/main %s refs/heads/main %s\n' "$s" "$LHB" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN "$@" "$BASH_BIN" "$HK/pre-push" r "$TMP/lh.git" 2>&1 < "$TMP/pp.in"); }
+LH_CLEAN=$(lhc "$LH" lhclean "nothing listed here"); LH_MARK=$(lhc "$LH" lhmark "has $MARK here")
+out=$(lhpush "$LH" "$LH_MARK");                want_refused "LH1 pre-push: a listed term is refused, the list in its place under the home folder" $? "$out" "listed terms in the tree"
+out=$(lhpush "$LH" "$LH_CLEAN");               want_ok      "LH1b pre-push: and a clean push passes, reading that list" $? "$out"
+mv "$(lp "$LH")" "$TMP/lh-list.aside"
+out=$(lhpush "$LH" "$LH_CLEAN");               want_refused "LH2 pre-push: no list in its place refuses, naming the place by the project's id" $? "$out" "~/.config/morrowcairn/lists/$(cat "$LH/kit.list-id")"
+printf "LEAK_PATTERN='%s'\n" "$MARK" > "$LH/.git/leak-pattern"
+out=$(lhpush "$LH" "$LH_CLEAN");               want_refused "LH2b pre-push: a list left only in .git/leak-pattern isn't read, and the refusal names the move" $? "$out" "move-list"
+mv "$LH/kit.list-id" "$TMP/lh-id.aside"; out=$(lhpush "$LH" "$LH_CLEAN"); rc=$?; mv "$TMP/lh-id.aside" "$LH/kit.list-id"
+want_says "MS27 pre-push: no place for the list names the do-not-publish list and says what you can do" $rc "$out" \
+    "the do-not-publish list's place can't be found" "You can: give the project its place"
+rm -f "$LH/.git/leak-pattern"; mv "$TMP/lh-list.aside" "$(lp "$LH")"
+mv "$LH/kit.list-id" "$TMP/lh-id.aside"
+out=$(lhpush "$LH" "$LH_CLEAN");               want_refused "LH2c pre-push: a project with no kit.list-id refuses, naming it" $? "$out" "kit.list-id"
+printf '%s\n' "../../../$(lid)" > "$LH/kit.list-id"
+out=$(lhpush "$LH" "$LH_CLEAN");               want_refused "LH2d pre-push: a kit.list-id that isn't 32 hex digits refuses, so it can name no other path" $? "$out" "kit.list-id isn't"
+mv "$TMP/lh-id.aside" "$LH/kit.list-id"
+mkdir -p "$TMP/elsewhere/.config/morrowcairn/lists"; printf "LEAK_PATTERN='zqdecoy'\n" > "$TMP/elsewhere/.config/morrowcairn/lists/$(cat "$LH/kit.list-id")"
+out=$(lhpush "$LH" "$LH_MARK" HOME="$TMP/elsewhere" XDG_CONFIG_HOME="$TMP/elsewhere/.config")
+                                               want_refused "LH3 pre-push: HOME and XDG_CONFIG_HOME pointed at a folder holding a decoy list change nothing it reads" $? "$out" "listed terms in the tree"
+LC2="$TMP/lh-second"; git clone -q -b main "$TMP/lh.git" "$LC2" 2>/dev/null; git -C "$LC2" config user.name hooks-test
+git -C "$LC2" config user.email hooks-test@invalid.local; git -C "$LC2" config core.hooksPath "$HK"; cp "$LH/.git/leak-pattern.pin" "$LC2/.git/"
+printf '%s\n' "has $MARK here" > "$LC2/f.txt"; commit "$LC2" second; LC2_MARK=$(git -C "$LC2" rev-parse HEAD)
+out=$(lhpush "$LC2" "$LC2_MARK");              want_refused "LH4 pre-push: a second clone of the project reads the same list, by the id it cloned" $? "$out" "listed terms in the tree"
+mkdir -p "$TMP/lh-moved"; mv "$LC2" "$TMP/lh-moved/renamed"
+out=$(lhpush "$TMP/lh-moved/renamed" "$LC2_MARK"); want_refused "LH5 pre-push: the project's folder renamed and moved keeps its list" $? "$out" "listed terms in the tree"
+mkdir -p "$LH/.local"; echo x > "$LH/.local/has-$MARK.txt"; echo x > "$LH/.local/plain-notes.txt"; git -C "$LH" add -f .local
+out=$( (cd "$LH" && env -u LEAK_PATTERN "$BASH_BIN" "$HK/pre-commit") 2>&1 ); rc=$?
+[[ $rc -ne 0 && "$out" == *"plain-notes.txt"* && "$out" == *"a path withheld"* && "$out" != *SYNTH-MARKER* ]]
+                                               result       "LH6 pre-commit: a staged .local/ name the list in its place matches is withheld, a clean one named" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+git -C "$LH" reset -q; rm -rf "$LH/.local"
+# The shipped routine, read-only: the user database's home, whatever HOME and XDG_CONFIG_HOME say. It opens nothing
+# under the home; a failure names no folder. The database is read here by getent where there is one, else by python3.
+if command -v getent >/dev/null 2>&1; then want_home=$(getent passwd "$(id -u)" | awk -F: '{print $6}')
+else want_home=$(python3 -I - <<'PY'
+import os, pwd
+print(pwd.getpwuid(os.getuid()).pw_dir)
+PY
+); fi
+got=$(env HOME="$TMP/elsewhere" XDG_CONFIG_HOME="$TMP/elsewhere/.config" "$BASH_BIN" --norc --noprofile \
+      -c '. "$1" && kit_list_home' _ "$H/read-leak-pattern.sh" 2>/dev/null); rc=$?
+[[ $rc -eq 0 && -n "$want_home" && "$got" == "$want_home" ]]
+                                               result       "LH7 the shipped kit_list_home gives the user database's home, with HOME and XDG_CONFIG_HOME pointed elsewhere" $? "exit $rc; the two $([[ "$got" == "$want_home" ]] && echo agree || echo differ)"
+lhstrip() { awk '/^kit_list_home\(\) \{/ {print; s=1; next} s && /^\}/ {s=0} !s {print}' "$1" 2>/dev/null; }   # FILE: without that body
+a=$(lhstrip "$H/read-leak-pattern.sh"); bad=""
+for c in "$HK" "$HKB" "$HKN" "$HKC" "$HKP" "$HKU" "$HAK/leak-detection" "$hm/leak-detection"; do
+    [[ "$(lhstrip "$c/read-leak-pattern.sh")" == "$a" ]] && ! cmp -s "$H/read-leak-pattern.sh" "$c/read-leak-pattern.sh" || bad+=" ${c#"$TMP"/}"
+done
+[[ "$a" == *"kit_list_home() {"* && -z "$bad" ]]
+                                               result       "LH8 each reader copy the suite runs differs from the shipped reader in kit_list_home's body alone" $? "differing elsewhere, or not swapped:${bad:- none}; the routine $([[ "$a" == *"kit_list_home() {"* ]] && echo is || echo isn\'t) there"
+d="$TMP/lh-ha"; mk_repo "$d"; echo base > "$d/base.txt"; commit "$d" base
+rm -f "$(lp "$d")"; printf "LEAK_PATTERN='%s'\n" "$MARK" > "$d/.git/leak-pattern"
+out=$(har "$d" --remote none);                 want_refused "LH9 history audit: a list left only in .git/leak-pattern isn't read; the refusal names the place by the id" $? "$out" "~/.config/morrowcairn/lists/$(cat "$d/kit.list-id")"
+rm -f "$d/.git/leak-pattern"; printf "LEAK_PATTERN='%s'\n" "$MARK" > "$(lp "$d")"
+out=$(har "$d" --remote none);                 want_ok      "LH9b history audit: the list in its place reads, and a clean history passes" $? "$out" "clean:"
+# With no python3 the shipped routine can't read the user database, so the place fails closed, naming python3, and
+# never falls back to HOME. Read-only: it reads kit.list-id and nothing under any home.
+out=$( (cd "$LH" && env HOME="$TMP/elsewhere" PATH="$TMP/nopy" "$BASH_BIN" --norc --noprofile \
+        -c '. "$1" || exit 9; kit_list_file; printf "rc=%s file=[%s] %s" "$?" "$KL_FILE" "$LP_ERROR"' _ "$H/read-leak-pattern.sh") 2>&1 )
+[[ "$out" == "rc=1 file=[] "*python3* ]]
+                                               result       "LH10 the shipped kit_list_file with no python3 fails, naming it, and names no file" $? "$(printf '%s' "$out" | cut -c1-160)"
+# Where python3 runs but the user database gives this user no usable home, the shipped routine fails closed the same
+# way: a python3 that runs the real one with pwd.getpwuid finding no entry for any id (LH11), or giving a relative home
+# (LH11b), and nothing else changed. Read-only, as LH10; a red names no path.
+REALPY=$(command -v python3 2>/dev/null)
+if [[ -n "$REALPY" ]] && "$REALPY" -I -c pass >/dev/null 2>&1; then
+    for v in noentry relhome; do
+        if [[ $v == noentry ]]; then pre='import pwd\ndef _g(uid): raise KeyError(uid)\npwd.getpwuid = _g\n'; n=LH11
+                                    w="python3 runs and the user database has no entry for this user's id"
+        else pre='import pwd\nclass _E: pw_dir = "relative/home"\npwd.getpwuid = lambda uid: _E()\n'; n=LH11b
+             w="python3 runs and the user database gives a home that isn't an absolute path"; fi
+        mkdir -p "$TMP/py-$v"
+        cat > "$TMP/py-$v/python3" <<EOF
+#!/bin/sh
+# $n's stand-in: the real interpreter, its user database lookup changed as the case says, for the reader's program alone
+if [ "\$1" = -I ] && [ "\$2" = - ]; then
+    { printf '$pre'; cat; } | "$REALPY" -I -
+    exit \$?
+fi
+exec "$REALPY" "\$@"
+EOF
+        chmod 0755 "$TMP/py-$v/python3"
+        out=$( (cd "$LH" && env HOME="$TMP/elsewhere" PATH="$TMP/py-$v:$TMP/nopy" "$BASH_BIN" --norc --noprofile \
+                -c '. "$1" || exit 9; kit_list_file; printf "rc=%s file=[%s] %s" "$?" "$KL_FILE" "$LP_ERROR"' _ "$H/read-leak-pattern.sh") 2>&1 )
+        [[ "$out" == "rc=1 file=[] the home folder can't be read from the user database"* ]]
+                                               result       "$n the shipped kit_list_file where $w fails, and names no file" $? "rc ${out:3:1}, a file $([[ "$out" == *"file=[]"* ]] && echo not named || echo named)"
+    done
+else
+    skip "LH11 the shipped kit_list_file where python3 runs and the user database has no entry for this user's id fails" "python3 is not installed here, or doesn't run"
+    skip "LH11b the shipped kit_list_file where the user database gives a home that isn't an absolute path fails" "python3 is not installed here, or doesn't run"
+fi
+# pre-push with no python3: every push reads the list's home from the user database with python3, so it refuses with
+# that cause and says to install python3, or ask IT, never move-list, which reads the same place.
+out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN PATH="$TMP/nopy" "$BASH_BIN" "$HKP/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
+want_says "MS41 pre-push with no python3: the list's place can't be found, the home unread; install python3, or ask IT" $rc "$out" \
+    "pre-push: REFUSING -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
+    "  You can: install python3 where you may, then push again." "  If IT manages this machine: ask IT for python3."
+[[ $rc -ne 0 && "$out" != *move-list* ]]
+                                               result       "MS41b and it sends no one to move-list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+# python3 on PATH that doesn't run (a stand-in that only offers to install the tools, as a Mac's does without them) is
+# python3 missing: the same refusal as MS41's.
+mkdir -p "$TMP/stubpy"; printf '#!/bin/sh\necho "a stand-in python3 that only offers to install the tools" >&2\nexit 1\n' > "$TMP/stubpy/python3"
+chmod 0755 "$TMP/stubpy/python3"
+out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
+        && env -u LEAK_PATTERN PATH="$TMP/stubpy:$TMP/nopy" "$BASH_BIN" "$HKU/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
+want_says "MS44 pre-push where python3 is on PATH but doesn't run: install python3, or ask IT, as with none" $rc "$out" \
+    "pre-push: REFUSING -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
+    "  You can: install python3 where you may, then push again." "  If IT manages this machine: ask IT for python3."
+# Where python3 runs but the user database gives this user no usable home (no entry for the user's id, or a home that
+# isn't an absolute path on one line: kit_list_home's checks), installing python3 wouldn't help: a refusal of its own
+# names that cause, with no python3 advice and no move-list, which reads the same place.
+if command -v python3 >/dev/null 2>&1 && python3 -I -c pass >/dev/null 2>&1; then
+    out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
+            && env -u LEAK_PATTERN "$BASH_BIN" "$HKU/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
+    want_says "MS43 pre-push where python3 runs but the user database gives no usable home: a refusal naming that cause" $rc "$out" \
+        "pre-push: REFUSING -- the do-not-publish list's place can't be found: python3 runs, but the user database gives this user no home folder the kit can use (no entry for this user's id, or a home that isn't an absolute path on one line)." \
+        "  You can: push from an account the user database lists, with an absolute home folder (in a container, give its user a line in /etc/passwd); the kit takes the home only from there, never from HOME." \
+        "  If IT manages this machine: ask IT to give your account an entry in the user database with an absolute home folder."
+    [[ $rc -ne 0 && "$out" != *"install python3"* && "$out" != *"ask IT for python3"* && "$out" != *move-list* ]]
+                                               result       "MS43b and it gives no python3 advice and sends no one to move-list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+else
+    skip "MS43 pre-push where python3 runs but the user database gives no usable home: a refusal naming that cause" "python3 is not installed here, or doesn't run"
+    skip "MS43b and it gives no python3 advice and sends no one to move-list" "python3 is not installed here, or doesn't run"
+fi
+# No list from the caller's environment: a list in LEAK_PATTERN, harmless or the real one, changes nothing pre-push
+# reads; the list is the file at its place, or there is none. CI's tree scan keeps its own named secret (the NS cases).
+out=$(lhpush "$LH" "$LH_MARK" LEAK_PATTERN=zqharmless)
+                                               want_refused "LE1 pre-push: a harmless list in LEAK_PATTERN is ignored, and the term in the list at its place is refused" $? "$out" "listed terms in the tree"
+mv "$(lp "$LH")" "$TMP/lh-list.aside2"
+out=$(lhpush "$LH" "$LH_CLEAN" LEAK_PATTERN="$MARK")
+                                               want_refused "LE2 pre-push: with LEAK_PATTERN set and no list at its place, it refuses, naming the place" $? "$out" "~/.config/morrowcairn/lists/$(cat "$LH/kit.list-id")"
+mv "$TMP/lh-list.aside2" "$(lp "$LH")"
 
 echo
 echo "hooks_test: $PASS passed, $FAIL failed, $SKIP skipped"

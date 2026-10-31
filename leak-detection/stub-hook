@@ -6,7 +6,8 @@
 # manifest=sha256:<64 hex>), finds that release's install under $KIT_INSTALL_ROOT (default
 # ~/.local/share/morrowcairn/releases), and checks, in order: the install exists; its RELEASE names the pinned
 # release; its MANIFEST.sha256 hashes to the pin's value; every file matches its manifest line, and nothing
-# else is there; this stub equals the release's copy. Then it runs the release's hook of the same name, with
+# else is there; this stub equals the release's copy; and, at a commit in a clone that chains a hooks path, that
+# kit-pin relays every hook that path holds (below). Then it runs the release's hook of the same name, with
 # the same arguments and stdin, and with KIT_INSTALL exported for that hook and the project's own checks.
 #
 # REFUSES when any check fails. The pin is the anchor: tracked in the spawn, outside the install, so an edit
@@ -19,16 +20,17 @@
 set -uo pipefail
 
 hook=${0##*/}
-refuse() {
+refuse() {   # REASON [LINE...]: the refusal, then each line after it, as written ("You can: ...")
     echo "kit stub ($hook): REFUSING -- $1." >&2
-    [[ -z "${2:-}" ]] || echo "  $2" >&2
+    shift
+    while (( $# )); do echo "  $1" >&2; shift; done
     exit 1
 }
 
 # The stub's only pass is the hand-over at the end: exec replaces this process with the release's hook, so this trap
 # never runs after it, and that hook then passes only from its own pass point. Any other exit 0 -- an early exit, or a
-# stop on an unset variable that the shell reports as 0, as bash 3.2 can -- is turned into a refusal here (decisions
-# log §96, §100). A refusal's own non-zero exit, a failed exec's among them, is left as it is.
+# stop on an unset variable that the shell reports as 0, as bash 3.2 can -- is turned into a refusal here. A
+# refusal's own non-zero exit, a failed exec's among them, is left as it is.
 kit_passed=0
 kit_guard() {
     local rc=$?
@@ -47,33 +49,39 @@ trap kit_guard EXIT
 # as <hook>.project. Either refusing refuses, before any of the kit's checks, so the kit scans what gets committed.
 # An org's hook that isn't an executable file is skipped, as git skips it: the org's lane. The kept hook is the kit's
 # to run, so it is never skipped: one that isn't an executable file refuses, as hook-checks/ refuses such an entry.
-# Nothing here keeps an org's hook from running (decisions log §274 ruling 4, §294, §298, §299; install_test HO, HG,
-# HP, HX).
-first=()
+# Nothing here keeps an org's hook from running (install_test HO, HG, HP, HX).
+first=(); whose=()   # each hook to run first, and whose it is: it (IT's hooks path) or project
 if [[ -z "${KIT_STUB_CHAINING:-}" ]]; then
     # The global path, else the system one, from the values git itself reads (GIT_CONFIG_NOSYSTEM skips the system
-    # file for git, but not for `git config --system`; §297, install test HN2).
+    # file for git, but not for `git config --system`; install test HN2).
     org=$(git config --show-scope --includes --type=path --get-all core.hooksPath 2>/dev/null \
           | awk '{ i = index($0, "\t"); s = substr($0, 1, i - 1) } s == "global" || s == "system" { v = substr($0, i + 1) }
                  END { print v }') || org=""
     if [[ -n "$org" ]]; then
         f="$org/$hook"; [[ "$f" == /* ]] || f="$PWD/$f"
-        [[ -f "$f" && -x "$f" && ! "$f" -ef "$0" ]] && first+=("$f")
+        [[ -f "$f" && -x "$f" && ! "$f" -ef "$0" ]] && { first+=("$f"); whose+=(it); }
     fi
     f="${0%/*}/$hook.project"; [[ "$f" == /* ]] || f="$PWD/$f"
     if [[ -e "$f" || -L "$f" ]]; then
         [[ -f "$f" && -x "$f" ]] || refuse "$f, this project's own $hook that kit-pin kept, is not an executable file" \
             "Restore its execute bit (chmod +x $f) or remove it. The kit runs it before its own checks and never skips it."
-        [[ "$f" -ef "$0" ]] || first+=("$f")
+        [[ "$f" -ef "$0" ]] || { first+=("$f"); whose+=(project); }
     fi
 fi
 refs=""
 if (( ${#first[@]} )); then
     if [[ "$hook" == pre-push ]]; then refs=$(cat; printf .); refs=${refs%.}; fi
+    i=0
     for f in "${first[@]}"; do
         if [[ "$hook" == pre-push ]]; then printf '%s' "$refs" | KIT_STUB_CHAINING=1 "$f" "$@"; rc=${PIPESTATUS[1]}
         else KIT_STUB_CHAINING=1 "$f" "$@"; rc=$?; fi
-        (( rc == 0 )) || refuse "$f refused (exit $rc)" "It runs before the kit's checks, as git would run it; what it printed above says why."
+        if (( rc != 0 )); then
+            [[ "${whose[$i]}" != it ]] || refuse "$f refused (exit $rc)" \
+                "If IT manages this machine: it is IT's own hook, run before the kit's checks as git would run it; what it printed above says why."
+            refuse "$f refused (exit $rc)" \
+                "The project's owner: it is this project's own hook, run before the kit's checks as git would run it; what it printed above says why."
+        fi
+        i=$((i + 1))
     done
 fi
 
@@ -115,8 +123,8 @@ case "$hook" in pre-commit|pre-push) ;; *) refuse "it runs only as pre-commit or
 top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "git could not name this clone's top folder"
 root=${KIT_INSTALL_ROOT:-${HOME:-}/.local/share/morrowcairn/releases}
 # A kit-pin command a refusal names runs from inside the project: the pinned install's by its absolute path, or, where
-# that install is missing or fails its manifest, "$INST" or "$KIT" with the line saying what it is (decisions log §348;
-# install test PC15 to PC19).
+# that install is missing or fails its manifest, "$INST" or "$KIT" with the line saying what it is (install test PC15
+# to PC19).
 [[ -f "$top/kit.pin" ]] || refuse "no kit.pin in this clone's top folder" \
     "Pin a release (\"\$INST/bin/kit-pin\" to vX.Y.Z; INST is that release's install, in $root), or restore kit.pin from this project's history."
 release=""; manifest=""; lines=0
@@ -135,24 +143,67 @@ if why=$(kit_no_sha256); then refuse "$why, so the install can't be checked agai
 # An install this process can't see may be missing, or hidden: under Claude Code's sandbox read block a sandboxed
 # command sees the install and every folder up to ~/.local as "No such file or directory", the error a missing one
 # gives, so the two can't be told apart; letting sandboxed commands read the release folder and gitleaks' made the same
-# commit pass (measured, decisions log §292; install_test ST3b, ST3c). So the refusal names both, and the folders.
+# commit pass (measured; install_test ST3b, ST3c). So the refusal names both, and the folders.
 if ! kit_verify_install "$root/$release" "$release" "$manifest"; then
-    [[ -d "$root/$release" ]] || refuse "$KV_ERROR" "It is missing, or hidden from this process (a sandbox that blocks reading the home folder makes it look missing). If hidden, let sandboxed commands read $root and gitleaks' folder (Claude Code: sandbox.filesystem.allowRead in user or managed settings), or commit outside the sandbox; if missing, rebuild it from this project (\"\$KIT/bin/kit-pin\" restore \"\$KIT\"; KIT is your clone of the kit's public repository)."
-    refuse "$KV_ERROR" "KIT is your clone of the kit's public repository. Rebuild the pinned install from this project (\"\$KIT/bin/kit-pin\" restore \"\$KIT\"), or move the pin (\"\$KIT/bin/kit-pin\" to vX.Y.Z)."
+    [[ -d "$root/$release" ]] || refuse "$KV_ERROR" "It is missing, or hidden from this process (a sandbox that blocks reading the home folder makes it look missing)." \
+        "You can: if it is hidden by a sandbox read block you set yourself, add $root, gitleaks' folder and the do-not-publish list's folder, ~/.config/morrowcairn/lists, to sandbox.filesystem.allowRead in your user settings; if it is missing, rebuild it from this project (\"\$KIT/bin/kit-pin\" restore \"\$KIT\"; KIT is your clone of the kit's public repository)." \
+        "If IT manages this machine: a sandbox read policy may block the install folder, $root, gitleaks' folder or the do-not-publish list's folder (~/.config/morrowcairn/lists): ask IT to allow reading them rather than changing it in your own settings, and to allow running from the install folder where the home folder is mounted noexec or programs are allow-listed."
+    refuse "$KV_ERROR" "You can: rebuild the pinned install from this project (\"\$KIT/bin/kit-pin\" restore \"\$KIT\"; KIT is your clone of the kit's public repository), or move the pin (\"\$KIT/bin/kit-pin\" to vX.Y.Z)."
 fi
 kp_cmd="\"$root/$release/bin/kit-pin\""
 # kit-pin to refuses while the work tree has changes, and at a commit the refused commit's change is staged: so the
-# commit's steps set it aside first and bring it back after (§353 F2; install test PC25).
+# commit's steps set it aside first and bring it back after (install test PC25).
 if [[ "$hook" == pre-commit ]]; then
-    differs="Set the staged changes aside, refresh the stub, bring them back, then commit again: git stash; $kp_cmd to $release; git stash pop --index"
+    differs="You can: set the staged changes aside, refresh the stub, bring them back, then commit again: git stash; $kp_cmd to $release; git stash pop --index"
 else
-    differs="Refresh it ($kp_cmd to $release), and see what else is off ($kp_cmd check)."
+    differs="You can: refresh it ($kp_cmd to $release), and see what else is off ($kp_cmd check)."
 fi
 cmp -s "$0" "$root/$release/leak-detection/stub-hook" \
     || refuse "this stub differs from release $release's copy" "$differs"
 # The manifest holds contents, not modes: a release hook that lost its execute bit would fail to run, so say so.
 [[ -x "$root/$release/leak-detection/$hook" ]] \
-    || refuse "release $release's $hook is not executable, so it can't run" "Rebuild the install from this project ($kp_cmd restore \"\$KIT\"; KIT is your clone of the kit's public repository)."
+    || refuse "release $release's $hook is not executable, so it can't run" "You can: rebuild the install from this project ($kp_cmd restore \"\$KIT\"; KIT is your clone of the kit's public repository)." \
+           "If IT manages this machine: where the home folder is mounted noexec or programs are allow-listed, ask IT to allow running from $root."
+
+# ---- a hook added to a chained folder after kit-pin ran ---------------------------------------
+# Where kit-pin chains a hooks path (an org's, or the clone's former one), it records it in .kit-hooks beside the stubs
+# and writes a relay only for the hooks it held then: git starts a process for every hook it finds, so a relay for each
+# name would slow every git command. A hook added there later, or a hooks path IT has
+# moved, would then be skipped by git without a word. So a commit refuses, naming it and the fix, while a recorded
+# folder holds an executable hook of a name below with no relay here, or git reads another org hooks path than the one
+# recorded. Names no relay carries (push-to-checkout, proc-receive, fsmonitor-watchman) and names git doesn't document
+# as hooks are kit-pin check's to name, never refused. Builtins only: this runs at every commit.
+kit_relayed="applypatch-msg pre-applypatch post-applypatch pre-merge-commit prepare-commit-msg commit-msg post-commit
+    pre-rebase post-checkout post-merge pre-receive update post-receive post-update reference-transaction pre-auto-gc
+    post-rewrite sendemail-validate post-index-change"
+is_relay() {   # FILE: one of kit-pin's relays, by its third line
+    local a="" b="" l=""
+    [[ -f "$1" && ! -L "$1" ]] || return 1
+    { IFS= read -r a; IFS= read -r b; IFS= read -r l; } < "$1" 2>/dev/null
+    [[ "$l" == *"the relay git runs in a pinned clone"* ]]
+}
+here=${0%/*}; [[ "$here" == /* ]] || here="$PWD/$here"
+if [[ "$hook" == pre-commit && -z "${KIT_STUB_CHAINING:-}" && -f "$here/.kit-hooks" ]]; then
+    ch_org=""; ch_former=""
+    { IFS= read -r ch_org || :; IFS= read -r ch_former || :; } < "$here/.kit-hooks"
+    repin="You can: set the staged changes aside, run kit-pin to again, bring them back, then commit: git stash; $kp_cmd to $release; git stash pop --index"
+    [[ "$org" == "$ch_org" ]] || refuse "git reads ${org:-no org hooks path} now, but this clone relays the hooks of ${ch_org:-no org hooks path}" "$repin"
+    unrelayed=""
+    for n in $kit_relayed; do
+        for d in "$ch_org" "$ch_former"; do
+            [[ -n "$d" ]] || continue
+            [[ "$d" == /* ]] || d="$top/$d"
+            [[ -f "$d/$n" && -x "$d/$n" ]] && ! is_relay "$here/$n" && unrelayed="$unrelayed $d/$n"
+        done
+    done
+    if [[ -n "$ch_former" ]]; then   # a former path's pre-commit and pre-push run through relays kept as <hook>.project
+        d=$ch_former; [[ "$d" == /* ]] || d="$top/$d"
+        for n in pre-commit pre-push; do
+            [[ -f "$d/$n" && -x "$d/$n" ]] && ! is_relay "$here/$n.project" && unrelayed="$unrelayed $d/$n"
+        done
+    fi
+    [[ -z "$unrelayed" ]] || refuse "a hooks path this clone chains holds hooks it doesn't relay, so git would skip them:$unrelayed" "$repin"
+fi
 
 export KIT_INSTALL="$root/$release"
 # ---- the pass point: the hand-over -------------------------------------------------------------

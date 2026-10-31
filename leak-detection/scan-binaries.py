@@ -34,7 +34,7 @@
 #      with the identity layer's engine (git grep -iE), and the printable strings go through gitleaks,
 #      always with a named config: the clone's .gitleaks.toml, or else the spawn rules beside this file.
 #      Given none, gitleaks takes one from GITLEAKS_CONFIG or GITLEAKS_CONFIG_TOML, so the caller's
-#      environment would choose the rules (decisions log §276, rule 13 (a); hooks_test BC1 to BC4).
+#      environment would choose the rules (gates procedure 13, item 1; hooks_test BC1 to BC4).
 #
 # Exit 0 = every binary cleared; 1 = at least one refused (each named, with its reasons); 2 = the
 # scan could not run. Nothing it prints quotes a blob's content or the pattern, nor a path the list matches.
@@ -46,7 +46,7 @@ import subprocess
 import sys
 import tempfile
 
-# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159), as in pre-push: every
+# Text handling runs byte-wise, matching in the caller's locale, as in pre-push: every
 # git and gitleaks this scan starts runs under LC_ALL=C, but each git grep runs in the locale pre-push saved and hands
 # on (KIT_CALLER_LOCALE), or this process's own when none is handed on (install test LG1).
 CALLER_LOCALE = (os.environ.get("KIT_CALLER_LOCALE") or os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE")
@@ -455,7 +455,7 @@ def reviewed(tip):
 def binary_blobs(rng):
     blobs = {}                                        # blob id -> the first path it was added at
     # A merge is read against its first parent, as pre-push's count and gitleaks read it: that diff holds every binary
-    # the merge adds that neither parent has (decisions log §281; hooks_test MG5).
+    # the merge adds that neither parent has (hooks_test MG5).
     for c in git("rev-list", *rng).decode().split():
         parents = git("rev-list", "--parents", "-n", "1", c).decode().split()[1:]
         against = [parents[0], c] if len(parents) > 1 else ["--root", c]
@@ -471,9 +471,9 @@ def binary_blobs(rng):
 
 def withheld(paths, pattern):
     """The paths not to print: those the list matches, by the same matcher in the caller's locale, as pre-push's own
-    naming withholds a file name (decisions log §158, §159). A path holding a newline is withheld, and a match that
+    naming withholds a file name. A path holding a newline is withheld, and a match that
     can't run withholds every path: nothing unchecked is printed. git grep asks for no colour: with colour forced in a
-    config file its lines missed the parse below, and a path the list matches was printed (§290; hooks_test BW1b)."""
+    config file its lines missed the parse below, and a path the list matches was printed (hooks_test BW1b)."""
     hide = {p for p in paths if "\n" in p}
     safe = [p for p in paths if "\n" not in p]
     if not safe:

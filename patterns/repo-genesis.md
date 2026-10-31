@@ -24,15 +24,17 @@ it, the first push sends it. Once it is pushed, no later discipline recovers it.
 
 ```bash
 git init -b main                            # 1. empty repo, no commits yet; the branch named, not defaulted
-git config --local user.name  UNSET-SEE-REPO-GENESIS   # 1a. SENTINEL: pre-commit refuses every
-git config --local user.email unset@invalid.local      #     commit while this is the identity
+# 1a. OPT-IN, the identity guard (off by default): a SENTINEL identity, refused by pre-commit on every commit
+#     until step 2 replaces it. To turn it on, run these two lines before anything else:
+#   git config --local user.name  UNSET-SEE-REPO-GENESIS
+#   git config --local user.email unset@invalid.local
 "$INST/bin/kit-pin" to "$REL"               # 1b. hooks on before anything can be committed (patterns/local-spawn.md)
 
-git config --local user.name  "<name>"      # 2. identity, LOCAL scope — never --global
-git config --local user.email "<email>"     #    (a noreply address if the mailbox is private)
+git config --local user.name  "<name>"      # 2. identity, LOCAL scope — never --global — where the one git
+git config --local user.email "<email>"     #    resolves is wrong for this project (a noreply address if private)
 
-git config --local user.name                # 3. READ IT BACK. This is the load-bearing step.
-git config --local user.email
+git var GIT_AUTHOR_IDENT                    # 3. READ IT BACK: what git will record. This is the load-bearing step.
+git var GIT_COMMITTER_IDENT
 
 # 4. governance files first — .gitignore, leak-scan config, hooks; a LICENSE once one is chosen (local-spawn)
 # 5. THEN the first commit
@@ -47,12 +49,15 @@ into a verified state.
 **Use `--local`, never `--global`.** Local scope means an identity chosen for this repo cannot leak
 into unrelated work on the same machine, and unrelated work cannot leak into this repo.
 
-**Steps 1a–1b make the pattern enforced, not just documented.** The failure window opens before any
-documentation has been read, which is as much an argument against *documenting* the fix as for the
-fix. So the placeholder identity goes in at `git init`, and `leak-detection/pre-commit` refuses any
-commit whose author or committer is still `UNSET-SEE-REPO-GENESIS`. A reflexive `git commit` before
-step 2 now fails closed instead of writing a guessed author into line one. This clause comes from a
-spawned instance, which invented it after finding the machine's ambient identity was wrong for it.
+**Step 1a, an opt-in, makes the pattern enforced, not just documented.** The failure window opens before
+any documentation has been read, which is as much an argument against *documenting* the fix as for the
+fix. So with the guard on, the placeholder identity goes in at `git init`, and `leak-detection/pre-commit`
+refuses any commit whose author or committer is still `UNSET-SEE-REPO-GENESIS`. A reflexive `git commit`
+before step 2 then fails closed instead of writing a guessed author into line one. This clause comes from
+a spawned instance, which invented it after finding the machine's ambient identity was wrong for it.
+**It is off by default:** the kit's default setup is the one an organization's IT would accept, and IT may
+own the machine's identity and its signing, so a new project commits under the identity git resolves.
+Turn it on where that identity could be wrong for the project; steps 2 and 3 stand either way.
 
 ## Verify after the first commit, too
 

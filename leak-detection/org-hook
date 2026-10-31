@@ -1,0 +1,82 @@
+#!/bin/sh
+#
+# org-hook — the relay git runs in a pinned clone for a hook the stubs don't run. Where kit-pin gives a clone its own
+# hooks path, git runs only that folder's hooks, so the org's hooks path (an IT's, set at the system or global level)
+# and a clone's own former path (a hook manager's, as .husky) would stop running. The stubs chain their two, pre-commit
+# and pre-push; bin/kit-pin copies this file under the name of each other hook those folders hold when it runs, of
+# those git documents but three, so both always run; the stub refuses a commit
+# while they hold one with no relay. push-to-checkout and proc-receive change what git does by being there at all, and
+# git finds fsmonitor-watchman through core.fsmonitor, so none of the three is relayed; kit-pin check names any the
+# org's folder holds.
+#
+# It reads the two paths from .kit-hooks beside it, which kit-pin writes: the org's on the first line, the clone's
+# former path on the second, either empty. Then it runs, in order, the org's hook of its own name, the former path's,
+# and a hook of the project's own that kit-pin kept as <name>.project, each by its own path, with the same arguments,
+# from the folder git started it in, a relative path taken from there as git takes one. Under the name
+# <hook>.project, which kit-pin writes for pre-commit and pre-push when it chains a former path, it runs only that
+# path's hook: the stub of that name runs it after the org's. A hook git feeds on standard input gets the same input
+# each. One refusing refuses, as git would have it, with what it printed above. A missing or non-executable org or
+# former-path hook is skipped, as git skips it; a kept hook that isn't executable refuses, as the stubs' kept hooks do.
+# With nothing to run it reads what git sends and exits 0, as a missing hook leaves git. It refuses when .kit-hooks is
+# missing, since it can't tell what it would skip. Plain sh, every step a builtin but the hooks it runs: git may call
+# it many times a command (reference-transaction twice for each ref update).
+name=${0##*/}
+case $0 in */*) dir=${0%/*} ;; *) dir=. ;; esac
+case $dir in /*) ;; *) dir=$PWD/$dir ;; esac
+passed=0
+refuse() {   # REASON [LINE...]: the refusal, then each line after it, as written ("You can: ...")
+    echo "kit relay ($name): REFUSING -- $1" >&2
+    shift
+    while [ $# -gt 0 ]; do echo "  $1" >&2; shift; done
+    passed=1; exit 1
+}
+# Any exit 0 that isn't a pass below, an early one or a stop on an error the shell reports as 0, refuses.
+trap 'rc=$?; if [ "$rc" -eq 0 ] && [ "$passed" != 1 ]; then echo "kit relay ($name): REFUSING -- the relay stopped before it finished, so what it had not reached never ran." >&2; exit 1; fi' EXIT
+
+conf=$dir/.kit-hooks
+[ -f "$conf" ] || refuse "$conf, where kit-pin records the hooks paths this clone chains, is missing" \
+    "Write it again from the project's top folder: kit-pin to, with the release kit.pin names."
+org=; former=
+{ IFS= read -r org || :; IFS= read -r former || :; } < "$conf"
+
+hook=$name; only_former=0
+case $name in *.project) hook=${name%.project}; only_former=1 ;; esac
+t1=; t2=; t3=; p=
+pick() {   # PATH: p is PATH, made absolute, when it is an executable file other than this relay; else empty
+    p=$1
+    case $p in /*) ;; *) p=$PWD/$p ;; esac
+    if [ -f "$p" ] && [ -x "$p" ] && ! [ "$p" -ef "$0" ]; then :; else p=; fi
+}
+if [ "$only_former" = 0 ] && [ -n "$org" ]; then pick "$org/$hook"; t1=$p; fi
+if [ -n "$former" ]; then pick "$former/$hook"; t2=$p; fi
+kept=$dir/$name.project
+if [ "$only_former" = 0 ] && { [ -e "$kept" ] || [ -L "$kept" ]; }; then
+    { [ -f "$kept" ] && [ -x "$kept" ]; } || refuse "$kept, this project's own $hook that kit-pin kept, is not an executable file" \
+        "Restore its execute bit (chmod +x $kept) or remove it. The kit runs it and never skips it."
+    t3=$kept
+fi
+
+case $hook in reference-transaction|post-rewrite|pre-receive|post-receive|pre-push) fed=1 ;; *) fed=0 ;; esac
+n=0
+for t in "$t1" "$t2" "$t3"; do [ -n "$t" ] && n=$((n + 1)); done
+if [ "$n" -eq 0 ]; then
+    if [ "$fed" = 1 ]; then while IFS= read -r _line || [ -n "$_line" ]; do :; done; fi
+    passed=1; exit 0
+fi
+if [ "$n" -eq 1 ]; then
+    for t in "$t1" "$t2" "$t3"; do [ -n "$t" ] && exec "$t" "$@"; done
+fi
+input=
+if [ "$fed" = 1 ]; then input=$(cat; printf .); input=${input%.}; fi
+for t in "$t1" "$t2" "$t3"; do
+    [ -n "$t" ] || continue
+    if [ "$fed" = 1 ]; then printf '%s' "$input" | "$t" "$@"; else "$t" "$@"; fi
+    rc=$?
+    if [ "$rc" -ne 0 ]; then   # the org's hook is IT's; a former path's or a kept one is the project's own
+        [ "$t" != "$t1" ] || refuse "$t refused (exit $rc)" \
+            "If IT manages this machine: it is IT's own hook, run as git would run it; what it printed above says why."
+        refuse "$t refused (exit $rc)" \
+            "The project's owner: it is this project's own hook, run as git would run it; what it printed above says why."
+    fi
+done
+passed=1; exit 0

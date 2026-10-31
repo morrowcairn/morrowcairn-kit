@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # kit-history-audit -- the full-history identity check: a repository's whole history read against the project's own
-# identity list, run before the repository goes public (decisions log §284 ruling 2, queue 538). It is the kit's own
+# do-not-publish list, run before the repository goes public. It is the kit's own
 # push audit, shipped for any project.
 #
 #   kit-history-audit [REPO] [--remote NAME|none] [--allow FILE]
@@ -21,11 +21,12 @@
 #
 # What it reads: every commit reachable from any ref, and every one only the reflog still holds, each by its author and
 # committer (names and emails), its message (with any other header), the paths it touches and the lines it adds,
-# binary files' too, a merge's against its first parent, as pre-push reads a merge (§281); every tag object's tagger
-# and message; every ref name, and the remote's. The list is the repository's own .git/leak-pattern, read as data by
-# the kit's reader and checked against .git/leak-pattern.pin; a list in the environment is ignored (the user-level
-# rule 13 (a)). Each field is searched by git grep and by grep, each under LC_ALL=C and in the caller's locale, and a
-# file either names counts (§145, §159; queue 462).
+# binary files' too, a merge's against its first parent, as pre-push reads a merge; every tag object's tagger
+# and message; every ref name, and the remote's. The list is the project's own, at the place the kit's reader names
+# (~/.config/morrowcairn/lists/<id>, the id in the project's kit.list-id), read as data by that reader and checked
+# against .git/leak-pattern.pin; .git/leak-pattern, its old place, is not read; a list in the environment is ignored
+# (the gates skill's procedure 13, item 1). Each field is searched by git grep and by grep, each under LC_ALL=C and in the caller's locale, and a
+# file either names counts.
 #
 # PRINTS COUNTS, COMMIT AND TAG OBJECT HASHES AND FIELD NAMES ONLY: never a matched line, a term, the list or a path.
 # A user who needs to see a hit looks at that commit's field themselves.
@@ -35,12 +36,12 @@
 # only when ten of ten fields go red and the audit exits 3.
 #
 set -uo pipefail
-# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159): every text tool here runs
+# Text handling runs byte-wise, matching in the caller's locale: every text tool here runs
 # under LC_ALL=C, and each search runs twice, under LC_ALL=C and in the locale saved here (install test LG1).
 KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
 export LC_ALL=C
 
-# A pass comes only from a pass point. Any other exit 0, a stop on an unset variable among them, is a refusal (§96).
+# A pass comes only from a pass point. Any other exit 0, a stop on an unset variable among them, is a refusal.
 A=""
 kit_passed=0
 kit_guard() {
@@ -63,7 +64,7 @@ usage() {  # [WHY]: exit 2
     exit 2
 }
 
-# It runs outside a git hook, so it follows no git setting it inherits (the user-level rule 13 (c); decisions log §134):
+# It runs outside a git hook, so it follows no git setting it inherits (the gates skill's procedure 13, item 3):
 # every GIT_ variable from the caller goes, so git reads REPO itself; replace refs are off, so git reads the objects
 # history holds; and git never stops to ask for a password. A repository with grafts is refused below.
 for v in $(compgen -e); do case $v in GIT_*) unset "$v" ;; esac; done
@@ -83,8 +84,8 @@ kit_no_sha256() {
     printf 'neither sha256sum (GNU coreutils) nor shasum (Perl) is installed'
 }
 
-# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value (decisions
-# log §108, §112). A row is one top-level alternative of the extended regex: groups, bracket expressions and escapes
+# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value. A row
+# is one top-level alternative of the extended regex: groups, bracket expressions and escapes
 # don't split one. One routine, the same text in each script that reads a pin (install test PN0). kit_list_rows VALUE
 # prints how many rows VALUE holds; kit_list_head VALUE N prints its first N rows as written; kit_pin_check VALUE PINFILE
 # succeeds when VALUE is the list PINFILE names, and otherwise fails with KP_ERROR saying why, in rows, never in a term
@@ -157,6 +158,8 @@ elif ! source "$reader"; then
     reader_fault="it did not load"
 elif ! declare -F read_leak_pattern >/dev/null || ! declare -F read_leak_pattern_selftest >/dev/null; then
     reader_fault="it does not define both read_leak_pattern and read_leak_pattern_selftest"
+elif ! declare -F kit_list_file >/dev/null || ! declare -F kit_list_home >/dev/null; then
+    reader_fault="it does not define kit_list_file and kit_list_home, which say where the list lives"
 elif ! read_leak_pattern_selftest; then
     reader_fault="it failed its selftest"
 fi
@@ -165,14 +168,15 @@ fi
 
 command -v git >/dev/null 2>&1 || refuse "git was not found, so no history can be read."
 command -v python3 >/dev/null 2>&1 || refuse "python3 was not found: the audit reads each commit's fields with it."
-# The git this audit needs: 2.31 or later, as the hooks do (decisions log §290): it asks git for absolute paths, and the
+# The git this audit needs: 2.31 or later, as the hooks do: it asks git for absolute paths, and the
 # kit is tested on nothing older. A git that old, or one whose version can't be read, is refused by name.
 gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
 if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
-    refuse "could not read git's version, and this audit needs git 2.31 or later."
+    refuse "could not read git's version, and this audit needs git 2.31 or later." \
+        "You can: install git 2.31 or later where you may, then run it again." "If IT manages this machine: ask IT for git 2.31 or later."
 fi
 if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
-    refuse "git $gv is older than 2.31, the oldest this audit is built and tested for." "Install git 2.31 or later, then run it again."
+    refuse "git $gv is older than 2.31, the oldest this audit is built and tested for." "You can: install git 2.31 or later where you may, then run it again." "If IT manages this machine: ask IT for git 2.31 or later."
 fi
 
 cd "$REPO" || refuse "the repository's folder can't be entered."
@@ -181,22 +185,33 @@ GITDIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || r
 A=$(mktemp -d) || refuse "no temporary folder could be made."
 chmod 700 "$A"; umask 077; mkdir "$A/f" "$A/p" "$A/hooks" "$A/home" || refuse "no temporary folder could be made."
 
-# The list: the repository's own, read as data, and the one its pin names (rule 13 (a), (d); queue 462). A refusal
-# names rows, never a term or a hash.
-[[ -e "$GITDIR/leak-pattern" || -L "$GITDIR/leak-pattern" ]] || refuse "no identity list at .git/leak-pattern, so there is nothing to read the history against." \
-    "Put the project's list there (leak-detection/README.md, Setup), then give it its first pin (\"$here/kit-pin\" repin local --first)."
-[[ -f "$GITDIR/leak-pattern" && -r "$GITDIR/leak-pattern" ]] || refuse ".git/leak-pattern exists but can't be read (not a readable file), so there is nothing to read the history against."
-read_leak_pattern "$GITDIR/leak-pattern" || refuse ".git/leak-pattern is not in a shape the reader reads: $LP_ERROR."
+# The list: the project's own, at the place the reader names, read as data, and the one its pin names (the gates
+# skill's procedure 13, items 1 and 4). A refusal names rows, never a term or a hash.
+kit_list_file || refuse "the do-not-publish list's place can't be found: $LP_ERROR." \
+    "You can: give the project its place (\"$here/kit-pin\" move-list makes kit.list-id where there is none), then run this again."
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "this repository's work tree can't be read."
+if [[ ! -e "$KL_FILE" && ! -L "$KL_FILE" ]]; then
+    if [[ -e "$(git rev-parse --git-dir)/leak-pattern" ]]; then
+        refuse "no do-not-publish list at $KL_SHOW, so there is nothing to read the history against." \
+            "You can: move it (\"$here/kit-pin\" move-list; the old file stays): this clone still holds one at .git/leak-pattern, the list's old place, which is no longer read."
+    fi
+    refuse "no do-not-publish list at $KL_SHOW, so there is nothing to read the history against." \
+        "You can: put the project's list there (leak-detection/README.md, Setup), then give it its first pin (\"$here/kit-pin\" repin local --first)." \
+        "The project's owner: whether this project keeps a do-not-publish list."
+fi
+[[ -f "$KL_FILE" && -r "$KL_FILE" ]] || refuse "$KL_SHOW exists but can't be read (not a readable file), so there is nothing to read the history against."
+read_leak_pattern "$KL_FILE" || refuse "$KL_SHOW is not in a shape the reader reads: $LP_ERROR."
 LEAK_PATTERN=$LP_VALUE
-[[ -n "$LEAK_PATTERN" ]] || refuse "the identity list in .git/leak-pattern sets no pattern, so there is nothing to read the history against."
-if why=$(kit_no_sha256); then refuse "$why, so the identity list can't be checked against its pin."; fi
-kit_pin_check "$LEAK_PATTERN" "$GITDIR/leak-pattern.pin" || refuse "the identity list in .git/leak-pattern doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." \
-    "If the list changed on purpose, record why and repin it (\"$here/kit-pin\" repin local); if it didn't, put the list back."
+[[ -n "$LEAK_PATTERN" ]] || refuse "the do-not-publish list in $KL_SHOW sets no pattern, so there is nothing to read the history against."
+if why=$(kit_no_sha256); then refuse "$why, so the do-not-publish list can't be checked against its pin."; fi
+kit_pin_check "$LEAK_PATTERN" "$GITDIR/leak-pattern.pin" || refuse "the do-not-publish list in $KL_SHOW doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." \
+    "You can: if the list changed on purpose, record why and repin it (\"$here/kit-pin\" repin local); if it didn't, put the list back." \
+    "The project's owner: whether the change to the list was meant."
 ROWS=$(kit_list_rows "$LEAK_PATTERN")
-# The reserved line says the project has no identity list (§308): there is nothing to read a history against, and a
-# project going public needs a real list (§309, §310 (a)).
-[[ "$LEAK_PATTERN" != "kit:no-identity-list" ]] || refuse "this project's list is the line saying it has no identity list: a project going public needs a real list, so its history can't be read against one." \
-    "Put the project's own list in .git/leak-pattern and pin it (leak-detection/README.md, Setup), then run this again."
+# The reserved line says the project has no do-not-publish list: there is nothing to read a history against, and a
+# project going public needs a real list.
+[[ "$LEAK_PATTERN" != "kit:no-identity-list" ]] || refuse "this project's list is the line saying it has no do-not-publish list: a project going public needs a real list, so its history can't be read against one." \
+    "Put the project's own list in $KL_SHOW and pin it (leak-detection/README.md, Setup), then run this again."
 
 # The list against one text, in two passes, under LC_ALL=C and in the caller's locale; a match in either counts. 0 when
 # either matched, 1 when neither did, 2 when a pass couldn't run and neither matched (as pre-push's list_matches).
@@ -208,11 +223,11 @@ list_matches() {  # TEXT
     (( c == 1 && u == 1 )) && return 1
     return 2
 }
-list_matches "" ; (( $? < 2 )) || refuse "the identity list doesn't compile as an extended regex, so nothing can be searched with it."
+list_matches "" ; (( $? < 2 )) || refuse "the do-not-publish list doesn't compile as an extended regex, so nothing can be searched with it."
 
 # ============================== the control ==============================================================
 if (( CONTROL )); then
-    # Two readings of every row, each its shortest, an alternation tried a branch at a time (§306 (c)): one to stand
+    # Two readings of every row, each its shortest, an alternation tried a branch at a time: one to stand
     # alone on a line, where an anchor holds; and one to sit inside a field, letters, digits, dots, dashes or underscores
     # only, at least three, which the list must match in each of the ten places it goes. Written to private files, never
     # printed. A row using a back-reference, an equivalence class or a collating element gives neither.
@@ -448,7 +463,7 @@ PY
         && cb -c user.name="t $term" tag -a ctl-tagger -m clean HEAD \
         && cb tag -a ctl-msg -m "names $term" HEAD \
         && cb branch "ref-$term" HEAD \
-        && cp "$GITDIR/leak-pattern" "$W/.git/leak-pattern" && cp "$GITDIR/leak-pattern.pin" "$W/.git/leak-pattern.pin"
+        && cp "$TOP/kit.list-id" "$W/kit.list-id" && cp "$GITDIR/leak-pattern.pin" "$W/.git/leak-pattern.pin"
     } >/dev/null 2>&1 || refuse "the control repository could not be built."
     # Each built row's line reading, alone on the one line of a file of its own, in a commit of its own.
     : > "$A/rowcommits"
@@ -651,7 +666,7 @@ done
 
 # ---- each hit ------------------------------------------------------------------------------------------------------
 # The lines of a field file that match, by number, in either pass. Every line counts, whatever bytes it holds (-a): a
-# NUL or invalid UTF-8 on a line hid it from the .local audit's verdict (§145 step 3).
+# NUL or invalid UTF-8 on a line hid it from the .local audit's verdict.
 hit_lines() {  # FILE: the matching lines' numbers, one a line, to stdout; 1 when a pass couldn't run
     local c u
     LC_ALL=C grep -a -n -i -E -e "$LEAK_PATTERN" -- "$1" > "$A/l.c" 2>/dev/null; c=$?

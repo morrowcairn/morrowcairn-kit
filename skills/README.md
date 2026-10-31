@@ -1,36 +1,35 @@
 # skills/ — triggered and standing doctrine
 
-This directory holds the kit's doctrine: one file per failure family. Each file opens by saying when
-it loads, and every procedure in it carries a "Would revisit if:" retirement condition and a line in
-the provenance appendix, [`PROVENANCE.md`](PROVENANCE.md).
+This directory indexes the kit's doctrine, one file per failure family, and holds its provenance appendix,
+[`PROVENANCE.md`](PROVENANCE.md). The doctrine lives in `rules/` and `.claude/skills/`; each file opens by saying
+when it loads, and every procedure in a skill carries a "Would revisit if:" retirement condition and a line in the
+appendix.
 
 ## What is here, and how each loads
 
 | File | Family | Loads |
 |---|---|---|
-| `skills/working-from-a-brief.md` | turning a brief into work: size, reopen, measured vs inferred, a project's own bar; compaction, rotation and the handoff file | always: an import line, once per session (below) |
-| `skills/shell-commands.md` | silent-failure classes in shell commands | always: an import line, once per session (below) |
+| `rules/morrowcairn.md` | the always-on rules: relays, reports, size, reopening, measuring, the shell, compaction and the handoff file, a project's own bar | always: `bin/kit-pin user` links it into the user-level rules folder |
 | `.claude/skills/gates/SKILL.md` | changing a gate; permission rules | when a task matches its description |
 | `.claude/skills/record-stamps/SKILL.md` | time stamps in records | when a task matches its description |
 | `.claude/skills/session-close/SKILL.md` | closing a session: hygiene, what needs a decision, what went wrong | when a task matches its description |
 
-Two load always because they apply in nearly every session, and a load they missed would be silent.
+The rules file loads always because it applies in nearly every session, and a load it missed would be silent.
 The triggered ones live where Claude Code finds skills, `.claude/skills/<name>/SKILL.md`, and load
 when a task matches the `description` in their front matter, which is written as trigger conditions
 rather than a topic label. Both mechanisms were checked in a throwaway spawn before these files were
-written: the import lines put the always-on files into the session's opening context with every tool
+written: an always-on file reached the session's opening context with every tool
 off, and each triggered file was loaded, unprompted, by a task that matched it and by no other.
 `session-close` came later and was measured the same way before v0.9.0: it loaded first, unprompted,
 on the operator's wrap-up phrasings, in fresh sessions and late in a long, compacted one, and on none
 of three unrelated tasks.
 
-Where the import lines live (v0.8.0): not in a project. A project holds no copy of these files, and its
-`CLAUDE.md` template (`templates/CLAUDE.md`) imports nothing, so nothing loads twice. On a machine whose
-user-level `CLAUDE.md` imports them from the pinned install, every session there loads them once, and
-the triggered ones load from user-level skill entries pointing at the same install. Until that
-user-level step, the kit's own `CLAUDE.md` imports them for the kit's sessions; a project made before
-v0.8.0 keeps its copies until then (`patterns/local-upgrade.md`, step 3). A pin move brings their
-corrections.
+Where the user-level entries live: not in a project. A project holds no copy of these files, and its
+`CLAUDE.md` template (`templates/CLAUDE.md`) imports nothing, so nothing loads twice. `bin/kit-pin user vX.Y.Z`,
+run once per machine, links the rules file into Claude Code's rules folder and each skill into its skills folder,
+from the pinned install, and writes the kit's user pin; every session there then loads them once. A project made
+before v0.8.0 keeps its copies until that step has run (`patterns/local-upgrade.md`, step 3). Moving the user pin
+brings their corrections.
 
 ## The filter
 

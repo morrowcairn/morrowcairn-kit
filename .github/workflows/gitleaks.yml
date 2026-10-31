@@ -24,16 +24,16 @@ permissions:
 jobs:
   gitleaks-scan:
     runs-on: ubuntu-latest
-    # About three times the longest run measured from 10-01 to 10-18, 5.0 minutes with the Linux suites (decisions log
-    # §127). A job past its limit fails.
-    timeout-minutes: 15
+    # About 1.5 times the longest run measured, rounded up: on 10-31 the suites ran past the 15 once set here (hooks
+    # 3 min 18 s, install 11 min 17 s, then cut off), about 15.5 minutes in all, so 30. A job past its limit fails.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       # One gitleaks version on every runner, each archive checked against the sha256 written here, which is the one
       # the release publishes (gitleaks_8.30.1_checksums.txt, matching GitHub's own asset digests on 2026-10-17).
       # A checksum read at run time from the release would come from the same place as the archive. Moving the pin
-      # moves the version and every sum together, test-first (decisions log §69, §98). The same step is in
+      # moves the version and every sum together, test-first. The same step is in
       # cross-platform.yml. gitleaks goes on the PATH once, for every later step, from a folder of its own, not the
       # checkout: a per-step PATH reached the hook tests and missed the kit's document tests.
       - name: Install gitleaks

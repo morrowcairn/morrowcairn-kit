@@ -17,4 +17,4 @@ description: Use before writing a date or a time into a record (a decision, an i
 
 **Would revisit if:** every tool that writes a record stamps the time itself.
 
-*Provenance: `skills/PROVENANCE.md`, line 9.*
+*Provenance: `skills/PROVENANCE.md`, the line for procedure 9.*

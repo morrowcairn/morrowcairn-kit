@@ -18,16 +18,16 @@ INST="${KIT_INSTALL_ROOT:-$HOME/.local/share/morrowcairn/releases}/${REL:?}"
 
 1. **An owner, the hooks and CI.** A named owner answers for the repository; `"$INST/bin/kit-pin" check` passes, so the
    leak hooks run on this clone; and a CI leak check (`ci/gitleaks.yml`, `ci/leak-scan.yml`) runs on the forge.
-2. **A real identity list.** `kit-pin check` says the identity scan is active, not that identity checks are off: a
-   project going public needs a real, pinned list in `.git/leak-pattern`, never the reserved line
-   `kit:no-identity-list` (`leak-detection/README.md`, Setup).
+2. **A real do-not-publish list.** `kit-pin check` says the do-not-publish check is active, not that it is off: a
+   project going public needs a real, pinned list at its place, `~/.config/morrowcairn/lists/<id>` (the id in
+   `kit.list-id`), never the reserved line `kit:no-identity-list` (`leak-detection/README.md`, Setup).
 3. **The binary scan on.** Commit `kit.binaries` holding the one line `scan=on`; `kit-pin check` then says the binary
    scan is on, and every push checks the binaries it adds. The binaries already in the history were never checked
    while the scan was off, so check every branch and tag once:
 
    ```bash
    for tip in $(git for-each-ref --format='%(refname)' refs/heads refs/tags); do
-       ( . "$INST/leak-detection/read-leak-pattern.sh" && read_leak_pattern "$(git rev-parse --git-dir)/leak-pattern" \
+       ( . "$INST/leak-detection/read-leak-pattern.sh" && kit_list_file && read_leak_pattern "$KL_FILE" \
          && LEAK_PATTERN=$LP_VALUE python3 -I "$INST/leak-detection/scan-binaries.py" "$tip" ); echo "$tip: exit $?"
    done
    ```
@@ -37,7 +37,7 @@ INST="${KIT_INSTALL_ROOT:-$HOME/.local/share/morrowcairn/releases}/${REL:?}"
    that the tip's history holds no binary.
 4. **The full history.** gitleaks over every ref's history, with the project's rules (`.gitleaks.toml`, or else
    `"$INST/leak-detection/spawn.gitleaks.toml"`): `gitleaks git --no-banner --redact --config .gitleaks.toml
-   --log-opts=--all`, exit 0. Then the identity list over every commit, tag and ref, its control first:
+   --log-opts=--all`, exit 0. Then the do-not-publish list over every commit, tag and ref, its control first:
    `"$INST/bin/kit-history-audit" --control`, then `"$INST/bin/kit-history-audit" --remote origin`, exit 0 each
    (`leak-detection/README.md`, Before a repository goes public). **Run both again whenever the list grows**: a term
    added later may already sit in the history, where no push reads it again.

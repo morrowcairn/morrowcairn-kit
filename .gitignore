@@ -5,8 +5,8 @@ venv/
 node_modules/
 .DS_Store
 
-# Local, per-clone leak pattern lives in .git/leak-pattern (never tracked).
-# This entry exists so a stray copy at the repo root cannot be committed by accident.
+# The do-not-publish list lives outside every repository, at ~/.config/morrowcairn/lists/<id> (the id in kit.list-id),
+# and never in a tracked file. This entry exists so a stray copy at the repo root cannot be committed by accident.
 leak-pattern
 *.leak-pattern
 

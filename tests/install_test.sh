@@ -2,7 +2,7 @@
 #
 # install_test.sh — tests for delivery by install and pin: tools/install-release.sh, the stub hook
 # (leak-detection/stub-hook), the checked-copies layer (leak-detection/check-copies.sh, which the hooks run
-# under the stub) and bin/kit-pin.
+# under the stub), bin/kit-pin, and the Claude Code hooks an install ships (claude-hooks/).
 #
 #   tests/install_test.sh [ROOT]    ROOT = a checkout of this kit (default: the one holding this file)
 #
@@ -23,7 +23,7 @@ trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT     # installs are re
 
 export KIT_INSTALL_ROOT="$TMP/releases"; mkdir -p "$KIT_INSTALL_ROOT"
 export GIT_CONFIG_GLOBAL="$TMP/global.gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
-export LEAK_PATTERN='SYNTH-MARKER-7F3A'
+unset LEAK_PATTERN                          # the hooks and kit-pin read a project's list from its file, never the environment
 MARK='SYNTH-MARKER-7F3A'
 PASS=0; FAIL=0; SKIP=0
 
@@ -38,13 +38,50 @@ want_refused() { if [[ $2 -ne 0 && "$3" == *"$4"* ]]; then result "$1" 0
 refused_for() { local n; n=$(printf '%s\n' "$3" | grep -c 'REFUSING')
     if [[ $2 -ne 0 && $n -eq 1 && "$3" == *"$4"* ]]; then result "$1" 0
     else result "$1" 1 "exit $2, $n refusal(s), want '$4': $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-200)"; fi; }
+# want_says NAME RC OUTPUT LINE...: a refusal, or check's failing close (RC non-zero), whose output holds each LINE: the
+# lines a refusal adds after its first, each labelled for who acts on it ("You can:", "If IT manages this machine:",
+# "The project's owner:"), in the do-not-publish wording.
+want_says() { local n=$1 rc=$2 o=$3 l miss=""; shift 3
+              for l in "$@"; do [[ "$o" == *"$l"* ]] || miss="$miss '$l'"; done
+              if [[ $rc -ne 0 && -z "$miss" ]]; then result "$n" 0
+              else result "$n" 1 "exit $rc, want a refusal saying$miss: $(printf '%s' "$o" | tr '\n' ' ' | cut -c1-200)"; fi; }
+# want_split NAME RC OUTPUT: a sandbox refusal's two lines split who acts: "You can:" covers
+# only a read block the person set themselves, adding the folder in their user settings; "If IT manages this
+# machine:" says a sandbox read policy may block it, and to ask IT rather than change it in their own settings.
+want_split() { local you="" it="" l
+               while IFS= read -r l; do case "$l" in "  You can:"*) you+=$l ;; "  If IT manages this machine:"*) it+=$l ;; esac; done <<< "$3"
+               if [[ $2 -ne 0 && "$you" == *"you set yourself"* && "$you" == *"sandbox.filesystem.allowRead in your user settings"* \
+                     && "$you" != *"IT's settings allow"* && "$it" == *"sandbox read policy may block"* \
+                     && "$it" == *"rather than changing it in your own settings"* ]]; then result "$1" 0
+               else result "$1" 1 "exit $2: you [$(echo $you | cut -c1-140)] it [$(echo $it | cut -c1-140)]"; fi; }
 sha() { local s; s=$(sha256sum < "$1") && printf '%s' "${s%% *}"; }
-# A list's pin (decisions log §108, §112): its rows and the SHA-256 of its value, written here with a row count the
+# A list's pin: its rows and the SHA-256 of its value, written here with a row count the
 # suite knows, so a counting fault in kit-pin can't agree with itself.
 tsum() { local s; if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum); else s=$(shasum -a 256); fi; printf '%s' "${s%% *}"; }
 tpin() { mkdir -p "${1%/*}"; printf '# a test pin\nrows=%s\nsha256=%s\n' "$3" "$(printf '%s' "$2" | tsum)" > "$1"; }   # PINFILE VALUE ROWS
 mhash() { local s; s=$(sha "$1/MANIFEST.sha256") && printf 'sha256:%s' "$s"; }
 ident() { git -C "$1" config user.name install-test; git -C "$1" config user.email install-test@invalid.local; }
+# A project's list lives under the home folder the user database gives, never $HOME's. Every reader this suite's cases
+# run is rswap's copy, kit_list_home's body alone swapped for this suite's scratch home, TH: kit-pin runs from a copy
+# beside one (KP), and every release from v1.0.0 on carries one in its stand-in commit, so no case reads or writes the
+# real home. v2.0.0 and v9.0.0 keep the shipped reader, for the real suite (IR9) and the static reads alone; no case
+# pins a project to them. A copy whose swap didn't take would send a case to the real home, so rswap stops the suite.
+TH="$TMP/home"; LML="$TH/.config/morrowcairn/lists"; mkdir -p "$LML"; chmod 700 "$TH/.config/morrowcairn" "$LML"
+lid() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }                       # a fresh list id: 32 hex digits
+lmid() { cat "$1/kit.list-id" 2>/dev/null; }                                 # DIR: its id, or nothing
+lmf() { printf '%s/%s' "$LML" "$(lmid "$1")"; }                              # DIR: where its list lives in TH
+tlist() { (umask 077 && printf "LEAK_PATTERN='%s'\n" "${2:-$MARK}" > "$(lmf "$1")"); }   # DIR [VALUE]: its list, the suite's row
+oldlist() { (umask 077 && printf "LEAK_PATTERN='%s'\n" "$MARK" > "$1/.git/leak-pattern"); }   # DIR: a list at its old place
+laside() { mv "$(lmf "$1")" "$TMP/list.aside"; }                              # DIR: its list set aside, none at its place
+lback() { mv -f "$TMP/list.aside" "$(lmf "$1")"; }                            # DIR: that list back
+rswap() {  # SRC DST: SRC, kit_list_home's body swapped for printing TH; a SRC with no kit_list_home is copied as it is
+    RS_BODY="    printf '%s\\n' '$TH'   # a suite's test copy: its scratch home" \
+        awk '/^kit_list_home\(\) \{/ {print; print ENVIRON["RS_BODY"]; s=1; next} s && /^\}/ {s=0} !s {print}' "$1" > "$2.rswap" || exit 1
+    mv -f "$2.rswap" "$2" || exit 1
+    bash --norc --noprofile -c '. "$1" && declare -F kit_list_home' _ "$1" >/dev/null 2>&1 || return 0
+    [[ "$(bash --norc --noprofile -c '. "$1" && kit_list_home' _ "$2" 2>/dev/null)" == "$TH" ]] \
+        || { echo "install_test: the reader copy $2 doesn't find its home in the scratch home; stopping before any case" >&2; exit 1; }
+}
 
 CASES=(MX1 VT1 HS1 HS2 IR0 IR1 IR1b IR1c IR1d IR1e IR2 IR3 IR4 IR5 IR6 IR7 IR8 IR8b IR9 IR15 IR16
        ST0 ST0b ST1 ST2 ST2b ST3 ST3b ST3c ST4 ST5 ST6 ST6b ST7 ST8 ST9 ST10 ST10b ST11 ST12
@@ -61,7 +98,10 @@ CASES=(MX1 VT1 HS1 HS2 IR0 IR1 IR1b IR1c IR1d IR1e IR2 IR3 IR4 IR5 IR6 IR7 IR8 I
        EG10 EG11 EG12 EG13 EG14 EG15 IR12 EG16 EG17 EG18 EG19 EG20 EG21 EG22 EG23 EG24
        EG28 EG29 EG30 EG31 EG32 EG33 EG34 EG35 PN0 CP1 CP2 KR3 CP3 KM4
        RP1 RP2 RP3 RP4 RP5 RP6 RP7 RP8 RP9 RP10 RP11 RP12 RP13
-       PC0 PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10 PC11 PC12 PC13 PC14 PC15 PC16 PC17 PC18 PC19 PC20 PC21 PC22 PC23 PC24 PC25)
+       PC0 PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10 PC11 PC12 PC13 PC14 PC15 PC16 PC17 PC18 PC19 PC20 PC21 PC22 PC23 PC24 PC25
+       LM1 LM2 LM3 LM4 LM5 LM6 LM7 LM8 DN1 DN2 LE3 LE4 LE4b LM9
+       MI1 MI2 MI3 ST11 MI4 MI5 MI6 MI7 MI8 MI9 MI10 MI11 MI12 MI13 MI14 MI15 MI16 MI17 MI18 MI19 MI20 MI21 MI22 MI23
+       MI24 MI25 MI26 MI27 MI28 MI29 MI30 MI31 MI32 MI34 MI35 MI36 MI37 MI38 MI39)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     for c in "${CASES[@]}"; do skip "$c" "no commits yet in $ROOT: rerun after commit one"; done
     echo; echo "install_test: $PASS passed, $FAIL failed, $SKIP skipped"; exit 0
@@ -78,7 +118,7 @@ vf() { awk '/^kit_verify_install\(\) \{/ {p=1} p {print} p && /^\}/ {exit}' "$1"
 a=$(vf "$ROOT/leak-detection/stub-hook"); b=$(vf "$ROOT/bin/kit-pin")
 [[ -n "$a" && "$a" == "$b" ]];                 want_ok "VT1 the stub and kit-pin carry the same install verifier" $? ""
 # One SHA-256 routine, the same text in each script that hashes: sha256sum, else shasum -a 256 (a stock Mac has only
-# that), else a refusal naming both (decisions log §88). Outside it, no line of their code names either tool.
+# that), else a refusal naming both. Outside it, no line of their code names either tool.
 HASHERS=(leak-detection/stub-hook bin/kit-pin bin/kit-load-check-stub leak-detection/check-copies.sh tools/install-release.sh
          leak-detection/pre-push leak-detection/scan-tree.sh bin/kit-history-audit)
 hs() { awk '/^kit_(no_)?sha256\(\) \{/ {p=1} p {print} p && /^\}/ {p=0}' "$1" 2>/dev/null; }
@@ -86,7 +126,7 @@ a=$(hs "$ROOT/${HASHERS[0]}"); n=0
 for f in "${HASHERS[@]:1}"; do [[ "$(hs "$ROOT/$f")" == "$a" ]] && n=$((n+1)); done
 [[ "$a" == *"kit_sha256() {"* && "$a" == *"kit_no_sha256() {"* && $n -eq 7 ]]
                                                want_ok "HS1 the eight scripts that hash carry one SHA-256 routine, the same text" $? "${#a} bytes in the stub's; $n of 7 others match it"
-# One pin routine, the same text in each script that reads a list's pin (decisions log §112): how many rows a list
+# One pin routine, the same text in each script that reads a list's pin: how many rows a list
 # holds, its first N rows, and whether it is the list its pin names.
 pn() { awk '/^kit_list_split=/ {p=1} /^kit_pin_check\(\)/ {q=1} p {print} q && /^\}/ {exit}' "$1" 2>/dev/null; }
 a=$(pn "$ROOT/leak-detection/pre-push")
@@ -94,9 +134,11 @@ a=$(pn "$ROOT/leak-detection/pre-push")
    && "$(pn "$ROOT/bin/kit-history-audit")" == "$a" ]]
                                                want_ok "PN0 pre-push, scan-tree.sh, kit-pin and the history audit carry one pin routine, the same text" $? "${#a} bytes in pre-push's"
 bad=""
+# grep -q stops at its first match; fed by a pipe, awk's next write then dies and pipefail hid the match, so grep reads
+# awk's output by process substitution, whose status can't reach the test.
 for f in "${HASHERS[@]}"; do
-    awk '/^kit_(no_)?sha256\(\) \{/ {p=1} !p && !/^[[:space:]]*#/ {print} p && /^\}/ {p=0}' "$ROOT/$f" 2>/dev/null \
-        | grep -qE 'sha256sum|shasum' && bad+=" $f"
+    grep -qE 'sha256sum|shasum' < <(awk '/^kit_(no_)?sha256\(\) \{/ {p=1} !p && !/^[[:space:]]*#/ {print} p && /^\}/ {p=0}' \
+        "$ROOT/$f" 2>/dev/null) && bad+=" $f"
 done
 [[ -z "$bad" ]];                               want_ok "HS2 outside that routine, none of the seven names sha256sum or shasum in its code" $? "named in:$bad"
 
@@ -110,7 +152,7 @@ K="$TMP/kit"; git init -q -b main "$K"; ident "$K"
 git -C "$ROOT" checkout-index -a --prefix="$K/"
 kc() { git -C "$K" add -A && git -C "$K" -c core.hooksPath=/dev/null commit -q --allow-empty -m "$1"; }
 # Git for Windows' git init sets core.fileMode false, and git add then records every new file 100644, so the execute
-# bits come from ROOT's index (decisions log §102).
+# bits come from ROOT's index.
 git -C "$K" add -A && git -C "$ROOT" ls-files -s | awk -F '\t' '$1 ~ /^100755 / {print $2}' | git -C "$K" update-index --chmod=+x --stdin
 kc "ROOT's staged tree"
 [[ "$(git -C "$K" ls-files -s)" == "$(git -C "$ROOT" ls-files -s)" ]]
@@ -118,6 +160,7 @@ kc "ROOT's staged tree"
 git -C "$K" tag -a v2.0.0 -m "the real suite"
 git -C "$K" tag -a v9.0.0 -m "the real suite, for the install-time PY2 case"   # same tree as v2.0.0
 printf '#!/usr/bin/env bash\necho "hooks_test: stand-in suite"\nexit 0\n' > "$K/tests/hooks_test.sh"; chmod +x "$K/tests/hooks_test.sh"
+rswap "$K/leak-detection/read-leak-pattern.sh" "$K/leak-detection/read-leak-pattern.sh"     # every later release's reader
 kc "stand-in suite"; git -C "$K" tag -a v1.0.0 -m v1.0.0; B=$(git -C "$K" rev-parse HEAD)
 git -C "$K" tag -a v6.0.0 -m "pushed here, moved later"
 git -C "$K" checkout -q -b bad
@@ -175,7 +218,7 @@ left=$(find "$KIT_INSTALL_ROOT" -mindepth 1 -maxdepth 1 \( -name 'v3.0.0' -o -na
 out=$(irun main); rc=$?;                       refused_for "IR8 install-release refuses a name that isn't a release tag" $rc "$out" "not a release tag name"
 out=$(irun v7.0.0); rc=$?;                     refused_for "IR8b install-release refuses a release name with no tag" $rc "$out" "is not a tag in this clone"
 out=$(irun v2.0.0); rc=$?;                     want_ok "IR9 the whole current hook suite passes from an install (the real suite, run on the staged install)" $rc "$out" "installed v2.0.0"
-# PY2 at install time (decisions log §152). PY2 can only exercise its user-site plant where this machine's python3 has
+# PY2 at install time. PY2 can only exercise its user-site plant where this machine's python3 has
 # its user site on; otherwise the plant is inert even without python3 -I, and PY2 has nothing to refute. The isolation
 # itself is python3 -I, which PY1 shows. So the suite must not block an install over a machine setting the gate doesn't
 # depend on -- yet CI must never skip the check silently. tools/install-release.sh sets KIT_INSTALL_CHECK when it runs
@@ -197,7 +240,8 @@ reset_i1() { chmod -R u+w "$I1" 2>/dev/null; rm -rf "${I1:?}"; cp -a "$PRISTINE"
 SP="$TMP/spawn"; git init -q -b main "$SP"; ident "$SP"; tpin "$SP/.git/leak-pattern.pin" "$MARK" 1   # the list's pin, for pushes
 # Files copied out of an install keep its read-only mode; install -m 0644 gives the spawn writable copies. The spawn
 # starts with no .gitleaks.toml of its own; the copies cases below give it one.
-printf '# a spawn\n' > "$SP/CLAUDE.md"; printf 'true\n' > "$SP/kit-pin.tests"
+printf '# a spawn\n' > "$SP/CLAUDE.md"; printf 'true\n' > "$SP/kit-pin.tests"; printf '%s\n' "$(lid)" > "$SP/kit.list-id"
+tlist "$SP"                                                       # the list at its place, which its pin names
 printf 'release=v1.0.0\nmanifest=%s\n' "$H1" > "$SP/kit.pin"
 git -C "$SP" add -A; git -C "$SP" commit -q --no-verify -m one
 git init -q --bare "$TMP/spawn-remote.git"; git -C "$SP" remote add origin "$TMP/spawn-remote.git"
@@ -222,20 +266,28 @@ printf 'release=v1.0.0\n' > "$SP/kit.pin"; out=$(sc); refused_for "ST2 the stub 
 pin ../v1.0.0 "$H1"; out=$(sc);                refused_for "ST2b the stub refuses a release name that isn't vX.Y.Z" $? "$out" "kit.pin is malformed"
 pin v9.9.9 "$H1"; out=$(sc);                   refused_for "ST3 the stub refuses a pin whose install is missing" $? "$out" "no install for v9.9.9"
 # Under Claude Code's sandbox read block a sandboxed command sees the install, and every folder up to ~/.local, as "No
-# such file or directory", the error a missing install gives (measured, decisions log §292), so the stub can't tell
+# such file or directory", the error a missing install gives (measured), so the stub can't tell
 # hidden from missing: its refusal names both and the folder to let sandboxed commands read, and offers kit-pin restore
 # only for the missing case. ST3c makes the install root unreadable, the nearest this suite gets to hidden.
 pin v9.9.9 "$H1"; out=$(sc); rc=$?
 [[ "$out" == *"sandbox.filesystem.allowRead"* ]] || rc=0
                                                refused_for "ST3b a missing install's refusal names both causes, missing or hidden, and what to allow" $rc "$out" "missing, or hidden"
+want_says "MI1 that refusal says what you can do and what to ask IT for" $rc "$out" \
+    "You can: if it is hidden" "If IT manages this machine: a sandbox read policy may block the install folder"
+want_says "MI36 and its sandbox ask names the do-not-publish list's folder beside the release and gitleaks folders" $rc "$out" \
+    "gitleaks' folder and the do-not-publish list's folder, ~/.config/morrowcairn/lists, to sandbox.filesystem.allowRead" \
+    "gitleaks' folder or the do-not-publish list's folder (~/.config/morrowcairn/lists): ask IT to allow reading them"
+[[ "$out" != *"outside the sandbox"* ]];        want_ok "MI38 that refusal points nothing outside the sandbox" $? "$out"
+want_split "MI39 that refusal's sandbox lines split, your own block in your user settings, IT's through IT" $rc "$out"
 pin v1.0.0 "$H1"; chmod 000 "$KIT_INSTALL_ROOT"; out=$(sc); rc=$?; chmod 755 "$KIT_INSTALL_ROOT"
                                                refused_for "ST3c an install the stub can't read is refused the same way" $rc "$out" "missing, or hidden"
 cp -a "$PRISTINE" "$KIT_INSTALL_ROOT/v1.0.9" 2>/dev/null; pin v1.0.9 "$H1"; out=$(sc)
                                                refused_for "ST4 the stub refuses an install whose RELEASE names another tag" $? "$out" "RELEASE names v1.0.0, not v1.0.9"
-pin v1.0.0 "sha256:$(printf '0%.0s' {1..64})"; out=$(sc)
-                                               refused_for "ST5 the stub refuses a manifest that doesn't match the pin" $? "$out" "manifest doesn't match the pin"
+pin v1.0.0 "sha256:$(printf '0%.0s' {1..64})"; out=$(sc); rc=$?
+                                               refused_for "ST5 the stub refuses a manifest that doesn't match the pin" $rc "$out" "manifest doesn't match the pin"
+want_says "MI2 that refusal says what you can do" $rc "$out" "You can: rebuild the pinned install from this project"
 git -C "$SP" checkout -q -- kit.pin; unstage
-# The gap stage 2 left (decisions log §47): a reader edited to exit 0 while sourced ends pre-push with a pass.
+# The gap stage 2 left: a reader edited to exit 0 while sourced ends pre-push with a pass.
 RDI="$I1/leak-detection/read-leak-pattern.sh"
 chmod -R u+w "$I1" 2>/dev/null; { echo 'exit 0'; cat "$PRISTINE/leak-detection/read-leak-pattern.sh"; } > "$RDI" 2>/dev/null
 echo "has $MARK here" > "$SP/m.txt"; git -C "$SP" add m.txt; git -C "$SP" commit -q --no-verify -m marker
@@ -251,22 +303,32 @@ unstage; reset_i1
 chmod u+w "$I1/leak-detection" 2>/dev/null; echo 'exit 0' > "$I1/leak-detection/extra.sh"
 note e; out=$(sc);                             refused_for "ST9 the stub refuses a file in the install that its manifest doesn't list" $? "$out" "leak-detection/extra.sh is in the install but not in its manifest"
 unstage; reset_i1
-echo '# drift' >> "$SP/.git/hooks/pre-commit"; note f; out=$(sc)
-                                               refused_for "ST10 the stub refuses when it differs from the release's copy" $? "$out" "this stub differs from release v1.0.0's copy"
+echo '# drift' >> "$SP/.git/hooks/pre-commit"; note f; out=$(sc); rc=$?
+                                               refused_for "ST10 the stub refuses when it differs from the release's copy" $rc "$out" "this stub differs from release v1.0.0's copy"
+want_says "MI3 that refusal says what you can do" $rc "$out" "You can: set the staged changes aside"
 unstage; stubs "$I1"
+# The manifest holds contents, not modes: a release hook without its execute bit is refused by name, and the refusal says
+# what a noexec home or an allow-list would need from IT.
+chmod a-x "$I1/leak-detection/pre-commit"; note g; out=$(sc); rc=$?; chmod 0555 "$I1/leak-detection/pre-commit"
+                                               refused_for "ST11 the stub refuses a release hook that isn't executable" $rc "$out" "is not executable, so it can't run"
+want_says "MI4 that refusal says what you can do and what to ask IT for" $rc "$out" \
+    "You can: rebuild the install from this project" "If IT manages this machine: "
+unstage
 echo "has $MARK here" > "$SP/m.txt"; git -C "$SP" add m.txt; git -C "$SP" commit -q --no-verify -m marker
-out=$(sp);                                     want_refused "ST10b through the stub, the release's pre-push blocks an identity marker" $? "$out" "identity markers"
+out=$(sp);                                     want_refused "ST10b through the stub, the release's pre-push blocks a listed term" $? "$out" "listed terms"
+echo '# drift' >> "$SP/.git/hooks/pre-push"; out=$(sp); rc=$?; stubs "$I1"
+want_says "MI32 a pre-push stub that differs from the release's says what you can do" $rc "$out" "this stub differs from release v1.0.0's copy" "You can: refresh it ("
 git -C "$SP" reset -q --hard HEAD~1
 mkdir -p "$SP/hook-checks/pre-commit"; printf '#!/usr/bin/env bash\nprintf "%%s" "$KIT_INSTALL" > "%s/seen"\n' "$TMP" > "$SP/hook-checks/pre-commit/a-seen"
 chmod +x "$SP/hook-checks/pre-commit/a-seen"; git -C "$SP" add hook-checks; out=$(sc); rc=$?
-# The same folder, however it is spelled: on Windows a hook gets the path in Windows form (decisions log §102).
+# The same folder, however it is spelled: on Windows a hook gets the path in Windows form.
 [[ "$(cat "$TMP/seen" 2>/dev/null)" -ef "$I1" ]] || rc=1
                                                want_ok "ST11 the stub exports KIT_INSTALL, which a project's own check sees" $rc "$out"
 git -C "$SP" rm -q -r hook-checks; git -C "$SP" commit -q --no-verify -m "no checks"
 # The installer's I3, here: git skips a hook it can't execute with only a hint, so the stub refuses rather than hand
 # a commit to a release hook that can't run. The manifest holds contents, not modes, so this is its own check.
 # Git Bash reads a file's execute bit from its #! line, so there the release's hook stays executable whatever chmod says,
-# and the case can't be built (decisions log §102).
+# and the case can't be built.
 chmod u+w "$I1/leak-detection" "$I1/leak-detection/pre-commit" 2>/dev/null; chmod a-x "$I1/leak-detection/pre-commit" 2>/dev/null
 if [[ -x "$I1/leak-detection/pre-commit" ]]; then skip ST12 "chmod a-x left the release's pre-commit executable here"
 else note j; out=$(sc);                        refused_for "ST12 the stub refuses when the release's hook isn't executable" $? "$out" "release v1.0.0's pre-commit is not executable"; fi
@@ -274,7 +336,7 @@ unstage; reset_i1
 
 # ============================== the checked-copies layer, under the stub ========================
 # A project with a remote keeps a .gitleaks.toml for its CI. Its checked copy is the release's spawn config, not
-# the kit's own file, which allowlists the kit's fixture by path (decisions log §51, §54).
+# the kit's own file, which allowlists the kit's fixture by path.
 install -m 0644 "$I1/leak-detection/spawn.gitleaks.toml" "$SP/.gitleaks.toml" 2>/dev/null; git -C "$SP" add .gitleaks.toml; out=$(sc); rc=$?
 isstub "$I1" || rc=1;                          want_ok "CC7 a project's .gitleaks.toml equal to the release's spawn config commits" $rc "$out"
 echo "# a local edit" >> "$SP/.gitleaks.toml"; git -C "$SP" add .gitleaks.toml; out=$(sc)
@@ -315,7 +377,7 @@ note g; rm -f "$TMP/gl-args"; out=$( (cd "$SP" && PATH="$GLW:$PATH" git commit -
 grep -qF -- "--config .gitleaks.toml" "$TMP/gl-args" 2>/dev/null || rc=1
                                                want_ok "CF1 pre-commit under the stub uses the spawn's own .gitleaks.toml when it has one" $rc "$out"
 # With none, the install's spawn config: the kit's own .gitleaks.toml allowlists the kit's credential fixture by
-# path, and that entry would exempt the same path in a spawn (decisions log §51).
+# path, and that entry would exempt the same path in a spawn.
 SPC="$I1/leak-detection/spawn.gitleaks.toml"
 { [[ -f "$ROOT/leak-detection/spawn.gitleaks.toml" ]] \
   && diff <(grep -vE '^[[:space:]]*(#|$)' "$ROOT/.gitleaks.toml" | grep -v 'leak-detection/fixtures/synthetic_config') \
@@ -323,7 +385,7 @@ SPC="$I1/leak-detection/spawn.gitleaks.toml"
   && ! grep -q 'synthetic_config' "$ROOT/leak-detection/spawn.gitleaks.toml"; } 2>/dev/null
                                                want_ok "GL1 the spawn config is the kit's .gitleaks.toml without its fixture exemption, and nothing else" $? ""
 # FILE: 0 when a gitleaks run recorded in gl-args was given --config naming FILE, however spelled: on Windows the hooks
-# get the install's path in Windows form (decisions log §102).
+# get the install's path in Windows form.
 glconfig() { local c
     while read -r c; do [[ -n "$c" && "$c" -ef "$1" ]] && return 0
     done < <(awk '{for (i = 1; i < NF; i++) if ($i == "--config") print $(i + 1)}' "$TMP/gl-args" 2>/dev/null)
@@ -343,7 +405,11 @@ git -C "$SP" commit -q --no-verify -m "a credential shape at the fixture path"; 
 git -C "$SP" reset -q --hard HEAD~1
 
 # ============================== kit-pin =========================================================
-KP="$ROOT/bin/kit-pin"
+# The work tree's kit-pin, run from a copy beside an rswap'd reader: repin and move-list read through the reader beside
+# the kit-pin that runs, so a case finds every list in TH.
+KPK="$TMP/kp"; mkdir -p "$KPK/bin" "$KPK/leak-detection"; install -m 0755 "$ROOT/bin/kit-pin" "$KPK/bin/kit-pin"
+rswap "$ROOT/leak-detection/read-leak-pattern.sh" "$KPK/leak-detection/read-leak-pattern.sh"
+KP="$KPK/bin/kit-pin"
 kp() { (cd "$SP" && "$KP" "$@") 2>&1; }
 out=$("$KP" verify v1.0.0 "$H1" 2>&1);         want_ok "KV0 verify passes an install against its release and manifest hash" $? "$out"
 out=$("$KP" verify v9.9.9 "$H1" 2>&1);         refused_for "KV1 verify refuses a missing install" $? "$out" "no install for v9.9.9"
@@ -363,27 +429,31 @@ mv "$SP/.git/hooks/pre-push" "$TMP/pre-push.aside"; out=$(kp check); rc=$?; mv "
                                                refused_for "KC2 check refuses a missing stub" $rc "$out" "the pre-push stub is missing"
 echo '# drift' >> "$SP/.git/hooks/pre-push"; out=$(kp check); rc=$?; stubs "$I1"
                                                refused_for "KC3 check refuses a stub that differs from the release's" $rc "$out" "the pre-push stub differs from release v1.0.0's"
+want_says "MI20 that refusal says what you can do" $rc "$out" "You can: refresh it ("
 pin v1.0.0 "$H2"; out=$(kp check); rc=$?; git -C "$SP" checkout -q -- kit.pin
                                                refused_for "KC4 check refuses a pin whose manifest hash doesn't match the install" $rc "$out" "manifest doesn't match the pin"
+want_says "MI18 that refusal says what you can do" $rc "$out" "You can: rebuild the pinned install from this project"
 pin v9.9.9 "$H1"; out=$(kp check); rc=$?; git -C "$SP" checkout -q -- kit.pin
                                                refused_for "KC5 check refuses a pin whose install is missing" $rc "$out" "no install for v9.9.9"
+want_says "MI19 that refusal says what you can do" $rc "$out" "You can: rebuild the pinned install from this project"
 pinb=$(sha "$SP/kit.pin"); stubb=$(sha "$SP/.git/hooks/pre-commit")
 same() { [[ "$(sha "$SP/kit.pin")" == "$pinb" && "$(sha "$SP/.git/hooks/pre-commit")" == "$stubb" && "$(sha "$SP/.git/hooks/pre-push")" == "$stubb" ]]; }
 out=$(kp nosuchmode); rc=$?; same || rc=0;     refused_for "KP1 kit-pin refuses an unknown mode, and changes nothing" $rc "$out" "unknown mode"
-# The installer's report, now check's (its I9 to I16): pre-push takes the pattern from the environment or else from
-# .git/leak-pattern, read by the release's own reader, so check says which, or that the scan fails closed, and
-# never prints the pattern. A list pre-push would refuse never reads as active, and no list text ever runs.
-LPF="$SP/.git/leak-pattern"; FBIN="$TMP/listbin"; RAN="$TMP/list-text-ran"; mkdir -p "$FBIN"
+# The installer's report, now check's (its I9 to I16): pre-push takes the pattern from the project's list file at its
+# place, read by the release's own reader, never from the environment, so check says where, or
+# that the scan fails closed, and never prints the pattern. A list pre-push would refuse never reads as active, and no
+# list text ever runs.
+LPF=$(lmf "$SP"); FBIN="$TMP/listbin"; RAN="$TMP/list-text-ran"; mkdir -p "$FBIN"
 printf '#!/bin/sh\ntouch "%s"\n' "$RAN" > "$FBIN/zqcmdz"; chmod +x "$FBIN/zqcmdz"
 kl() { (cd "$SP" && env -u LEAK_PATTERN PATH="$FBIN:$PATH" "$KP" check) 2>&1; }
-closed() { [[ "$1" == *"FAILING CLOSED"* && "$1" != *"identity scan is active"* ]]; }
-# Failing closed is a state of its own, exit 3: installed and pinned, but every push will be refused (§112).
+closed() { [[ "$1" == *"FAILING CLOSED"* && "$1" != *"the do-not-publish check is active"* ]]; }
+# Failing closed is a state of its own, exit 3: installed and pinned, but every push will be refused.
 fc() { [[ $1 -eq 3 ]] && closed "$2"; }                                                    # RC OUTPUT
 printf "LEAK_PATTERN='%s'\n" "$MARK" > "$LPF"; out=$(kl); rc=$?; closed "$out" && rc=1; [[ "$out" == *SYNTH-MARKER* ]] && rc=1
-                                               want_ok "KL1 check: a pattern in .git/leak-pattern reads as active, and isn't printed" $rc "$out" ".git/leak-pattern"
+                                               want_ok "KL1 check: a pattern in the project's list file reads as active, names its place by the id, and isn't printed" $rc "$out" "~/.config/morrowcairn/lists/$(lmid "$SP")"
 printf '# sets nothing\n' > "$LPF"; out=$(kl); rc=$?; fc $rc "$out" && rc=0 || rc=1
-                                               want_ok "KL2 check: a .git/leak-pattern that sets nothing reads as failing closed, exit 3" $rc "$out"
-# Its first line matches its exit status: an exit-3 run never opens with "passed", nor says it anywhere (S4, §344).
+                                               want_ok "KL2 check: a list file that sets nothing reads as failing closed, exit 3" $rc "$out"
+# Its first line matches its exit status: an exit-3 run never opens with "passed", nor says it anywhere.
 out=$(kl); rc=$?; first=${out%%$'\n'*}; [[ $rc -eq 3 && "$first" != *passed* && "$out" != *passed* ]] && rc=0 || rc=1
                                                want_ok "KL2b check: an exit-3 run's first line doesn't say it passed, and no line does" $rc "$out"
 rm -f "$RAN"; printf '%s\n' "LEAK_PATTERN='$MARK|zq'w|zqcmd'z'" > "$LPF"; out=$(kl); rc=$?
@@ -396,30 +466,51 @@ printf '%s\n' "LEAK_PATTERN='$MARK'" "LEAK_PATTERN='zqotherterm'" > "$LPF"; out=
 printf '%s\n' "LEAK_PATTERN='$MARK'  # a trailing note" > "$LPF"; out=$(kl); rc=$?; fc $rc "$out" && rc=0 || rc=1
                                                want_ok "KL6 check: a comment after the assignment reads as failing closed, exit 3" $rc "$out"
 printf '%s\n' "export LEAK_PATTERN='$MARK'" > "$LPF"; out=$(kl); rc=$?; closed "$out" && rc=1
-                                               want_ok "KL7 check: the export form reads as active" $rc "$out" "identity scan is active"
+                                               want_ok "KL7 check: the export form reads as active" $rc "$out" "the do-not-publish check is active"
 printf '%s\n' "# a note" "" "LEAK_PATTERN='$MARK'" "   # an indented note" > "$LPF"; out=$(kl); rc=$?; closed "$out" && rc=1
-                                               want_ok "KL8 check: comments and blank lines around the setup form read as active" $rc "$out" "identity scan is active"
-rm -f "$LPF"; out=$(kp check); rc=$?; closed "$out" && rc=1
-                                               want_ok "KL9 check: LEAK_PATTERN in the environment reads as active" $rc "$out" "set in this environment"
-# The reserved line (§308, §310 (a)): a project with no identity list says so with one pinned line, which check reports
+                                               want_ok "KL8 check: comments and blank lines around the setup form read as active" $rc "$out" "the do-not-publish check is active"
+rm -f "$LPF"; out=$( (cd "$SP" && env LEAK_PATTERN="$MARK" "$KP" check) 2>&1 ); rc=$?
+fc $rc "$out" && [[ "$out" != *"set in this environment"* ]] && rc=0 || rc=1
+                                               want_ok "KL9 check: LEAK_PATTERN in the environment, no list at its place: failing closed, exit 3, never active" $rc "$out"
+# The reserved line: a project with no do-not-publish list says so with one pinned line, which check reports
 # as identity checks off, not as every push refused; a list file it can't read gets its own message, not the missing
 # list's; and with no list, its next step names the reserved line beside the list. The value comes from the suites' one
-# definition, hooks_test's NOLIST line, so this suite and that one feed every reader the same value (queue 700 item 3).
+# definition, hooks_test's NOLIST line, so this suite and that one feed every reader the same value.
 NOLIST=$(sed -n "s/^NOLIST='\([^']*\)'\$/\1/p" "$ROOT/tests/hooks_test.sh")
 [[ -n "$NOLIST" && "$NOLIST" != *$'\n'* ]];    want_ok "NV0 the reserved value comes from hooks_test's one definition, read once" $? "read: $(printf '%s' "$NOLIST" | tr '\n' ' ')"
 cp -p "$SP/.git/leak-pattern.pin" "$TMP/sp-kl.pin"
 printf "LEAK_PATTERN='%s'\n" "$NOLIST" > "$LPF"; tpin "$SP/.git/leak-pattern.pin" "$NOLIST" 1; out=$(kl); rc=$?
-[[ $rc -eq 0 && "$out" == *"identity checks are off"* && "$out" != *"identity scan is active"* ]] && rc=0 || rc=1
-                                               want_ok "KL10 check: a pinned reserved line reads as identity checks off, exit 0" $rc "$out"
-# A list that exists is never overwritten by a next step (decisions log §353 F1): writes_list OUTPUT is true when the
+[[ $rc -eq 0 && "$out" == *"the do-not-publish check is off"* && "$out" != *"the do-not-publish check is active"* \
+   && "$out" == *"the line saying this project has no do-not-publish list"* ]] && rc=0 || rc=1
+                                               want_ok "KL10 check: a pinned reserved line reads as the do-not-publish check off, exit 0" $rc "$out"
+# A list that exists is never overwritten by a next step: writes_list OUTPUT is true when the
 # output holds a command that writes the list file, or the first-setup block's example list.
-writes_list() { [[ "$1" =~ \>[[:space:]]*\"[^\"]*/leak-pattern\" || "$1" == *"marker1|marker2"* ]]; }
+writes_list() { [[ "$1" =~ \>[[:space:]]*\"[^\"]*/leak-pattern\" || "$1" == *"> ~/.config/morrowcairn/lists/"* \
+                   || "$1" == *"marker1|marker2"* ]]; }
 printf "LEAK_PATTERN='%s'\n" "$MARK" > "$LPF"; chmod 000 "$LPF"
 if [[ -r "$LPF" ]]; then skip "KL11 check: a list file it can't read gets its own message, exit 3" "the file stays readable at mode 000 (root)"
 else out=$(kl); rc=$?; [[ $rc -eq 3 && "$out" == *"exists but can't be read"* ]] && ! writes_list "$out" && rc=0 || rc=1
                                                want_ok "KL11 check: a list file it can't read gets its own message, exit 3, and no command that writes the list file" $rc "$out"; fi
-chmod 600 "$LPF"; rm -f "$LPF"; out=$(kl); rc=$?; [[ $rc -eq 3 && "$out" == *"LEAK_PATTERN='$NOLIST'"* ]] && rc=0 || rc=1
+chmod 600 "$LPF"; rm -f "$LPF"; out=$(kl); klrc=$?; [[ $klrc -eq 3 && "$out" == *"LEAK_PATTERN='$NOLIST'"* ]] && rc=0 || rc=1
                                                want_ok "KL12 check: with no list, its next step names the reserved line too, exit 3" $rc "$out"
+want_says "MI30 that failing close names the do-not-publish check and list throughout" $klrc "$out" \
+    "the do-not-publish check is currently FAILING CLOSED" "If this project has no do-not-publish list, say so" \
+    "until the do-not-publish list and its pin agree"
+want_says "MI35 its note on CI keeps listed terms in the local file, naming the do-not-publish list" $klrc "$out" \
+    "Every listed term stays in" "list in a secret ties those terms to that account" "CI does not check listed"
+# A printed step never writes over a list that is there: each of check's no-list lines that writes the list, run with
+# the suite's home against a stand-in list at its place, refuses and leaves it as it was.
+(umask 077 && printf '%s\n' "LEAK_PATTERN='zqkeepterm'" > "$LPF"); lsum=$(sha "$LPF"); nw=0; nbad=""
+while IFS= read -r l; do
+    [[ "$l" == *"echo \"LEAK_PATTERN="*">"* ]] || continue
+    nw=$((nw + 1))
+    printf '%s\n' "$l" | (cd "$SP" && HOME="$TH" bash) >/dev/null 2>&1 && nbad+=" a write exited 0"
+done <<< "$out"
+[[ $nw -ge 2 && -z "$nbad" && "$(sha "$LPF")" == "$lsum" ]]
+want_ok "MI37 check's no-list steps each refuse a list already there, leaving it unchanged" $? "writes $nw;$nbad"
+rm -f "$LPF"
+mv "$SP/kit.list-id" "$TMP/sp-id.aside"; out=$(kl); rc=$?; mv "$TMP/sp-id.aside" "$SP/kit.list-id"
+want_says "MI31 check with no place for the list names the do-not-publish list" $rc "$out" "the do-not-publish list's place can't be found"
 cp -p "$TMP/sp-kl.pin" "$SP/.git/leak-pattern.pin"
 # When the list exists, check gives the advice that fits it, as pre-push does: a list its pin doesn't name, record why
 # and repin, or put the list back; no pin yet, the first pin; a list the reader can't read, how to fix it. Only a missing
@@ -427,9 +518,9 @@ cp -p "$TMP/sp-kl.pin" "$SP/.git/leak-pattern.pin"
 printf "LEAK_PATTERN='%s'\n" "$MARK|zqadded" > "$LPF"; out=$(kl); rc=$?
 [[ $rc -eq 3 && "$out" == *"record why and repin it"* && "$out" == *"put the list back"* ]] && ! writes_list "$out" && rc=0 || rc=1
                                                want_ok "KL13 check: a list changed after its pin: pre-push's advice, and no command that writes the list file" $rc "$out"
-out=$( (cd "$SP" && LEAK_PATTERN=zqotherterm "$KP" check) 2>&1 ); rc=$?
+out=$( (cd "$SP" && env LEAK_PATTERN="$MARK" "$KP" check) 2>&1 ); rc=$?
 [[ $rc -eq 3 && "$out" == *"record why and repin it"* && "$out" == *"put the list back"* ]] && ! writes_list "$out" && rc=0 || rc=1
-                                               want_ok "KL14 check: an environment list its pin doesn't name: the same advice, no command that writes the list file" $rc "$out"
+                                               want_ok "KL14 check: the list its pin names, set in the environment, doesn't stand in for that changed file: the same advice" $rc "$out"
 printf '%s\n' "LEAK_PATTERN='$MARK'" "LEAK_PATTERN='zqotherterm'" > "$LPF"; out=$(kl); rc=$?
 [[ $rc -eq 3 && "$out" == *"not in a shape"* ]] && ! writes_list "$out" && rc=0 || rc=1
                                                want_ok "KL15 check: a list not in a shape the reader reads: how to fix it, no command that writes the list file" $rc "$out"
@@ -437,9 +528,9 @@ printf "LEAK_PATTERN='%s'\n" "$MARK" > "$LPF"; mv "$SP/.git/leak-pattern.pin" "$
 mv "$TMP/sp-kl2.pin" "$SP/.git/leak-pattern.pin"
 [[ $rc -eq 3 && "$out" == *"repin local --first"* ]] && ! writes_list "$out" && rc=0 || rc=1
                                                want_ok "KL16 check: a list with no pin yet: its first pin, no command that writes the list file" $rc "$out"
-rm -f "$LPF"
-# check says whether pre-push will scan binaries, reading the switch at HEAD as pre-push reads it at the pushed tip
-# (R4 (b)): a tracked kit.binaries holding scan=on, or a tracked reviewed list, or off; a kit.binaries that isn't the one
+tlist "$SP"                                                       # back to the list its pin names, for the cases below
+# check says whether pre-push will scan binaries, reading the switch at HEAD as pre-push reads it at the pushed tip:
+# a tracked kit.binaries holding scan=on, or a tracked reviewed list, or off; a kit.binaries that isn't the one
 # line scan=on is named, since pre-push then refuses every push that carries a binary.
 out=$(kp check); rc=$?;                        want_ok "KB1 check: with no switch and no reviewed list, it says the binary scan is off" $rc "$out" "binary scan is off"
 printf 'scan=on\n' > "$SP/kit.binaries"; git -C "$SP" add kit.binaries; git -C "$SP" commit -q --no-verify -m "binary scan on"
@@ -448,8 +539,10 @@ printf 'scan=yes\n' > "$SP/kit.binaries"; git -C "$SP" commit -q --no-verify -am
 out=$(kp check); rc=$?;                        want_ok "KB3 check: a kit.binaries that isn't the one line scan=on is named, as pre-push refuses binaries then" $rc "$out" "isn't the one line scan=on"
 git -C "$SP" rm -q kit.binaries; git -C "$SP" commit -q --no-verify -m "switch gone"
 out=$(kp to v9.9.9); rc=$?; same || rc=0;      refused_for "KT1 to refuses a release with no install" $rc "$out" "no install for v9.9.9"
+want_says "MI16 that refusal says what you can do" $rc "$out" "You can: build it from a clone of the kit"
 chmod -R u+w "$I2" 2>/dev/null; cp "$I2/leak-detection/pre-commit" "$TMP/i2-pre-commit"; echo "# edited" >> "$I2/leak-detection/pre-commit"
 out=$(kp to v1.0.1); rc=$?; same || rc=0;      refused_for "KT2 to refuses a release whose install fails its own manifest" $rc "$out" "fails its own manifest"
+want_says "MI17 that refusal says what you can do" $rc "$out" "You can: remove that install"
 cp "$TMP/i2-pre-commit" "$I2/leak-detection/pre-commit"; chmod -R a-w "$I2"
 echo dirty >> "$SP/notes.txt"; out=$(kp to v1.0.1); rc=$?; same || rc=0; git -C "$SP" checkout -q -- notes.txt
                                                refused_for "KT3 to refuses a work tree with uncommitted changes" $rc "$out" "uncommitted changes"
@@ -484,8 +577,353 @@ pinb=$(sha "$SP/kit.pin"); stubb=$(sha "$SP/.git/hooks/pre-commit")
 out=$(kp to v1.0.2); rc=$?; same || rc=0
                                                refused_for "KT9 to refuses a release whose list reader fails its selftest, and puts everything back" $rc "$out" "list reader failed its selftest"
 
+# ============================== kit-pin to, across a release that changes a project's CI copy ======
+# A release that changes a file ci/copies.txt holds a project's CI copy to is taken by to alone, forward or back:
+# a copy that is still the held release's file, byte for byte, becomes the target's in the
+# work tree and the index, for the pin's commit; one equal to neither is still refused, naming it, and everything is put
+# back; a declared fork is the project's own and stays. v1.1.0 is v1.0.0 with one change to leak-detection/scan-tree.sh,
+# which a project keeps as itself.
+git -C "$K" checkout -q -b cicopy "$B"
+printf '# a later release'"'"'s change (install test CX)\n' >> "$K/leak-detection/scan-tree.sh"; kc "a changed CI copy"
+git -C "$K" tag -a v1.1.0 -m v1.1.0; git -C "$K" push -q --no-verify origin v1.1.0 2>/dev/null; git -C "$K" checkout -q main
+out=$(irun v1.1.0); rc=$?; IX="$KIT_INSTALL_ROOT/v1.1.0"
+! cmp -s "$I1/leak-detection/scan-tree.sh" "$IX/leak-detection/scan-tree.sh" || rc=1
+                                               want_ok "CX0 v1.1.0 installs, its scan-tree.sh not v1.0.0's" $rc "$out"
+CX="$TMP/cx"; git init -q -b main "$CX"; ident "$CX"; printf '# a project\n' > "$CX/CLAUDE.md"; printf 'true\n' > "$CX/kit-pin.tests"
+printf '%s\n' "$(lid)" > "$CX/kit.list-id"; tlist "$CX"
+git -C "$CX" add -A; git -C "$CX" commit -q --no-verify -m one; tpin "$CX/.git/leak-pattern.pin" "$MARK" 1
+CT="$CX/leak-detection/scan-tree.sh"
+cxk() { (cd "$CX" && "$KP" "$@") 2>&1; }
+cxc() { (cd "$CX" && git commit -q -m "${1:-x}") 2>&1; }                   # a commit, through the stubs
+cxsnap() { printf '%s %s %s %s' "$(sha "$CX/kit.pin")" "$(sha "$CX/.git/hooks/pre-commit")" "$(sha "$CX/.git/hooks/pre-push")" "$(sha "$CT")"; }
+is_copy() { cmp -s "$CT" "$1/leak-detection/scan-tree.sh" && git -C "$CX" show :leak-detection/scan-tree.sh | cmp -s - "$1/leak-detection/scan-tree.sh"; }
+cxheld() {  # RELEASE INSTALL: the project set by hand to hold RELEASE, with its stubs and its scan-tree.sh, committed, so
+            # each group of cases starts where it says, whatever the cases before it did
+    local h
+    printf 'release=%s\nmanifest=%s\n' "$1" "$(mhash "$2")" > "$CX/kit.pin"
+    for h in pre-commit pre-push; do install -m 0755 "$2/leak-detection/stub-hook" "$CX/.git/hooks/$h"; done
+    rm -f "$CX/kit.forks"; install -m 0755 "$2/leak-detection/scan-tree.sh" "$CT"
+    git -C "$CX" add -A; git -C "$CX" commit -q --no-verify --allow-empty -m "held: $1"; }
+cxk to v1.0.0 >/dev/null; git -C "$CX" add kit.pin; cxc "pin v1.0.0" >/dev/null
+mkdir -p "$CX/leak-detection"; install -m 0755 "$I1/leak-detection/scan-tree.sh" "$CT"; git -C "$CX" add leak-detection
+out=$(cxc "v1.0.0's CI copy"); rc=$?;          want_ok "CX0b a project pinned to v1.0.0, holding v1.0.0's scan-tree.sh, commits" $rc "$out"
+# Forward, v1.0.0 to v1.1.0.
+echo "# the project's own line" >> "$CT"; git -C "$CX" commit -q --no-verify -am "a copy of neither"
+snap=$(cxsnap); out=$(cxk to v1.1.0); rc=$?; [[ "$(cxsnap)" == "$snap" && -z "$(git -C "$CX" status --porcelain)" ]] || rc=0
+                                               refused_for "CX1 forward: a CI copy equal to neither release's refuses, naming it, and everything is put back" $rc "$out" "leak-detection/scan-tree.sh: differs from release v1.1.0"
+git -C "$CX" reset -q --hard HEAD~1
+printf 'true\nfalse\n' > "$CX/kit-pin.tests"; git -C "$CX" commit -q --no-verify -am "a red test"
+snap=$(cxsnap); out=$(cxk to v1.1.0); rc=$?; [[ "$(cxsnap)" == "$snap" && -z "$(git -C "$CX" status --porcelain)" ]] && is_copy "$I1" || rc=0
+                                               refused_for "CX2 forward: a refusal after the copy was taken puts it back, with kit.pin and the stubs" $rc "$out" "kit-pin.tests line 2 failed"
+git -C "$CX" reset -q --hard HEAD~1
+out=$(cxk to v1.1.0); rc=$?; is_copy "$IX" || rc=1
+[[ "$(git -C "$CX" status --porcelain | LC_ALL=C sort)" == "$(printf ' M kit.pin\nM  leak-detection/scan-tree.sh')" ]] || rc=1
+                                               want_ok "CX3 forward: v1.0.0's copy becomes v1.1.0's, staged, with kit.pin left to commit" $rc "$out" "leak-detection/scan-tree.sh"
+git -C "$CX" add kit.pin; out=$(cxc "pin v1.1.0"); rc=$?; [[ -z "$(git -C "$CX" status --porcelain)" ]] || rc=1
+out2=$(cxk check); (( $? == 0 )) || rc=1
+                                               want_ok "CX3b and the pin's commit runs through v1.1.0's stubs, and check passes" $rc "$out$out2"
+# Back, v1.1.0 to v1.0.0, from v1.1.0 held with its copy, set by hand so these cases don't rest on the forward ones.
+cxheld v1.1.0 "$IX"
+echo "# the project's own line" >> "$CT"; git -C "$CX" commit -q --no-verify -am "a copy of neither"
+snap=$(cxsnap); out=$(cxk to v1.0.0); rc=$?; [[ "$(cxsnap)" == "$snap" && -z "$(git -C "$CX" status --porcelain)" ]] || rc=0
+                                               refused_for "CX4 back: a CI copy equal to neither release's refuses, naming it, and everything is put back" $rc "$out" "leak-detection/scan-tree.sh: differs from release v1.0.0"
+git -C "$CX" reset -q --hard HEAD~1
+out=$(cxk to v1.0.0); rc=$?; is_copy "$I1" || rc=1
+                                               want_ok "CX5 back: v1.1.0's copy becomes v1.0.0's" $rc "$out" "leak-detection/scan-tree.sh"
+git -C "$CX" add kit.pin; out=$(cxc "pin v1.0.0 again"); rc=$?; out2=$(cxk check); (( $? == 0 )) || rc=1
+                                               want_ok "CX5b and the pin's commit runs through v1.0.0's stubs, and check passes" $rc "$out$out2"
+# A declared fork is the project's own: to never takes it, and the target's check accepts it as declared.
+cxheld v1.0.0 "$I1"
+echo "# the project's own line" >> "$CT"
+printf 'leak-detection/scan-tree.sh  sha256:%s  §5  a line of its own\n' "$(sha "$CT")" > "$CX/kit.forks"
+git -C "$CX" add -A; cxc "a declared fork" >/dev/null; forkb=$(sha "$CT")
+out=$(cxk to v1.1.0); rc=$?; [[ "$(sha "$CT")" == "$forkb" && "$(git -C "$CX" status --porcelain)" == " M kit.pin" ]] || rc=1
+                                               want_ok "CX6 a declared fork of a CI copy stays as it is through to" $rc "$out"
+# A held install that fails its own manifest isn't trusted for what its file was: the copy stays, and is refused.
+out6=$out; git -C "$CX" checkout -q -- kit.pin; cxheld v1.0.0 "$I1"
+chmod -R u+w "$I1" 2>/dev/null; echo damaged > "$I1/zz-damaged"
+snap=$(cxsnap); out=$(cxk to v1.1.0); rc=$?; [[ "$(cxsnap)" == "$snap" && -z "$(git -C "$CX" status --porcelain)" ]] || rc=0
+reset_i1
+                                               refused_for "CX7 with the held install failing its manifest, the held copy isn't taken, and is refused" $rc "$out" "leak-detection/scan-tree.sh: differs from release v1.1.0"
+# A fork line at the held release's own copy is there only to cross releases, as an older kit-pin, which couldn't take a
+# CI copy across, needed: to leaves it, as it leaves any fork, and says as it finishes that the target's copy goes in and
+# the line comes out in the commit with kit.pin. A fork of the project's own (CX6) gets no such line.
+cxheld v1.0.0 "$I1"
+printf 'leak-detection/scan-tree.sh  sha256:%s  §5  to cross releases\n' "$(sha "$CT")" > "$CX/kit.forks"
+git -C "$CX" add kit.forks; git -C "$CX" commit -q --no-verify -m "a fork line to cross releases"
+out=$(cxk to v1.1.0); rc=$?; is_copy "$I1" || rc=1
+[[ "$out" == *"kit.forks declares leak-detection/scan-tree.sh at release v1.0.0's own copy"* && "$out" == *"$IX/leak-detection/scan-tree.sh"* \
+   && "$out" == *"take the line out of kit.forks, both in the commit with kit.pin"* ]] || rc=1
+                                               want_ok "CX8 a fork line at the held release's own copy: to keeps it, saying the line comes out in the pin's commit" $rc "$out"
+[[ "$out6" != *"kit.forks declares"* ]]
+                                               want_ok "CX8b a fork of the project's own gets no such line" $? "$out6"
+git -C "$CX" checkout -q -- kit.pin
+# Undoing a move partway (local-upgrade, Going back): git puts kit.pin and the copy back, but not the stubs, which stay the
+# newer release's, so every commit and check refuse; to the release kit.pin names again writes its stubs back. v1.1.1 is
+# v1.1.0 with a changed stub.
+git -C "$K" checkout -q cicopy
+printf '# a later release'"'"'s stub (install test CX9)\n' >> "$K/leak-detection/stub-hook"; kc "a changed stub"
+git -C "$K" tag -a v1.1.1 -m v1.1.1; git -C "$K" push -q --no-verify origin v1.1.1 2>/dev/null; git -C "$K" checkout -q main
+out=$(irun v1.1.1); rc=$?; IY="$KIT_INSTALL_ROOT/v1.1.1"
+cxheld v1.0.0 "$I1"
+out=$(cxk to v1.1.1); rc=$?; cmp -s "$CX/.git/hooks/pre-commit" "$IY/leak-detection/stub-hook" || rc=1
+! cmp -s "$IY/leak-detection/stub-hook" "$I1/leak-detection/stub-hook" || rc=1
+                                               want_ok "CX9 a move onto v1.1.1, whose stub differs, passes, leaving its commit to make" $rc "$out"
+git -C "$CX" reset -q --hard HEAD
+echo "a change" > "$CX/cx9.txt"; git -C "$CX" add cx9.txt; out=$(cxc "after the undo"); rc=$?
+out2=$(cxk check); rc2=$?; git -C "$CX" reset -q HEAD -- cx9.txt; rm -f "$CX/cx9.txt"
+[[ $rc -ne 0 && "$out" == *"this stub differs from release v1.0.0's copy"* && $rc2 -ne 0 ]]
+                                               want_ok "CX9b undone partway by git alone, the newer stubs stay, so every commit and check refuse" $? "commit exit $rc, check exit $rc2: $out $out2"
+out=$(cxk to v1.0.0); rc=$?
+cmp -s "$CX/.git/hooks/pre-commit" "$I1/leak-detection/stub-hook" && cmp -s "$CX/.git/hooks/pre-push" "$I1/leak-detection/stub-hook" || rc=1
+out2=$(cxk check); (( $? == 0 )) || rc=1
+echo "a change" > "$CX/cx9.txt"; git -C "$CX" add cx9.txt; out3=$(cxc "after the stubs are back"); (( $? == 0 )) || rc=1
+                                               want_ok "CX9c to the release kit.pin names again puts its stubs back: check passes and a commit goes through" $rc "$out $out2 $out3"
+
+# ============================== kit-pin user: the kit's rules file and skills at user level ========
+# The user mode links a release's rules file and skills into the user level (Claude Code's config folder, here a scratch
+# CLAUDE_CONFIG_DIR) and writes the kit's own user pin, which the load check's stub reads. It never replaces an entry that isn't the kit's own link, and a refusal changes nothing. v1.2.0 and v1.2.1 are
+# v1.0.0 with a stand-in rules file in place of the kit's own, edited in the second; v1.2.2 is v1.0.0 with the rules
+# file removed, the release KU5 needs now that the kit's tree holds one.
+git -C "$K" checkout -q -b userlevel "$B"
+mkdir -p "$K/rules"; printf '# a stand-in rules file\n\nLoad canary: kc-5a17e0aa00c0ffee\n' > "$K/rules/morrowcairn.md"; kc "a rules file"
+git -C "$K" tag -a v1.2.0 -m v1.2.0
+echo "a later rule" >> "$K/rules/morrowcairn.md"; kc "a later rules file"; git -C "$K" tag -a v1.2.1 -m v1.2.1
+git -C "$K" checkout -q -b norules "$B"; git -C "$K" rm -q --ignore-unmatch rules/morrowcairn.md; kc "no rules file"
+git -C "$K" tag -a v1.2.2 -m v1.2.2
+git -C "$K" push -q --no-verify origin v1.2.0 v1.2.1 v1.2.2 2>/dev/null; git -C "$K" checkout -q main
+irun v1.2.0 >/dev/null; irun v1.2.1 >/dev/null; irun v1.2.2 >/dev/null
+IU0="$KIT_INSTALL_ROOT/v1.2.0"; IU1="$KIT_INSTALL_ROOT/v1.2.1"; IU2="$KIT_INSTALL_ROOT/v1.2.2"
+[[ -f "$IU0/rules/morrowcairn.md" && -f "$IU1/rules/morrowcairn.md" ]] && ! cmp -s "$IU0/rules/morrowcairn.md" "$IU1/rules/morrowcairn.md" \
+    && [[ -f "$IU2/MANIFEST.sha256" && ! -e "$IU2/rules/morrowcairn.md" ]]
+                                               want_ok "KU0 v1.2.0 and v1.2.1 install, each with its own rules file, and v1.2.2 with none" $? ""
+UL="$TMP/user-level"; UD="$UL/.claude"; UPF="$UL/.config/morrowcairn/user.pin"
+ku() { env CLAUDE_CONFIG_DIR="$UD" KIT_USER_PIN="$UPF" "$KP" user "$@" 2>&1; }
+ustate() {  # every path under the scratch user level: a link by its target, a file by its hash, a folder by its name
+    (cd "$UL" 2>/dev/null && find . | LC_ALL=C sort | while IFS= read -r p; do
+        if [[ -L "$p" ]]; then printf '%s -> %s\n' "$p" "$(readlink "$p")"
+        elif [[ -f "$p" ]]; then printf '%s %s\n' "$p" "$(sha "$p")"; else printf '%s/\n' "$p"; fi; done); }
+uskills() { local d n; for d in "$1"/.claude/skills/*/; do n=${d%/}; n=${n##*/}; [[ "$(readlink "$UD/skills/$n")" == "$1/.claude/skills/$n" ]] || return 1; done; }
+upinned() { [[ "$(cat "$UPF" 2>/dev/null)" == "$(printf 'release=%s\nmanifest=%s' "$1" "$(mhash "$2")")" ]]; }
+umode() { python3 -I - "$1" <<'PY'
+import os, stat, sys
+print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])
+PY
+}
+# It refuses, changing nothing: an entry that isn't the kit's own link, a missing install, one failing its manifest, a
+# release with no rules file.
+mkdir -p "$UD/rules"; echo "# the person's own" > "$UD/rules/morrowcairn.md"
+before=$(ustate); out=$(ku v1.2.0); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU1 user refuses a rules file that isn't the kit's own link, and changes nothing" $rc "$out" "rules/morrowcairn.md isn't the kit's own link"
+rm -f "$UD/rules/morrowcairn.md"; mkdir -p "$UD/skills/gates"; echo "# a copy" > "$UD/skills/gates/SKILL.md"
+before=$(ustate); out=$(ku v1.2.0); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU2 user refuses a skill entry that isn't the kit's own link (a folder), and changes nothing" $rc "$out" "skills/gates isn't the kit's own link"
+rm -rf "${UD:?}/skills/gates"; ln -s "$TMP" "$UD/skills/record-stamps"
+before=$(ustate); out=$(ku v1.2.0); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU2b user refuses a skill link that points elsewhere, and changes nothing" $rc "$out" "skills/record-stamps isn't the kit's own link"
+rm -f "$UD/skills/record-stamps"
+before=$(ustate); out=$(ku v9.9.9); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU3 user refuses a release with no install" $rc "$out" "no install for v9.9.9"
+chmod -R u+w "$IU0"; echo damaged > "$IU0/zz-damaged"
+before=$(ustate); out=$(ku v1.2.0); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0; rm -f "$IU0/zz-damaged"; chmod -R a-w "$IU0"
+                                               refused_for "KU4 user refuses an install that fails its own manifest" $rc "$out" "fails its own manifest"
+before=$(ustate); out=$(ku v1.2.2); rc=$?; [[ "$(ustate)" == "$before" && ! -e "$IU2/rules/morrowcairn.md" ]] || rc=0
+                                               refused_for "KU5 user refuses a release that ships no rules file" $rc "$out" "ships no rules/morrowcairn.md"
+# It links, moves and leaves alone: a fresh user level gets the links and the pin, the person's own files beside them
+# untouched; an upgrade moves them; a second run changes nothing.
+rm -rf "${UL:?}"; mkdir -p "$UD/rules" "$UD/skills/my-own"; echo "# mine" > "$UD/rules/mine.md"; echo "# mine" > "$UD/skills/my-own/SKILL.md"
+printf '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/morrowcairn-reply-file"}]}]}}\n' > "$UD/settings.json"
+mine=$(cd "$UL" && sha .claude/rules/mine.md; sha .claude/skills/my-own/SKILL.md); settings=$(cd "$UL" && sha .claude/settings.json)
+out=$(ku v1.2.0); rc=$?
+[[ "$(readlink "$UD/rules/morrowcairn.md")" == "$IU0/rules/morrowcairn.md" ]] && uskills "$IU0" && upinned v1.2.0 "$IU0" \
+    && [[ "$(cd "$UL" && sha .claude/rules/mine.md; sha .claude/skills/my-own/SKILL.md)" == "$mine" ]] || rc=1
+                                               want_ok "KU6 user links the rules file and every skill, writes the pin, and leaves the person's own files alone" $rc "$out"
+# The pin's folder, ~/.config/morrowcairn where nothing else is set, is made at 700 when user makes it, as to and
+# migrate make it; a folder already there keeps its mode (KU13b).
+[[ "$(umode "${UPF%/*}")" == 700 ]]
+                                               want_ok "KU13 user makes the pin's folder at 700 when it makes it" $? "mode $(umode "${UPF%/*}")"
+chmod 755 "${UPF%/*}"
+# The hooks: each script in a release's claude-hooks/ gets a link at
+# hooks/morrowcairn-<name>, a path an upgrade never changes, so the person's settings name it once. The kit never writes
+# the settings file, which names the reply-file hook here as the setup would have them do.
+HOOKS=(reply-file compaction-log)
+uhooks() {  # INSTALL [NAME...]: each named hook (default both) shipped executable and linked at hooks/morrowcairn-<name>
+    local i=$1 n; shift; (( $# )) || set -- "${HOOKS[@]}"
+    for n in "$@"; do [[ -f "$i/claude-hooks/$n" && -x "$i/claude-hooks/$n" \
+                          && "$(readlink "$UD/hooks/morrowcairn-$n")" == "$i/claude-hooks/$n" ]] || return 1; done; }
+uhooks "$IU0" && [[ "$(cd "$UL" && sha .claude/settings.json)" == "$settings" ]]
+                                               want_ok "KU9 user links each hook at hooks/morrowcairn-<name> and never writes the person's settings" $? "$out"
+out=$(ku v1.2.1); rc=$?
+[[ "$(readlink "$UD/rules/morrowcairn.md")" == "$IU1/rules/morrowcairn.md" ]] && uskills "$IU1" && upinned v1.2.1 "$IU1" || rc=1
+                                               want_ok "KU7 user to a later release moves every link and the pin" $rc "$out"
+[[ "$(umode "${UPF%/*}")" == 755 ]]
+                                               want_ok "KU13b a pin folder already there keeps its mode" $? "mode $(umode "${UPF%/*}")"
+uhooks "$IU1" && [[ "$(cd "$UL" && sha .claude/settings.json)" == "$settings" ]]
+                                               want_ok "KU10 user to a later release moves each hook link, its path unchanged" $? "$out"
+before=$(ustate); out=$(ku v1.2.1); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=1
+                                               want_ok "KU8 a second run changes nothing" $rc "$out" "in place"
+# A hook entry is the kit's own link or it is refused, changing nothing, as every other entry is: the person's own file,
+# or a link pointing elsewhere.
+rm -f "$UD/hooks/morrowcairn-reply-file"; echo "# the person's own" > "$UD/hooks/morrowcairn-reply-file"
+before=$(ustate); out=$(ku v1.2.1); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU11 user refuses a hook entry that isn't the kit's own link, and changes nothing" $rc "$out" "hooks/morrowcairn-reply-file isn't the kit's own link"
+rm -f "$UD/hooks/morrowcairn-reply-file"; ln -s "$TMP" "$UD/hooks/morrowcairn-reply-file"
+before=$(ustate); out=$(ku v1.2.1); rc=$?; [[ "$(ustate)" == "$before" ]] || rc=0
+                                               refused_for "KU11b user refuses a hook link that points elsewhere, and changes nothing" $rc "$out" "hooks/morrowcairn-reply-file isn't the kit's own link"
+rm -f "$UD/hooks/morrowcairn-reply-file"; ln -s "$IU1/claude-hooks/reply-file" "$UD/hooks/morrowcairn-reply-file"
+# It never removes a link: a hook a newer release no longer ships keeps its link, into the older install, which stays
+# too, and the run names it, since the person's settings may still name it. v1.2.3 is v1.2.1 without the
+# compaction-log hook.
+git -C "$K" checkout -q -b nohook v1.2.1; git -C "$K" rm -q --ignore-unmatch claude-hooks/compaction-log; kc "one hook dropped"
+git -C "$K" tag -a v1.2.3 -m v1.2.3; git -C "$K" push -q --no-verify origin v1.2.3 2>/dev/null; git -C "$K" checkout -q main
+irun v1.2.3 >/dev/null; IU3="$KIT_INSTALL_ROOT/v1.2.3"
+out=$(ku v1.2.3); rc=$?
+[[ ! -e "$IU3/claude-hooks/compaction-log" ]] && uhooks "$IU3" reply-file && uhooks "$IU1" compaction-log \
+    && [[ "$(cd "$UL" && sha .claude/settings.json)" == "$settings" ]] || rc=1
+                                               want_ok "KU12 a hook a newer release doesn't ship keeps its link into the older install, and the run names it" $rc "$out" "hooks/morrowcairn-compaction-log isn't in release v1.2.3"
+
+# ============================== the hooks themselves: a reply file per report, a line per compaction ======
+# Each hook runs as Claude Code runs a command hook: by its path (here the install's file; at the user level, the link
+# above), its event as JSON on stdin, in a scratch home with no other environment. The settings come from
+# morrowcairn-local.md, made from the install's example by writing each value after its colon, as the example says, so
+# a change to the example's form that the hooks don't read fails here. The Stop input's last_assistant_message is the
+# final message's text, and its transcript_path the turn's record, which may lag that message (Claude Code's hooks
+# page); with no transcript to read, as in RF1 to RF10, the turn is that message alone.
+HK="$TMP/hook-home"; HC="$HK/.claude"; RFD="$HK/replies"
+RH="$IU0/claude-hooks/reply-file"; CH="$IU0/claude-hooks/compaction-log"
+SID=0a1b2c3d-1111-4222-8333-944455556666; ID8=${SID:0:8}; OTHER=9f8e7d6c
+hlocal() {  # REPLY-FOLDER COMPACTION-LOG: the scratch machine's morrowcairn-local.md, from the install's example
+    mkdir -p "$HC/rules"
+    awk -v r="$1" -v c="$2" '{ if (index($0, "- **[reply folder]:**") == 1) $0 = $0 " " r
+                               else if (index($0, "- **[compaction log]:**") == 1) $0 = $0 " " c; print }' \
+        "$IU0/rules/morrowcairn-local.example.md" > "$HC/rules/morrowcairn-local.md"; }
+hstate() {  # every path under the scratch home but the settings file: a file by its hash, a folder by its name
+    (cd "$HK" 2>/dev/null && find . | LC_ALL=C sort | while IFS= read -r p; do
+        [[ "$p" == ./.claude/rules/morrowcairn-local.md ]] && continue
+        if [[ -f "$p" ]]; then printf '%s %s\n' "$p" "$(sha "$p")"; else printf '%s/\n' "$p"; fi; done); }
+# Each helper writes the hook's input to a file whole before the hook starts, and the hook reads it by redirection: a
+# hook that returns before reading its input (an empty setting) can't then cut a producer off, as a pipe let it.
+hstop() {  # MESSAGE [SESSION]: the Stop hook, its input on stdin
+    python3 -I - "${2:-$SID}" "$1" > "$TMP/hook-in.json" <<'PY' || return 9
+import json, sys
+print(json.dumps({"session_id": sys.argv[1], "transcript_path": "/nonexistent.jsonl", "cwd": "/",
+                  "permission_mode": "default", "hook_event_name": "Stop", "stop_hook_active": False,
+                  "last_assistant_message": sys.argv[2], "background_tasks": [], "session_crons": []}))
+PY
+    env -i PATH="$PATH" HOME="$HK" ${HOOK_ENV:-} "$RH" 2>&1 < "$TMP/hook-in.json"
+}
+hcompact() {  # TRIGGER [SESSION]: the PostCompact hook, its input on stdin
+    python3 -I - "${2:-$SID}" "$1" > "$TMP/hook-in.json" <<'PY' || return 9
+import json, sys
+print(json.dumps({"session_id": sys.argv[1], "transcript_path": "/nonexistent.jsonl", "cwd": "/",
+                  "hook_event_name": "PostCompact", "trigger": sys.argv[2], "compact_summary": "a summary"}))
+PY
+    env -i PATH="$PATH" HOME="$HK" "$CH" 2>&1 < "$TMP/hook-in.json"
+}
+report() {  # PROJECT LABEL TAG [ID8] [BODY]: a report whose last line is its end line
+    printf 'Last relay received: %s %s %s (session %s)\n\n%s\n\nReply file: ~/replies/x.md\nEnd of report %s %s %s (session %s)' \
+        "$1" "$2" "$3" "${4:-$ID8}" "${5:-The report.}" "$1" "$2" "$3" "${4:-$ID8}"; }
+same_file() { [[ -f "$1" && "$(cat "$1"; echo x)" == "$2"$'\n'x ]]; }   # FILE TEXT: FILE holds TEXT and one newline
+[[ -f "$RH" && -x "$RH" && -f "$CH" && -x "$CH" ]]
+                                               want_ok "RF0 every install ships both hooks in claude-hooks/, each executable" $? "$(ls -l "$IU0/claude-hooks" 2>&1 | tr '\n' ' ')"
+rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "~/replies" ""
+r1=$(report proj blue '#1'); out=$(hstop "$r1"); rc=$?
+same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && [[ "$(ls -A "$RFD")" == "proj-blue-$ID8-01.md" ]] || rc=1
+                                               want_ok "RF1 a report whose last line is its end line, naming this session, is written to the reply folder as project-label-id8-NN.md, the project first" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+r2=$(report proj blue '#2'); r2d=$(report proj blue '#2-direct1' "$ID8" 'A direct answer.'); r2w=$(report proj blue '#2-wake1' "$ID8" 'A wake-up.')
+out=$(hstop "$r2"; hstop "$r2d"; hstop "$r2w"); rc=$?
+same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-02.md" "$r2" \
+    && same_file "$RFD/proj-blue-$ID8-02-direct1.md" "$r2d" && same_file "$RFD/proj-blue-$ID8-02-wake1.md" "$r2w" || rc=1
+                                               want_ok "RF2 each later report gets its own file, a direct or wake tag kept, the first file untouched" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+r3=$(report Proj Blue '#3'); out=$(hstop "$r3"); rc=$?; same_file "$RFD/proj-blue-$ID8-03.md" "$r3" || rc=1
+                                               want_ok "RF2b the file's name is lowercase" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+before=$(hstate); out=$(hstop $'An ordinary reply, no end line.\n\nThe last line.'); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF3 a reply without an end line writes nothing" $rc "$out"
+before=$(hstate); out=$(hstop "$(report proj blue '#4' "$OTHER")"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF4 an end line naming another session's ID writes nothing" $rc "$out"
+before=$(hstate); out=$(hstop "$(report proj blue '#4')"$'\n\nA line after the end line.'); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF5 an end line that isn't the reply's last line writes nothing" $rc "$out"
+before=$(hstate); out=$(hstop "$(report 'a/b' blue '#4')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF6 an end line whose project isn't one word (a /) writes nothing, there or anywhere" $rc "$out"
+r1b=$(report proj blue '#1' "$ID8" 'The report, sent again changed.'); r1c=$(report proj blue '#1' "$ID8" 'And a third time.')
+out=$(hstop "$r1b"; hstop "$r1c"); rc=$?
+same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-01-resend2.md" "$r1b" \
+    && same_file "$RFD/proj-blue-$ID8-01-resend3.md" "$r1c" || rc=1
+                                               want_ok "RF7 a second report under the same number never overwrites: it goes to -resend2, then -resend3" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+before=$(hstate); out=$(hstop "$r1"; hstop "$r1b"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF7b a report already filed byte for byte isn't filed again" $rc "$out"
+hlocal "" ""; before=$(hstate); out=$(hstop "$(report proj blue '#5')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF8 an empty reply-folder setting writes nothing" $rc "$out"
+rm -f "$HC/rules/morrowcairn-local.md"; before=$(hstate); out=$(hstop "$(report proj blue '#5')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF8b no morrowcairn-local.md writes nothing" $rc "$out"
+hlocal "replies" ""; before=$(hstate); out=$(hstop "$(report proj blue '#5')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=0
+                                               want_refused "RF9 a reply folder that isn't a path starting / or ~/ writes nothing, and says so" $rc "$out" "[reply folder]"
+mkdir -p "$HK/other/rules"; awk '{ if (index($0, "- **[reply folder]:**") == 1) $0 = $0 " `'"$HK"'/elsewhere`"; print }' \
+    "$IU0/rules/morrowcairn-local.example.md" > "$HK/other/rules/morrowcairn-local.md"
+r5=$(report proj blue '#5'); out=$(HOOK_ENV="CLAUDE_CONFIG_DIR=$HK/other" hstop "$r5"); rc=$?
+same_file "$HK/elsewhere/proj-blue-$ID8-05.md" "$r5" && [[ ! -e "$RFD/proj-blue-$ID8-05.md" ]] || rc=1
+                                               want_ok "RF10 the settings are read from CLAUDE_CONFIG_DIR where it is set, an absolute path in backticks read as written" $rc "$out"
+# Two reports in one turn: a session reports its relay, then starts a waiting one in the same turn (the rules file's
+# section 2), so the first report ends mid-turn, before more tool calls. Claude Code's Stop input holds the final
+# message alone (last_assistant_message) and the transcript's path, and its hooks page says the transcript may lag that
+# message; so the hook reads the turn from the transcript, adding the field when the transcript lacks it. A report ends
+# at this session's end line when it is the turn's last line, or mid-text when the line before it is its path line,
+# naming its own file in the reply folder. htx FILE [lag]: a turn, the owner's message, then $ta and a tool call, a tool
+# result, then $tb; with lag, $tb isn't written yet. hstopt MESSAGE FILE: the Stop hook with that transcript path.
+htx() {
+    python3 -I - "$1" "${2:-}" "$ta" "$tb" <<'PY'
+import json, sys
+path, lag, a, b = sys.argv[1:5]
+rows = [{"type": "user", "message": {"role": "user", "content": "Relay proj blue #11"}},
+        {"type": "assistant", "message": {"id": "m1", "role": "assistant", "stop_reason": "tool_use",
+         "content": [{"type": "text", "text": a}, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
+        {"type": "user", "toolUseResult": {}, "message": {"role": "user", "content": [
+         {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}]
+if not lag:
+    rows.append({"type": "assistant", "message": {"id": "m2", "role": "assistant", "stop_reason": "end_turn",
+                 "content": [{"type": "text", "text": b}]}})
+with open(path, "w", encoding="utf-8") as f:
+    f.write("".join(json.dumps(r) + "\n" for r in rows))
+PY
+}
+hstopt() {  # MESSAGE TRANSCRIPT: the Stop hook, its input from a file, as hstop's
+    python3 -I - "$SID" "$1" "$2" > "$TMP/hook-in.json" <<'PY' || return 9
+import json, sys
+print(json.dumps({"session_id": sys.argv[1], "transcript_path": sys.argv[3], "cwd": "/",
+                  "permission_mode": "default", "hook_event_name": "Stop", "stop_hook_active": False,
+                  "last_assistant_message": sys.argv[2], "background_tasks": [], "session_crons": []}))
+PY
+    env -i PATH="$PATH" HOME="$HK" "$RH" 2>&1 < "$TMP/hook-in.json"
+}
+treport() {  # N BODY: a report closing #N, its path line naming its own file in the reply folder
+    printf 'Last relay received: proj blue #%s (session %s)\n\n%s\n\nReply file: ~/replies/proj-blue-%s-%02d.md\nEnd of report proj blue #%s (session %s)' \
+        "$1" "$ID8" "$2" "$ID8" "$1" "$1" "$ID8"; }
+rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "~/replies" ""
+ta=$(treport 11 'The first report, closed before the next relay starts.'); tb=$(treport 12 'The second report, the turn'"'"'s last.')
+htx "$HK/turn.jsonl"; out=$(hstopt "$tb" "$HK/turn.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-11.md" "$ta" && same_file "$RFD/proj-blue-$ID8-12.md" "$tb" \
+    && [[ "$(ls -A "$RFD" | tr '\n' ' ')" == "proj-blue-$ID8-11.md proj-blue-$ID8-12.md " ]] || rc=1
+                                               want_ok "RF11 two reports in one turn: the first, ended mid-turn by its path and end lines, is filed under its own name, and the second under its own" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+before=$(hstate); out=$(hstopt "$tb" "$HK/turn.jsonl"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "RF11b the same turn end again files nothing new: each report is already filed byte for byte" $rc "$out"
+rm -rf "${RFD:?}"; htx "$HK/lag.jsonl" lag; out=$(hstopt "$tb" "$HK/lag.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-11.md" "$ta" && same_file "$RFD/proj-blue-$ID8-12.md" "$tb" || rc=1
+                                               want_ok "RF11c with the transcript lagging the final message, the field fills it in, and both reports are filed" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+rm -rf "${RFD:?}"; ta=$'I quote an end line here:\nEnd of report proj blue #13 (session '"$ID8"$')\nand carry on.'
+htx "$HK/quote.jsonl"; out=$(hstopt "$tb" "$HK/quote.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ "$(ls -A "$RFD")" == "proj-blue-$ID8-12.md" ]] || rc=1
+                                               want_ok "RF11d an end line mid-text without its path line before it closes no report: the turn's one report holds the text from the turn's start" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "" "~/logs/compaction.log"
+out=$(hcompact auto; hcompact manual); rc=$?; day=$(env -i PATH="$PATH" date +%Y-%m-%d)
+clog=$(cat "$HK/logs/compaction.log" 2>/dev/null); l1=${clog%%$'\n'*}; l2=${clog#*$'\n'}
+re1="^$day [0-9]{2}:[0-9]{2}:[0-9]{2} [A-Za-z0-9+:-]+ \| $SID \| auto$"; re2="^$day [0-9]{2}:[0-9]{2}:[0-9]{2} [A-Za-z0-9+:-]+ \| $SID \| manual$"
+[[ $(printf '%s\n' "$clog" | wc -l) -eq 2 && "$l1" =~ $re1 && "$l2" =~ $re2 ]] || rc=1
+                                               want_ok "CL1 each compaction appends one line: the time, the session ID and what triggered it" $rc "$out [$clog]"
+hlocal "" ""; before=$(hstate); out=$(hcompact auto); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
+                                               want_ok "CL2 an empty compaction-log setting writes nothing" $rc "$out"
+
 # ============================== kit-pin migrate, on a spawn that runs a hooks path ==============
-SM="$TMP/old-spawn"; git init -q -b main "$SM"; ident "$SM"; mkdir -p "$SM/hooks"; tpin "$SM/.git/leak-pattern.pin" "$MARK" 1
+SM="$TMP/old-spawn"; git init -q -b main "$SM"; ident "$SM"; mkdir -p "$SM/hooks"; tpin "$SM/.git/leak-pattern.pin" "$MARK" 1; oldlist "$SM"
 printf '# an older spawn\n' > "$SM/CLAUDE.md"; git -C "$SM" add -A; git -C "$SM" commit -q --no-verify -m one
 git -C "$SM" config core.hooksPath hooks
 printf '#!/bin/sh\n# an older hook\nexit 0\n' > "$SM/.git/hooks/pre-commit"; chmod +x "$SM/.git/hooks/pre-commit"
@@ -514,7 +952,7 @@ out=$(km migrate v1.0.0); rc=$?;               want_ok "KM0 migrate moves a hook
 # sets this clone's own hooks path to the stubs, and each stub runs the org's hook for its event first, as git would
 # (the same arguments and standard input, from the top of the work tree, by its own path), then a hook of the project's
 # own that kit-pin kept as <hook>.project, then the release's checks; any of them refusing refuses. A project's own hook
-# is never overwritten (decisions log §274 ruling 4, §294). mkit DIR: IT's two hooks, each adding a line to DIR/ran
+# is never overwritten. mkit DIR: IT's two hooks, each adding a line to DIR/ran
 # (its name and folder, and pre-push's standard input) and exiting with the number in DIR/exit.
 mkit() {
     local h; mkdir -p "$1"; echo 0 > "$1/exit"; : > "$1/ran"
@@ -523,9 +961,9 @@ mkit() {
             "$h" "$1" "$h" "$1" "$1" > "$1/$h"
         chmod 0755 "$1/$h"
     done; }
-mkorg() {  # DIR: a project ready to pin, with a remote and the identity list's pin
+mkorg() {  # DIR: a project to pin, with a remote, the do-not-publish list at its old place for the move, and its pin
     git init -q -b main "$1"; ident "$1"; printf '# an org project\n' > "$1/CLAUDE.md"; printf 'true\n' > "$1/kit-pin.tests"
-    git -C "$1" add -A; git -C "$1" commit -q --no-verify -m one; tpin "$1/.git/leak-pattern.pin" "$MARK" 1
+    git -C "$1" add -A; git -C "$1" commit -q --no-verify -m one; tpin "$1/.git/leak-pattern.pin" "$MARK" 1; oldlist "$1"
     git init -q --bare "$1.git"; git -C "$1" remote add origin "$1.git"; git -C "$1" push -q --no-verify origin main 2>/dev/null; }
 SYSCFG="$TMP/system.gitconfig"; : > "$SYSCFG"
 IT="$TMP/it-hooks"; mkit "$IT"; git config -f "$SYSCFG" core.hooksPath "$IT"
@@ -539,6 +977,7 @@ out=$(osy "$KP" check); rc=$?;                 want_ok "HO1b and check passes, n
 echo 1 > "$IT/exit"; : > "$IT/ran"; ostage a; out=$(osy git commit -q -m a); rc=$?
 grep -q 'pre-commit ran' "$IT/ran" || rc=0
                                                refused_for "HO2 the org's hook refusing refuses the commit, through the stub" $rc "$out" "refused (exit 1)"
+want_says "MI5 that refusal says the hook is IT's" $rc "$out" "If IT manages this machine: it is IT's own hook"
 echo 0 > "$IT/exit"; : > "$IT/ran"; git -C "$OS" reset -q; git -C "$OS" checkout -q -- . 2>/dev/null
 cp "$ROOT/leak-detection/fixtures/synthetic_config.txt" "$OS/config.local.txt"; git -C "$OS" add config.local.txt; out=$(osy git commit -q -m b); rc=$?
 grep -q 'pre-commit ran' "$IT/ran" || rc=0
@@ -552,6 +991,7 @@ grep -q '^stdin: refs/heads/main ' "$IT/ran" || rc=1
                                                want_ok "HO5 a push passes, the org's hook given git's ref lines and the kit's pre-push after it" $rc "$out" "metadata scan"
 echo 1 > "$IT/exit"; ostage d; git -C "$OS" commit -q --no-verify -m d; out=$(osy git push -q origin main); rc=$?
                                                refused_for "HO6 the org's pre-push refusing refuses the push" $rc "$out" "refused (exit 1)"
+want_says "MI6 that refusal says the hook is IT's" $rc "$out" "If IT manages this machine: it is IT's own hook"
 echo 0 > "$IT/exit"
 # The same under a global hooks path, in the suite's own global config.
 ITG="$TMP/it-hooks-g"; mkit "$ITG"; git config --global core.hooksPath "$ITG"
@@ -582,13 +1022,14 @@ grep -q 'project pre-commit ran' "$TMP/own-ran" || rc=1
                                                want_ok "HP2 the kept hook runs before the kit's checks, and a clean commit passes" $rc "$out" "scanned"
 echo 1 > "$TMP/own-exit"; echo g >> "$OP/notes.txt"; git -C "$OP" add notes.txt; out=$(op git commit -q -m g); rc=$?
                                                refused_for "HP3 the kept hook refusing refuses the commit" $rc "$out" "refused (exit 1)"
+want_says "MI7 that refusal says the hook is the project's own" $rc "$out" "The project's owner: it is this project's own hook"
 git -C "$OP" reset -q; git -C "$OP" checkout -q -- .
 OL="$TMP/org-link"; mkorg "$OL"; ln -s /bin/true "$OL/.git/hooks/pre-push"
 out=$( (cd "$OL" && "$KP" to v1.0.0) 2>&1); rc=$?; [[ -L "$OL/.git/hooks/pre-push" && ! -e "$OL/kit.pin" ]] || rc=0
                                                refused_for "HP4 a project hook that can't be chained (a link) is refused by name, and left as it was" $rc "$out" "$OL/.git/hooks/pre-push"
 # The org's path is the one git reads. Under GIT_CONFIG_NOSYSTEM (this suite's default) git skips the system file, which
-# `git config --system` reads anyway; so neither check nor the stub may take a hooks path from it (decisions log §297;
-# the stand-in's it-hookspath condition found it at bdae909).
+# `git config --system` reads anyway; so neither check nor the stub may take a hooks path from it (the stand-in's
+# it-hookspath condition found it).
 echo 0 > "$TMP/own-exit"; echo 1 > "$IT/exit"; : > "$IT/ran"
 out=$( (cd "$OP" && GIT_CONFIG_SYSTEM="$SYSCFG" "$KP" check) 2>&1); rc=$?
                                                want_ok "HN1 under GIT_CONFIG_NOSYSTEM, check takes no hooks path from the system file, as git takes none" $rc "$out" "no hooks path"
@@ -596,12 +1037,12 @@ echo h >> "$OP/notes.txt"; git -C "$OP" add notes.txt; out=$( (cd "$OP" && GIT_C
 [[ -s "$IT/ran" ]] && rc=1
                                                want_ok "HN2 and the stub runs no org hook from it, as git would run none, and the commit passes" $rc "$out" "scanned"
 echo 0 > "$IT/exit"
-# A kept project hook that isn't executable refuses, by name, as hook-checks/ refuses such an entry (§9's guard); an
-# org's hook that isn't executable is skipped, as git skips it, and the kit's checks still run (decisions log §299).
+# A kept project hook that isn't executable refuses, by name, as hook-checks/ refuses such an entry; an
+# org's hook that isn't executable is skipped, as git skips it, and the kit's checks still run.
 chmod a-x "$OP/.git/hooks/pre-commit.project"; echo i >> "$OP/notes.txt"; git -C "$OP" add notes.txt
 out=$(op git commit -q -m i); rc=$?
                                                refused_for "HX1 a kept project hook that has lost its execute bit refuses the commit, naming it" $rc "$out" "$OP/.git/hooks/pre-commit.project"
-# check says so too: a clone whose every commit the stub refuses is not a clone that checks out (§300, plan R4 (c)).
+# check says so too: a clone whose every commit the stub refuses is not a clone that checks out.
 out=$(op "$KP" check); rc=$?
                                                refused_for "KX1 kit-pin check: a kept project hook that has lost its execute bit fails the check, naming it" $rc "$out" "$OP/.git/hooks/pre-commit.project"
 chmod u+x "$OP/.git/hooks/pre-commit.project"; : > "$TMP/own-ran"; echo j >> "$OP/notes.txt"; git -C "$OP" add notes.txt
@@ -616,6 +1057,178 @@ cp "$ROOT/leak-detection/fixtures/synthetic_config.txt" "$OS/config.local.txt"; 
 out=$(osy git commit -q -m y); rc=$?
                                                want_refused "HX4 and with it skipped, a staged credential is still refused by the kit" $rc "$out" "credential shapes"
 git -C "$OS" reset -q; rm -f "$OS/config.local.txt"; chmod a+x "$IT/pre-commit"
+# ============================== every other hook the org's path holds ===========================
+# The kit runs IT's hooks from inside its own, so both always run. The stubs chain the org's
+# pre-commit and pre-push. For each other hook the org's folder holds when kit-pin to runs (any git documents but
+# three), kit-pin writes a relay (leak-detection/org-hook) that runs the org's hook of its name, then a project's kept
+# <hook>.project, reading the org's folder from the line kit-pin records beside it (only the hooks the folder holds
+# get one, since git starts a process for every hook it finds). A
+# hook IT adds later has no relay, so the stub refuses every commit, naming it, until kit-pin to runs again; so does a
+# clone whose recorded folder isn't the one git reads now. push-to-checkout, proc-receive and fsmonitor-watchman aren't
+# relayed: the first two change what git does by being there, and git finds the third through core.fsmonitor; kit-pin
+# check names any the org's folder holds. A clone whose own config set a hooks path (a hook manager's: .husky, or Husky
+# v9's .husky/_) keeps that path's hooks through the same relays after migrate. HM0 is the control: in a clone the kit
+# hasn't pinned, git runs the org's commit-msg itself, so a red below is the kit's. Files are read by has, not grep (the
+# GP lint).
+has() { [[ -f "$1" && "$(<"$1")" == *"$2"* ]]; }   # FILE TEXT
+relays_in() { local f r=""; for f in "$1"/*; do cmp -s "$f" "$I1/leak-detection/org-hook" && r="$r ${f##*/}"; done; printf '%s' "$r"; }   # HOOKS
+IT3="$TMP/it-hooks-3"; mkdir -p "$IT3"; SYS3="$TMP/system3.gitconfig"; git config -f "$SYS3" core.hooksPath "$IT3"
+OE="$TMP/org-empty"; mkorg "$OE"
+oe() { (cd "$OE" && env -u GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM="$SYS3" "$@") 2>&1; }
+out=$(oe "$KP" to v1.0.0); rc=$?; r=$(relays_in "$OE/.git/hooks")
+[[ -z "$r" && "$(sed -n 1p "$OE/.git/hooks/.kit-hooks" 2>/dev/null)" == "$IT3" && -n "$(git -C "$OE" config --local --get core.hooksPath)" ]] || rc=1
+                                               want_ok "HM12 under an IT folder holding no hooks, kit-pin to writes no relay, records the folder and sets the clone's path" $rc "$out (relays:$r)"
+echo e >> "$OE/notes.txt"; git -C "$OE" add notes.txt; out=$(oe git commit -q -m e); rc=$?
+                                               want_ok "HM12b and a commit there passes, the kit's scan run" $rc "$out" "scanned"
+for h in commit-msg post-commit; do
+    printf '#!/bin/sh\necho "%s ran in $(pwd)" >> "%s/ran"\nrc=$(cat "%s/exit-%s" 2>/dev/null || echo 0)\n[ "$rc" = 0 ] || echo "org %s refusing" >&2\nexit "$rc"\n' \
+        "$h" "$IT" "$IT" "$h" "$h" > "$IT/$h"
+    chmod 0755 "$IT/$h"
+done
+OC="$TMP/org-plain"; git init -q -b main "$OC"; ident "$OC"
+echo 1 > "$IT/exit-commit-msg"; : > "$IT/ran"; echo k > "$OC/k.txt"; git -C "$OC" add k.txt
+out=$( (cd "$OC" && env -u GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM="$SYSCFG" git commit -q -m k) 2>&1); rc=$?
+git -C "$OC" rev-parse -q --verify HEAD >/dev/null && rc=0
+                                               want_refused "HM0 control: in an unpinned clone, git runs the org's commit-msg itself, and its refusal refuses" $rc "$out" "org commit-msg refusing"
+# IT's commit-msg and post-commit came after HO1 pinned $OS, when its folder held only pre-commit and pre-push.
+echo 0 > "$IT/exit-commit-msg"; head=$(git -C "$OS" rev-parse HEAD); : > "$IT/ran"; ostage m4; out=$(osy git commit -q -m m4); rc=$?
+[[ "$(git -C "$OS" rev-parse HEAD)" == "$head" && "$out" == *"to v1.0.0"* ]] || rc=0; has "$IT/ran" 'commit-msg ran' && rc=0
+                                               refused_for "HM4 a hook IT adds after kit-pin ran makes the next commit refuse, naming it and the fix, kit-pin to" $rc "$out" "commit-msg"
+want_says "MI9 that refusal says what you can do" $rc "$out" "You can: set the staged changes aside, run kit-pin to again"
+out=$(osy "$KP" check); rc=$?
+                                               refused_for "HM4b check refuses it too, naming it" $rc "$out" "commit-msg"
+want_says "MI23 check's refusal says what you can do" $rc "$out" "You can: relay it ("
+git -C "$OS" reset -q; git -C "$OS" checkout -q -- .; out=$(osy "$KP" to v1.0.0); rc=$?; r=$(relays_in "$OS/.git/hooks")
+[[ "$r" == " commit-msg post-commit" ]] || rc=1
+                                               want_ok "HM4c pinned again, the clone relays exactly the two hooks IT's folder holds beside the stubs' two" $rc "$out (relays:$r)"
+echo 1 > "$IT/exit-commit-msg"; head=$(git -C "$OS" rev-parse HEAD); : > "$IT/ran"; ostage m1; out=$(osy git commit -q -m m1); rc=$?
+[[ "$(git -C "$OS" rev-parse HEAD)" == "$head" ]] || rc=0
+                                               want_refused "HM1 in a pinned clone, the org's commit-msg refusing refuses the commit" $rc "$out" "org commit-msg refusing"
+git -C "$OS" reset -q; git -C "$OS" checkout -q -- .
+echo 0 > "$IT/exit-commit-msg"; : > "$IT/ran"; ostage m2; out=$(osy git commit -q -m m2); rc=$?
+has "$IT/ran" 'commit-msg ran' || rc=1
+                                               want_ok "HM2 the org's commit-msg passing, it runs and the commit goes through" $rc "$out" "scanned"
+has "$IT/ran" "post-commit ran in $OS"
+                                               want_ok "HM3 the org's post-commit runs after the commit, from the work tree's top" $? ""
+echo 1 > "$IT/exit-commit-msg"; rm -f "$IT/commit-msg"; : > "$IT/ran"; ostage m5; out=$(osy git commit -q -m m5); rc=$?
+has "$IT/ran" 'commit-msg ran' && rc=1
+                                               want_ok "HM5 a hook IT removes stops running, as git would stop it, and the commit goes through" $rc "$out" "scanned"
+out=$(osy "$KP" to v1.0.0); rc=$?; r=$(relays_in "$OS/.git/hooks"); [[ "$r" == " post-commit" ]] || rc=1
+                                               want_ok "HM5b kit-pin to again drops the relay for the hook IT removed" $rc "$out (relays:$r)"
+IT2="$TMP/it-hooks-2"; mkit "$IT2"
+printf '#!/bin/sh\necho "moved commit-msg ran" >> "%s/ran"\nexit 0\n' "$IT2" > "$IT2/commit-msg"; chmod 0755 "$IT2/commit-msg"
+git config -f "$SYSCFG" core.hooksPath "$IT2"
+out=$(osy "$KP" check); rc=$?
+                                               refused_for "HM6 check refuses a clone whose recorded org path isn't the one git reads now, naming it" $rc "$out" "$IT2"
+want_says "MI22 check's refusal says what you can do" $rc "$out" "You can: record the path git reads now ("
+head=$(git -C "$OS" rev-parse HEAD); ostage m6c; out=$(osy git commit -q -m m6c); rc=$?
+[[ "$(git -C "$OS" rev-parse HEAD)" == "$head" && "$out" == *"to v1.0.0"* ]] || rc=0
+                                               refused_for "HM6c and the next commit refuses, naming the folder git reads now and kit-pin to" $rc "$out" "$IT2"
+want_says "MI10 that refusal says what you can do" $rc "$out" "You can: set the staged changes aside, run kit-pin to again"
+git -C "$OS" reset -q; git -C "$OS" checkout -q -- .
+out=$(osy "$KP" to v1.0.0); rc=$?; : > "$IT2/ran"; ostage m6; out2=$(osy git commit -q -m m6) || rc=1
+has "$IT2/ran" 'moved commit-msg ran' || rc=1
+                                               want_ok "HM6b kit-pin to records the path git reads now, and that folder's hooks run" $rc "$out $out2" "scanned"
+git config -f "$SYSCFG" core.hooksPath "$IT"; osy "$KP" to v1.0.0 >/dev/null
+printf '#!/bin/sh\nexit 0\n' > "$IT/push-to-checkout"; chmod 0755 "$IT/push-to-checkout"
+out=$(osy "$KP" check); rc=$?; [[ -e "$OS/.git/hooks/push-to-checkout" ]] && rc=1
+                                               want_ok "HM7 a hook no relay carries (push-to-checkout) isn't written into the clone, and check passes naming it" $rc "$out" "push-to-checkout"
+ostage m7; out=$(osy git commit -q -m m7); rc=$?
+                                               want_ok "HM7b and a commit passes: a hook no relay can carry is named by check, never refused by the stub" $rc "$out" "scanned"
+rm -f "$IT/push-to-checkout"
+OK="$TMP/org-kept"; mkorg "$OK"
+okp() { (cd "$OK" && env -u GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM="$SYSCFG" "$@") 2>&1; }
+printf '#!/bin/sh\necho "project commit-msg ran" >> "%s/ran"\nexit 0\n' "$IT" > "$OK/.git/hooks/commit-msg"; chmod 0755 "$OK/.git/hooks/commit-msg"
+printf '#!/bin/sh\necho "commit-msg ran in $(pwd)" >> "%s/ran"\nexit 0\n' "$IT" > "$IT/commit-msg"; chmod 0755 "$IT/commit-msg"
+ownm=$(sha "$OK/.git/hooks/commit-msg"); out=$(okp "$KP" to v1.0.0); rc=$?
+[[ "$(sha "$OK/.git/hooks/commit-msg.project" 2>/dev/null)" == "$ownm" ]] || rc=1
+                                               want_ok "HM8 kit-pin to keeps a project's own hook of a relayed name as <hook>.project, byte for byte" $rc "$out"
+: > "$IT/ran"; echo n >> "$OK/notes.txt"; git -C "$OK" add notes.txt; out=$(okp git commit -q -m n); rc=$?
+r=$(<"$IT/ran"); [[ "$r" == *"commit-msg ran in $OK"*"project commit-msg ran"* ]] || rc=1
+                                               want_ok "HM8b the org's commit-msg runs, then the project's kept one, and the commit goes through" $rc "$out" "scanned"
+# With two hooks to run, the relay runs each and refuses for the one that refused, saying whose it is: IT's, or the
+# project's own (with one, it hands over to it, and that hook's own output is the refusal).
+cp -p "$IT/commit-msg" "$TMP/it-cm.aside"; printf '#!/bin/sh\nexit 1\n' > "$IT/commit-msg"
+echo n2 >> "$OK/notes.txt"; git -C "$OK" add notes.txt; out=$(okp git commit -q -m n2); rc=$?; cp -p "$TMP/it-cm.aside" "$IT/commit-msg"
+want_says "MI11 the relay refusing for IT's commit-msg says the hook is IT's" $rc "$out" "If IT manages this machine: it is IT's own hook"
+cp -p "$OK/.git/hooks/commit-msg.project" "$TMP/ok-cm.aside"; printf '#!/bin/sh\nexit 1\n' > "$OK/.git/hooks/commit-msg.project"
+out=$(okp git commit -q -m n2); rc=$?; cp -p "$TMP/ok-cm.aside" "$OK/.git/hooks/commit-msg.project"
+want_says "MI12 the relay refusing for the project's kept commit-msg says the hook is the project's own" $rc "$out" "The project's owner: it is this project's own hook"
+git -C "$OK" reset -q; git -C "$OK" checkout -q -- .
+osy "$KP" to v1.0.0 >/dev/null; echo junk >> "$OS/.git/hooks/commit-msg"; out=$(osy "$KP" check); rc=$?
+                                               refused_for "HM10 check refuses a relay that differs from the release's, naming it" $rc "$out" "$OS/.git/hooks/commit-msg"
+want_says "MI21 that refusal says what you can do" $rc "$out" "You can: refresh it ("
+osy "$KP" to v1.0.0 >/dev/null
+OR="$TMP/org-roll"; mkorg "$OR"; printf 'false\n' > "$OR/kit-pin.tests"; git -C "$OR" commit -q --no-verify -am tests
+out=$( (cd "$OR" && env -u GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM="$SYSCFG" "$KP" to v1.0.0) 2>&1); rc=$?
+[[ -z "$(relays_in "$OR/.git/hooks")" && ! -e "$OR/.git/hooks/.kit-hooks" && -z "$(git -C "$OR" config --local --get core.hooksPath)" ]] || rc=0
+                                               refused_for "HM11 to's undo, on a failing kit-pin.tests, leaves no relay, no recorded path and no hooks path" $rc "$out" "kit-pin.tests line 1 failed"
+# A release that ships no relay can't keep an org's other hooks running, so to refuses it there, changing nothing.
+git -C "$K" checkout -q -b norelay "$B"; git -C "$K" rm -q leak-detection/org-hook; kc "no relay"
+git -C "$K" tag -a v1.3.0 -m v1.3.0; git -C "$K" push -q --no-verify origin v1.3.0 2>/dev/null; git -C "$K" checkout -q main
+irun v1.3.0 >/dev/null; pin=$(<"$OS/kit.pin"); out=$(osy "$KP" to v1.3.0); rc=$?
+[[ -d "$KIT_INSTALL_ROOT/v1.3.0" && ! -e "$KIT_INSTALL_ROOT/v1.3.0/leak-detection/org-hook" && "$(<"$OS/kit.pin")" == "$pin" ]] || rc=0
+                                               refused_for "HM13 under an org's hooks path, to refuses a release that ships no relay, changing nothing" $rc "$out" "ships no relay"
+rm -f "$IT/commit-msg" "$IT/post-commit" "$IT/exit-commit-msg"
+OH="$TMP/org-husky"; git init -q -b main "$OH"; ident "$OH"; printf '# a hook-manager project\n' > "$OH/CLAUDE.md"
+printf 'true\n' > "$OH/kit-pin.tests"; mkdir -p "$OH/.husky"
+for h in pre-commit commit-msg; do
+    printf '#!/bin/sh\necho "husky %s ran in $(pwd)" >> "%s/husky-ran"\nexit "$(cat "%s/husky-exit" 2>/dev/null || echo 0)"\n' "$h" "$TMP" "$TMP" > "$OH/.husky/$h"
+    chmod 0755 "$OH/.husky/$h"
+done
+git -C "$OH" add -A; git -C "$OH" commit -q --no-verify -m one; tpin "$OH/.git/leak-pattern.pin" "$MARK" 1; oldlist "$OH"
+git -C "$OH" config core.hooksPath .husky
+oh() { (cd "$OH" && "$@") 2>&1; }
+out=$(oh "$KP" migrate v1.0.0); rc=$?
+                                               want_ok "HM9 migrate takes a clone whose own config set a hooks path (.husky), as hook managers do" $rc "$out"
+: > "$TMP/husky-ran"; echo h >> "$OH/notes.txt"; git -C "$OH" add -A; out=$(oh git commit -q -m h); rc=$?
+r=$(<"$TMP/husky-ran"); [[ "$r" == *"husky pre-commit ran in $OH"* && "$r" == *"husky commit-msg ran in $OH"* ]] || rc=1
+                                               want_ok "HM9b after migrate, the repository's own pre-commit and commit-msg still run, and the kit's scan after them" $rc "$out" "scanned"
+echo 1 > "$TMP/husky-exit"; echo i >> "$OH/notes.txt"; git -C "$OH" add notes.txt; out=$(oh git commit -q -m i); rc=$?
+                                               want_refused "HM9c and the repository's own pre-commit refusing refuses the commit" $rc "$out" "refused (exit 1)"
+want_says "MI8 that refusal says the hook is the project's own" $rc "$out" "The project's owner: it is this project's own hook"
+echo 0 > "$TMP/husky-exit"; git -C "$OH" reset -q; git -C "$OH" checkout -q -- .
+# check over the relays that run the former path's pre-commit and pre-push: one that isn't the release's, and none at all.
+cp -p "$OH/.git/hooks/pre-commit.project" "$TMP/oh-pc.aside"; echo junk >> "$OH/.git/hooks/pre-commit.project"
+out=$(oh "$KP" check); rc=$?; cp -p "$TMP/oh-pc.aside" "$OH/.git/hooks/pre-commit.project"
+want_says "MI24 check refuses a former path's relay that isn't the release's, saying what you can do" $rc "$out" "You can: refresh it ("
+mv "$OH/.git/hooks/pre-commit.project" "$TMP/oh-pc.aside"; out=$(oh "$KP" check); rc=$?
+mv "$TMP/oh-pc.aside" "$OH/.git/hooks/pre-commit.project"
+want_says "MI25 check refuses a former path's hook that no relay runs, saying what you can do" $rc "$out" "You can: relay it ("
+# Husky v9's layout, as husky 9.1.7's index.js and its runner write it (read from its npm package, not installed): the
+# hooks path is .husky/_, holding an executable shim for each of 14 hooks that sources .husky/_/h, which runs
+# .husky/<hook> with sh -e when that file is there and exits 0 when not; .husky/_ is ignored by its own .gitignore, and
+# the person's hooks in .husky need no execute bit. h here is a shorter stand-in that does the same.
+OV="$TMP/org-husky9"; git init -q -b main "$OV"; ident "$OV"; printf '# a Husky v9 project\n' > "$OV/CLAUDE.md"
+printf 'true\n' > "$OV/kit-pin.tests"; mkdir -p "$OV/.husky/_"; printf '*' > "$OV/.husky/_/.gitignore"
+printf '#!/usr/bin/env sh\nn=$(basename "$0")\ns=$(dirname "$(dirname "$0")")/$n\n[ ! -f "$s" ] && exit 0\nsh -e "$s" "$@"\n' > "$OV/.husky/_/h"
+for h in pre-commit pre-merge-commit prepare-commit-msg commit-msg post-commit applypatch-msg pre-applypatch post-applypatch \
+         pre-rebase post-rewrite post-checkout post-merge pre-push pre-auto-gc; do
+    printf '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n' > "$OV/.husky/_/$h"; chmod 0755 "$OV/.husky/_/$h"
+done
+for h in pre-commit commit-msg; do
+    printf 'echo "husky9 %s ran in $(pwd)" >> "%s/husky9-ran"\nexit "$(cat "%s/husky9-exit" 2>/dev/null || echo 0)"\n' "$h" "$TMP" "$TMP" > "$OV/.husky/$h"
+done
+git -C "$OV" add -A; git -C "$OV" commit -q --no-verify -m one; tpin "$OV/.git/leak-pattern.pin" "$MARK" 1; oldlist "$OV"
+git -C "$OV" config core.hooksPath .husky/_
+ov() { (cd "$OV" && "$@") 2>&1; }
+out=$(ov "$KP" migrate v1.0.0); rc=$?; r=$(relays_in "$OV/.git/hooks"); ra=($r)
+[[ ${#ra[@]} -eq 14 && "$r" == *" commit-msg "* && "$r" == *" pre-commit.project "* && "$r" == *" pre-push.project"* ]] || rc=1
+                                               want_ok "HM14 migrate takes a Husky v9 clone (.husky/_): a relay for each of its 12 other shims, and its pre-commit and pre-push" $rc "$out (relays:$r)"
+: > "$TMP/husky9-ran"; echo h >> "$OV/notes.txt"; git -C "$OV" add notes.txt; out=$(ov git commit -q -m h); rc=$?
+r=$(<"$TMP/husky9-ran"); [[ "$r" == *"husky9 pre-commit ran in $OV"* && "$r" == *"husky9 commit-msg ran in $OV"* ]] || rc=1
+                                               want_ok "HM14b its pre-commit and commit-msg in .husky run through Husky's shims, and the kit's scan after them" $rc "$out" "scanned"
+echo 1 > "$TMP/husky9-exit"; echo i >> "$OV/notes.txt"; git -C "$OV" add notes.txt; out=$(ov git commit -q -m i); rc=$?
+                                               want_refused "HM14c and its pre-commit refusing refuses the commit" $rc "$out" "refused (exit 1)"
+echo 0 > "$TMP/husky9-exit"; git -C "$OV" reset -q; git -C "$OV" checkout -q -- .
+out=$(ov "$KP" check); rc=$?; [[ "$out" == *"not run in this clone"* ]] && rc=1
+                                               want_ok "HM14d check passes there, and names none of Husky's own files as a hook not run" $rc "$out" "check passed"
+# The stub refuses a hook kit-pin would relay, so the two hold one list.
+a=$(sed -n '/^RELAYED=(/,/)$/p' "$ROOT/bin/kit-pin" | tr -d '()' | tr '\n' ' '); a=${a#RELAYED=}
+b=$(sed -n '/^kit_relayed="/,/"$/p' "$ROOT/leak-detection/stub-hook" | tr -d '"' | tr '\n' ' '); b=${b#kit_relayed=}
+read -r -a ra <<< "$a"; read -r -a rb <<< "$b"
+[[ ${#ra[@]} -eq 19 && "${ra[*]}" == "${rb[*]-}" ]]
+                                               want_ok "HM15 the stub's list of the hooks a relay carries is kit-pin's" $? "kit-pin: ${ra[*]}; stub: ${rb[*]-}"
 
 # ============================== kit-pin restore =================================================
 out=$(kp restore "$TMP/no-such-kit"); rc=$?;   refused_for "KR2 restore refuses with no kit repository" $rc "$out" "no kit repository"
@@ -628,8 +1241,8 @@ out=$(kp restore "$K"); rc=$?
 
 # ============================== hashing without sha256sum =======================================
 # A stock Mac has shasum and no sha256sum. With neither, every script that hashes refuses and names both; with shasum
-# alone, each works. Each PATH here holds a link to every command on PATH but the ones left out (decisions log §88),
-# each left out with its .exe, which Git Bash runs by the bare name; one ln per folder of PATH (hooks_test, §102).
+# alone, each works. Each PATH here holds a link to every command on PATH but the ones left out,
+# each left out with its .exe, which Git Bash runs by the bare name; one ln per folder of PATH (hooks_test).
 pathless() {   # DIR NAME...: links in DIR to the first command of each name on PATH, except each NAME and NAME.exe
     local dir=$1 d f n i; local -a dirs add; shift; mkdir -p "$dir"
     IFS=: read -ra dirs <<< "$PATH"
@@ -685,8 +1298,7 @@ fi
 
 # ============================== kit-pin and the git it needs ====================================
 # kit-pin needs git 2.31 or later, as the hooks do: below it git echoes --path-format back as output, so to failed at
-# mkdir on a folder named after the option, with no reason given (decisions log §290, §296; the stand-in container's
-# old-git condition). A git that old, or one whose version can't be read, is refused by name before anything changes;
+# mkdir on a folder named after the option, with no reason given (the stand-in container's old-git condition). A git that old, or one whose version can't be read, is refused by name before anything changes;
 # verify reads no git, so it still runs. gitver DIR VERSION: a git that reports VERSION and is otherwise the real one.
 gitver() { mkdir -p "$1"; { printf '#!/bin/sh\ncase "$1" in --version|version) echo "git version %s"; exit 0 ;; esac\n' "$2"
                             printf 'exec "%s" "$@"\n' "$(command -v git)"; } > "$1/git"; chmod 0755 "$1/git"; }
@@ -698,10 +1310,14 @@ out=$( (cd "$OGK" && PATH="$TMP/git-old:$PATH" "$KP" to v1.0.0) 2>&1 ); rc=$?
 [[ ! -e "$OGK/kit.pin" && ! -e "$OGK/.git/hooks/pre-commit" && ! -e "$OGK/.git/hooks/pre-push" \
    && -z "$(find "$OGK" -maxdepth 1 -name '--*' 2>/dev/null)" && -z "$(git -C "$OGK" status --porcelain)" ]] || rc=0
                                                refused_for "KG1 kit-pin to under a git older than 2.31 refuses, naming both versions, and changes nothing" $rc "$out" "git 2.30.2 is older than 2.31"
+GITSAYS=("You can: install git 2.31 or later" "If IT manages this machine: ask IT for git 2.31 or later")
+want_says "MI13 that refusal says what you can do and what to ask IT for" $rc "$out" "${GITSAYS[@]}"
 out=$( (cd "$SP" && PATH="$TMP/git-old:$PATH" "$KP" check) 2>&1 ); rc=$?
                                                refused_for "KG2 kit-pin check under a git older than 2.31 refuses, naming both versions" $rc "$out" "git 2.30.2 is older than 2.31"
+want_says "MI14 so does check's" $rc "$out" "${GITSAYS[@]}"
 out=$( (cd "$SP" && PATH="$TMP/git-odd:$PATH" "$KP" check) 2>&1 ); rc=$?
                                                refused_for "KG3 kit-pin under a git whose version can't be read refuses" $rc "$out" "could not read git's version"
+want_says "MI15 and that one" $rc "$out" "${GITSAYS[@]}"
 
 # ============================== the checked-copies layer, read directly, and under bash 3 =========
 # macOS's /bin/bash is 3.2. KIT_TEST_BASH3 names a bash 3 binary to run the layer under (a test tool, never a kit
@@ -714,7 +1330,7 @@ elif [[ "$("$B3" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" != 3 ]]; then b3w
 v3() { if [[ -n "$b3why" ]]; then skip "$1" "$b3why"; return 1; fi; }    # NAME: 0 when the case can run
 putback() { git -C "$SP" checkout -q HEAD -- "$@"; }
 out=$(cc); rc=$?;                              want_ok "CC9 read directly, the spawn as it stands passes the checked-copies layer" $rc "$out"
-# The code patterns are examples (R6, decisions log §274 ruling 6): the manifest classes them example, which the layer
+# The code patterns are examples: the manifest classes them example, which the layer
 # doesn't police, so a project's edited copy of one passes, while an owned file's edited copy still refuses.
 mkdir -p "$SP/patterns"; { cat "$I2/patterns/atomic_deploy.sh"; echo "# the project's own edit"; } > "$SP/patterns/atomic_deploy.sh"
 git -C "$SP" add patterns/atomic_deploy.sh
@@ -742,7 +1358,7 @@ v3 V35 && { out=$(cc "$B3"); rc=$?;            refused_for "V35 under bash 3, a 
 # ============================== the stubs beside an org's hooks, under bash 3 =====================
 # The stub's chain (an org's hook run first with git's arguments and standard input, then a project's kept hook, then
 # the release's checks) under the bash 3 KIT_TEST_BASH3 names, as a stock Mac's /bin/bash runs the stub; no Mac case
-# set an org's hooks path before (decisions log §304's macOS run). Each runs the stub as git does, from the top of the
+# set an org's hooks path before. Each runs the stub as git does, from the top of the
 # work tree; the release hook it hands over to runs under the bash on PATH. o3 HOOK [ARG...]: in the system-path
 # project; p3: the kept hook's project.
 o3() { (cd "$OS" && env -u GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM="$SYSCFG" "$B3" "$OS/.git/hooks/$1" "${@:2}") 2>&1; }
@@ -762,7 +1378,8 @@ v3 HB3 && { out=$(o3 pre-commit); rc=$?
                                                want_refused "HB3 under bash 3, the org's hook passing, a staged credential is still refused by the kit" $rc "$out" "credential shapes"; }
 git -C "$OS" reset -q; rm -f "$OS/config.local.txt"; : > "$IT/ran"
 ob3=$(git -C "$OS" rev-parse HEAD); rb3=$(git -C "$OS.git" rev-parse refs/heads/main)
-v3 HB4 && { out=$(printf 'refs/heads/main %s refs/heads/main %s\n' "$ob3" "$rb3" | o3 pre-push origin "$OS.git"); rc=$?
+v3 HB4 && { printf 'refs/heads/main %s refs/heads/main %s\n' "$ob3" "$rb3" > "$TMP/hb4.in"
+            out=$(o3 pre-push origin "$OS.git" < "$TMP/hb4.in"); rc=$?
             grep -q '^stdin: refs/heads/main ' "$IT/ran" || rc=1
                                                want_ok "HB4 under bash 3, a push passes, the org's hook given git's ref lines and the kit's pre-push after it" $rc "$out" "metadata scan"; }
 echo 1 > "$TMP/own-exit"; echo b3 >> "$OP/notes.txt"; git -C "$OP" add notes.txt; : > "$TMP/own-ran"
@@ -787,7 +1404,7 @@ out=$( (cd "$K" && KIT_INSTALL_ROOT="$TMP/releases-nopy" PATH="$NOPY" "$IRK" v1.
 [[ -z "$(ls -A "$TMP/releases-nopy" 2>/dev/null)" ]] || rc=0
                                                refused_for "IR11 install-release refuses at once when python3 can't run, and leaves nothing" $rc "$out" "python3"
 # python3 runs isolated (-I) at both of install-release's launches, so a module the caller's environment plants runs at
-# neither (decisions log §147): the check that python3 can run, before anything is built (IR13), and the rename that
+# neither: the check that python3 can run, before anything is built (IR13), and the rename that
 # moves the staged install into place, after its hook suite passed (IR14). The plant, a sitecustomize on PYTHONPATH,
 # writes a line for each launch it runs in, giving that launch's argument count (1 at the check, 3 at the rename; ?
 # where it can't tell, which counts against both), and at the rename edits the staged install's RELEASE, as a module
@@ -813,11 +1430,11 @@ log=$(cat "$TMP/plant.log" 2>/dev/null); IP="$TMP/releases-plant/v1.0.0"
 
 # ============================== no shipped file starts python without -I ========================
 # A python launch the caller's environment can reach runs whatever module that environment plants (PY1, PY2, LS13, IR13,
-# IR14). So no file the release ships starts python without -I, but those this allowlist names, each with its reason
-# (decisions log §147). A launch is python, python3 or python3.N at a word's start, then an argument starting with -, a
+# IR14). So no file the release ships starts python without -I, but those this allowlist names, each with its reason.
+# A launch is python, python3 or python3.N at a word's start, then an argument starting with -, a
 # quote, $ or /, on a line that isn't a comment, in a script (a .sh, .py, .yml or .yaml file, or one whose first line
 # starts #!); and any #! line naming python. Its first argument must be -I, but for --version, which prints and runs no
-# code (measured, §147). An entry names the file and how the launch's arguments start (#! for a first line); an entry
+# code. An entry names the file and how the launch's arguments start (#! for a first line); an entry
 # that matches no launch fails too, so the list can't outlive its lines. The files are those the manifest of the v2.0.0
 # install lists, ROOT's staged tree (IR9).
 PL_ALLOW=(
@@ -892,10 +1509,10 @@ fi
 
 # ============================== every grep call in a shipped file follows the gates' rule ===================
 # BSD grep (a Mac's /usr/bin/grep) in a UTF-8 locale doesn't match ASCII text on a line holding invalid UTF-8, where GNU
-# grep does (decisions log §155). The gates' rule (§157): a grep over content that could hold a term or invalid bytes
+# grep does. The gates' rule: a grep over content that could hold a term or invalid bytes
 # runs twice, under LC_ALL=C and in the caller's locale, and a match in either counts; in pre-push that is
 # list_matches. Every other call in a file the release ships is named below with its reason, so a new one fails until
-# someone decides which it is (§156). A call is the word at a command's start: after a line's start, ; & | ! { ( `,
+# someone decides which it is. A call is the word at a command's start: after a line's start, ; & | ! { ( `,
 # $( or <(, or a shell keyword, behind any VAR=value words, command, env, exec, nice or ionice, and a path; git's own
 # grep counts, and in a python file the word quoted as a string. Lines that are comments, and the lines of an
 # allowlist like this one (NAME_ALLOW=( to its closing line), which are data, are skipped; a message naming the tool
@@ -905,8 +1522,7 @@ fi
 # holds to the locale rule (below), whose every grep call LG_MATCH_ALLOW names instead, with the locale it runs in.
 GP_ALLOW=(
     ".github/workflows/cross-platform.yml|1|grep -E ' on /(tmp)? '|a fact line for the CI log, over mount's output; it decides nothing"
-    "bin/kit-load-check-stub|1|grep -E '^<!-- kit pin:'|the pin line, ASCII by its format: a miss refuses (no kit pin line), and BSD grep misses only a line that itself holds invalid UTF-8 (GF8), which the format refuses anyway"
-    "tests/hooks_test.sh|1|grep -qE \"\$own\"|LP0, over the kit's own scripts, which hold no term and no invalid UTF-8 (§145 step 3(b))"
+    "tests/hooks_test.sh|1|grep -qE \"\$own\"|LP0, over the kit's own scripts, which hold no term and no invalid UTF-8"
     "tests/hooks_test.sh|2|grep -q 'read-leak-pattern\\.sh'|LP0, over the kit's own scripts"
     "tests/hooks_test.sh|1|grep -c 'REFUSING'|an ASCII word over the hooks' own messages, each on a line of its own"
     "tests/hooks_test.sh|1|grep -F -- \"  \$f: \"|the binary scan's own refusal lines, for the suite's synthetic file names"
@@ -935,7 +1551,7 @@ GP_ALLOW=(
     "tests/install_test.sh|1|grep -q -E \"\$PC_REL\"|PC's look for a bin/kit-pin named by a relative path, over the kit's own messages, which are ASCII"
     "tests/install_test.sh|1|grep -m1 -E \"\$PC_REL\"|the same, for its failure message"
     "tests/load_check_test.sh|1|grep -oE 'kc-[0-9a-f]{16}'|load canaries, ASCII by their format, in the install's own skill files"
-    "tests/load_check_test.sh|2|grep -ohE 'kc-[0-9a-f]{16}'|load canaries in the stand-in probe's answer files"
+    "tests/load_check_test.sh|1|grep -ohE 'kc-[0-9a-f]{16}'|load canaries in the stand-in probe's answer files"
     "tests/load_check_test.sh|1|grep '^fail: '|the load check's own report"
     "tests/load_check_test.sh|1|grep -qE \"kc-[0-9a-f]{16}\"|the load check's own report"
     "tests/load_check_test.sh|1|grep -qF \"\$TMP\"|the load check's own report"
@@ -946,7 +1562,6 @@ GP_ALLOW=(
     "tests/load_check_test.sh|1|grep -c . <<<\"\$names\"|names from the stand-in probe's environment, for a failure message"
     "tests/load_check_test.sh|1|grep -cx KIT_LOAD_CHECK_PING|names from the stand-in probe's environment, for a failure message"
     "tests/load_check_test.sh|2|grep -c 'REFUSING'|an ASCII word over the load check's own messages"
-    "tests/load_check_test.sh|1|grep -v 'kit pin:'|edits the suite's own fixture"
     "tests/load_check_test.sh|1|grep -q 'https://ping.invalid/zq-test/fail'|the stand-in curl's argument log"
     "tests/load_check_test.sh|1|grep -q 'zq-test'|the load check's own output"
     "tools/install-release.sh|1|grep '^FAIL '|names failing cases in a refusal; the suite's exit status decides (line 118)"
@@ -1030,9 +1645,9 @@ out=$(gp_lint "$GPC" "s.sh|1|LC_ALL=C $g -c z|a control" "p.py|2|r = run|a contr
    && "$out" == *"names 2 call(s) in p.py starting r = run, and 1 match"* && "$out" == *"names 1 call(s) in s.sh starting $g -n, and 0 match"* ]]
                                                want_ok "GP0b the check names each call no entry covers, and each entry whose count is off" $? "exit $rc: $(echo $out | cut -c1-300)"
 # ============================== each gate: text byte-wise, matching in the caller's locale =====================
-# The locale rule (decisions log §158, §159): a gate that processes content which could hold a term runs its text tools
+# The locale rule: a gate that processes content which could hold a term runs its text tools
 # byte-wise and its matchers in the locale its caller set. BSD tools in a UTF-8 locale stop on, skip or quote a line
-# holding invalid UTF-8 (§150, §155, §157); a forced C locale folds only ASCII, git's matchers too (§158). So each gate
+# holding invalid UTF-8; a forced C locale folds only ASCII, git's matchers too. So each gate
 # saves the caller's locale and sets LC_ALL=C, in these two lines, before its first text tool; and every matcher in it
 # (grep, git grep, git log or rev-list matching an author, a committer, a message or with -i) is named in
 # LG_MATCH_ALLOW with how it starts: in the caller's locale (LC_ALL="$KIT_CALLER_LOCALE"), under LC_ALL=C, or as the gate
@@ -1081,7 +1696,7 @@ LG_MATCH_ALLOW=(
     "bin/kit-history-audit|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" git grep --no-index --no-color -a -l -i -E -e \"\$LEAK_PATTERN\"|the field files, git's engine, in the caller's locale, for -i's folding of a non-ASCII letter"
     "bin/kit-history-audit|1|LC_ALL=C grep -a -l -r -i -E -e \"\$LEAK_PATTERN\"|the field files, grep's engine, byte-wise"
     "bin/kit-history-audit|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" grep -a -l -r -i -E -e \"\$LEAK_PATTERN\"|the field files, grep's engine, in the caller's locale"
-    "bin/kit-history-audit|1|LC_ALL=C grep -a -n -i -E -e \"\$LEAK_PATTERN\"|a hit file's matching lines by number, byte-wise; the numbers, not printed lines, carry the verdict (§145 step 3, HA24)"
+    "bin/kit-history-audit|1|LC_ALL=C grep -a -n -i -E -e \"\$LEAK_PATTERN\"|a hit file's matching lines by number, byte-wise; the numbers, not printed lines, carry the verdict (HA24)"
     "bin/kit-history-audit|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" grep -a -n -i -E -e \"\$LEAK_PATTERN\"|the same lines, in the caller's locale"
 )
 LG_HANDOFF_ALLOW=(
@@ -1246,12 +1861,12 @@ bad=$(crlf_scripts "$TMP/releases-crlf/v1.0.0"); [[ -f "$TMP/releases-crlf/v1.0.
 
 # ============================== a pass only from the pass point ==================================
 # The stub passes only by handing over (exec) to the release's hook, whose own pass point then decides; the
-# checked-copies layer only from the pass point at its end. An EXIT trap in each turns any other exit 0 into a refusal
-# (decisions log §96, §100). Copies with one line put right after their first check must refuse; the legitimate
+# checked-copies layer only from the pass point at its end. An EXIT trap in each turns any other exit 0 into a refusal.
+# Copies with one line put right after their first check must refuse; the legitimate
 # passes must still pass. Under the bash 3 that KIT_TEST_BASH3 names too, skipped, counted, without it.
 inj() {  # SRC DST ANCHOR LINE: DST is SRC with LINE put before its first line starting ANCHOR; 0 only when one line went in
     # A missing SRC (its install refused, as on a git too old) returns 1, so the cases that need it fail by name; the
-    # line count below would otherwise be an arithmetic error that stops the suite (decisions log §288, §290).
+    # line count below would otherwise be an arithmetic error that stops the suite.
     [[ -f "$1" ]] || return 1
     mkdir -p "${2%/*}"; awk -v a="$3" -v l="$4" '!done && index($0, a) == 1 {print l; done = 1} {print}' "$1" > "$2"; chmod +x "$2"
     [[ $(( $(wc -l < "$2") - $(wc -l < "$1") )) -eq 1 ]]; }
@@ -1285,7 +1900,7 @@ eg_install_run "" bash
 if [[ -z "$b3why" ]]; then eg_install_run " (bash 3)" "$B3"
 else for c in EG10 EG11 EG12 EG13 EG14 EG15; do skip "$c (bash 3)" "$b3why"; done; fi
 
-# install-release and kit-pin's check took the same guard (decisions log §105; the load check's stub is
+# install-release and kit-pin's check took the same guard (the load check's stub is
 # load_check_test's): install-release passes only from the pass point at its end, and any stop short of it removes the
 # staging folder, as its refusals do; kit-pin's check passes only from the end of its check. Copies with one line put
 # right after the first checks, or once the staging folder exists, must refuse; the legitimate passes must still pass.
@@ -1317,14 +1932,14 @@ eg_more_run() {  # SUFFIX BASH KEY (KEY names this run's install roots)
     want_refused "EG22$s kit-pin check: an unset variable right after its first check refuses" $rc "$out" "zq_unset_probe"
     out=$(egk_check "$b" "$KP")
     want_ok "EG23$s kit-pin check: a pinned spawn still passes" $? "$out" "check passed"
-    out=$(egk_check "$b" "$KP" -u LEAK_PATTERN); rc=$?; [[ $rc -eq 3 && "$out" == *"FAILING CLOSED"* ]] && rc=0 || rc=1
-    want_ok "EG24$s kit-pin check: with no identity list it finishes with exit 3, saying the scan fails closed" $rc "$out"
+    laside "$SP"; out=$(egk_check "$b" "$KP"); rc=$?; lback "$SP"; [[ $rc -eq 3 && "$out" == *"FAILING CLOSED"* ]] && rc=0 || rc=1
+    want_ok "EG24$s kit-pin check: with no do-not-publish list it finishes with exit 3, saying the scan fails closed" $rc "$out"
 }
 eg_more_run "" bash b5
 if [[ -z "$b3why" ]]; then eg_more_run " (bash 3)" "$B3" b3
 else for c in EG16 EG17 EG18 EG19 EG20 EG21 EG22 EG23 EG24; do skip "$c (bash 3)" "$b3why"; done; fi
 
-# kit-pin's other four modes take the same guard (decisions log §109): each passes only from its own pass point, and a
+# kit-pin's other four modes take the same guard: each passes only from its own pass point, and a
 # stop short of it puts back what the mode had written, through the code its own refusals use. Copies with an exit 0
 # put in once the mode has written something (verify writes nothing: after its first check) must refuse and leave the
 # earlier state; each mode's own runs still pass.
@@ -1334,7 +1949,7 @@ inj "$KP" "$TMP/kp-mx/kit-pin" '    if (( had_hp )); then git config --local --u
 inj "$KP" "$TMP/kp-rx/kit-pin" '        if ! kit_verify_install "$inst"' 'exit 0'; krx=$?
 oldspawn() {  # DIR: an unpinned spawn that runs a hooks path, with an older pre-commit in .git/hooks
     git init -q -b main "$1"; ident "$1"; mkdir -p "$1/hooks"; printf '# an older spawn\n' > "$1/CLAUDE.md"; tpin "$1/.git/leak-pattern.pin" "$MARK" 1
-    git -C "$1" add -A; git -C "$1" commit -q --no-verify -m one; git -C "$1" config core.hooksPath hooks
+    oldlist "$1"; git -C "$1" add -A; git -C "$1" commit -q --no-verify -m one; git -C "$1" config core.hooksPath hooks
     printf '#!/bin/sh\n# an older hook\nexit 0\n' > "$1/.git/hooks/pre-commit"; chmod +x "$1/.git/hooks/pre-commit"; }
 damaged() { chmod -R u+w "$I2" 2>/dev/null; echo damaged > "$I2/zz-damaged"; }   # a file the install's manifest doesn't list
 asides() { find "$KIT_INSTALL_ROOT" -maxdepth 1 -name 'v1.0.1.set-aside.*' | wc -l | tr -d ' '; }
@@ -1370,8 +1985,8 @@ if [[ -z "$b3why" ]]; then eg_kp_run " (bash 3)" "$B3" b3
 else for c in EG28 EG29 EG30 EG31 EG32 EG33 EG34 EG35; do skip "$c (bash 3)" "$b3why"; done; fi
 
 # ============================== kit-pin and the list's pin ======================================
-# check reads the identity list against its pin as pre-push does, and a list that is unusable or doesn't match its pin
-# is a state of its own, exit 3: installed and pinned, but every push will be refused (decisions log §112). migrate
+# check reads the do-not-publish list against its pin as pre-push does, and a list that is unusable or doesn't match its
+# pin is a state of its own, exit 3: installed and pinned, but every push will be refused. migrate
 # keeps its switch on that state and says so; restore hands over to check and returns its 3. repin writes the pins:
 # a first one only with --first; an append is the session's to make; any other change, a row retired with a
 # placeholder included, cites the § that holds the owner's words; it gives rows before and after, never a term or a hash.
@@ -1391,8 +2006,11 @@ out=$( (cd "$d" && "$KP" migrate v1.0.0) 2>&1 ); rc=$?
 [[ $rc -eq 3 && -z "$(git -C "$d" config --local --get core.hooksPath)" && -f "$d/kit.pin" && -f "$d/.git/hooks/pre-push" \
    && "$out" == *"every push will be refused"* ]] && rc=0 || rc=1
 want_ok "KM4 migrate with no pin keeps its switch, finishes with exit 3, and says every push will be refused" $rc "$out"
-RPC="$TMP/repin"; git init -q -b main "$RPC"; ident "$RPC"; echo x > "$RPC/a.txt"; git -C "$RPC" add -A; git -C "$RPC" commit -q --no-verify -m one
-RL="$RPC/.git/leak-pattern"; RPN="$RPC/.git/leak-pattern.pin"; allout=""
+[[ "$out" == *"migrated, but every push will be refused until the do-not-publish list and its pin agree"* ]]
+want_ok "MI34 and says so naming the do-not-publish list" $? "$out"
+RPC="$TMP/repin"; git init -q -b main "$RPC"; ident "$RPC"; echo x > "$RPC/a.txt"; printf '%s\n' "$(lid)" > "$RPC/kit.list-id"
+git -C "$RPC" add -A; git -C "$RPC" commit -q --no-verify -m one
+RL=$(lmf "$RPC"); RPN="$RPC/.git/leak-pattern.pin"; allout=""
 rp() { (cd "$RPC" && env -u LEAK_PATTERN "$KP" repin "$@") 2>&1; }
 pinis() { [[ "$(sed -n 's/^rows=//p' "$1" 2>/dev/null)" == "$3" && "$(sed -n 's/^sha256=//p' "$1" 2>/dev/null)" == "$(printf '%s' "$2" | tsum)" ]]; }  # PIN VALUE ROWS
 lput() { printf "LEAK_PATTERN='%s'\n" "$1" > "$RL"; }
@@ -1424,7 +2042,7 @@ out=$(rp ci --first); rc=$?; allout+=$out; pinis "$RPC/.github/leak-pattern.pin"
 want_ok "RP11 repin ci --first pins CI's list, kept in .git/leak-pattern.ci, in the tracked .github/leak-pattern.pin" $rc "$out" "Commit .github/leak-pattern.pin"
 [[ -n "$allout" && "$allout" != *SYNTH-MARKER* && "$allout" != *zqone* && "$allout" != *zqcanary* && ! "$allout" =~ [0-9a-f]{64} ]]
 want_ok "RP12 nothing repin printed holds a term or a hash" $? "$(printf '%s' "$allout" | tr '\n' ' ' | cut -c1-200)"
-# A row with a non-ASCII letter (decisions log §159): kit-pin splits and hashes the list byte-wise, whatever its caller's
+# A row with a non-ASCII letter: kit-pin splits and hashes the list byte-wise, whatever its caller's
 # locale, so a pin written in a UTF-8 locale matches the list read with none.
 NA_LO=$(printf 'synth-mark\303\251r-7f3a')
 lput "zqone|$NA_LO"; out=$( (cd "$RPC" && env -u LEAK_PATTERN LC_ALL=C.UTF-8 "$KP" repin local --ruling §12) 2>&1 ); rc=$?
@@ -1432,8 +2050,8 @@ out2=$( (cd "$RPC" && env -u LEAK_PATTERN -u LANG -u LC_ALL -u LC_CTYPE "$KP" re
 [[ $rc -eq 0 && $rc2 -eq 0 && "$out2" == *"already matches its pin"* ]] && pinis "$RPN" "zqone|$NA_LO" 2
 want_ok "RP13 a list row with a non-ASCII letter pins alike in a UTF-8 locale and with none" $? "exit $rc/$rc2: $(printf '%s' "$out $out2" | tr '\n' ' ' | cut -c1-200)"
 
-# ============================== every printed kit-pin command runs (S3) =========================
-# A kit-pin command a refusal or a report prints runs from inside the project it was printed in (decisions log §348):
+# ============================== every printed kit-pin command runs ==============================
+# A kit-pin command a refusal or a report prints runs from inside the project it was printed in:
 # a quoted path ending /bin/kit-pin, then its words up to a ")", ";", "#" or the line's end. The path is absolute, or
 # "$INST/..." or "$KIT/...", which the message says on a line of its own what each names. pc_runs runs each command
 # from a copy of the project, INST and KIT set to an install and to a clone of the kit, the words as printed, but
@@ -1461,7 +2079,7 @@ pc_runs() {   # OUTPUT PROJECT INST KIT: 0, or 1 with PC_WHY saying why
             fi
             [[ "$prog" == /* && -f "$prog" && -x "$prog" ]] || { PC_WHY="not an executable file named by an absolute path: $prog"; return 1; }
             args=${args%.}
-            # A placeholder a shell misreads (a redirect, a pipe), such as <64 hex>, can't be run as printed (§353 F4).
+            # A placeholder a shell misreads (a redirect, a pipe), such as <64 hex>, can't be run as printed.
             [[ "$args" != *[\<\>\|\&]* ]] || { PC_WHY="a placeholder a shell misreads, in: $prog$args"; return 1; }
             read -r -a a <<< "$args"
             [[ "${a[0]:-}" == restore ]] && a=()
@@ -1491,7 +2109,7 @@ pc_runs "\"\$INST/bin/kit-pin\" check" "$PCP" "$I2" "$K"; r3=$?; pc_runs "\"$KP\
 [[ $r1 -ne 0 && $r2 -ne 0 && $r3 -ne 0 && $r4 -eq 0 ]]
                                                want_ok "PC0 the check fails a relative path, a missing one and an unexplained INST, and passes a real one" $? "$r1 $r2 $r3 $r4"
 # kit-pin's report and refusals.
-out=$( (cd "$PCP" && env -u LEAK_PATTERN "$KP" check) 2>&1 ); pcw "PC1 kit-pin check with no list (exit 3): its next steps run" "$out" "$PCP"
+laside "$PCP"; out=$( (cd "$PCP" && "$KP" check) 2>&1 ); lback "$PCP"; pcw "PC1 kit-pin check with no list (exit 3): its next steps run" "$out" "$PCP"
 PCN="$TMP/pc-nopin"; git init -q "$PCN"; out=$( (cd "$PCN" && "$KP" check) 2>&1 ); pcw "PC2 kit-pin, no kit.pin: its hint runs" "$out" "$PCN"
 pcx; rm -f "$PCX/.git/hooks/pre-push"; out=$( (cd "$PCX" && "$KP" check) 2>&1 ); pcw "PC3 kit-pin check, a stub missing: its hint runs" "$out" "$PCX"
 pcx; echo '# drift' >> "$PCX/.git/hooks/pre-push"; out=$( (cd "$PCX" && "$KP" check) 2>&1 ); pcw "PC4 kit-pin check, a stub changed: its hint runs" "$out" "$PCX"
@@ -1505,10 +2123,11 @@ out=$( (cd "$PCP" && "$KP" migrate v1.0.1) 2>&1 ); pcw "PC9 kit-pin migrate in a
 pcx; git -C "$PCX" config core.hooksPath "$TMP/elsewhere"; out=$( (cd "$PCX" && "$KP" to v1.0.1) 2>&1 )
                                                pcw "PC10 kit-pin to in a clone with a hooks path of its own: its hint runs" "$out" "$PCX"
 # pre-push and pre-commit, through the stub and, for the missing rules, run from a copy of the install without them.
-pcx; pcnote a; git -C "$PCX" commit -q --no-verify -m a; out=$( (cd "$PCX" && env -u LEAK_PATTERN git push -q origin main) 2>&1 )
-                                               pcw "PC11 pre-push with no list: its next step runs" "$out" "$PCX"
-pcx; pcnote b; git -C "$PCX" commit -q --no-verify -m b; printf "LEAK_PATTERN='zqchanged'\n" > "$PCX/.git/leak-pattern"
-out=$( (cd "$PCX" && env -u LEAK_PATTERN git push -q origin main) 2>&1 ); pcw "PC12 pre-push with a list its pin doesn't name: its hint runs" "$out" "$PCX"
+# PCX is a copy of PCP, so the two share one kit.list-id and one list: a case that changes it puts it back.
+pcx; pcnote a; git -C "$PCX" commit -q --no-verify -m a; laside "$PCX"; out=$( (cd "$PCX" && git push -q origin main) 2>&1 )
+lback "$PCX";                                  pcw "PC11 pre-push with no list: its next step runs" "$out" "$PCX"
+pcx; pcnote b; git -C "$PCX" commit -q --no-verify -m b; laside "$PCX"; tlist "$PCX" zqchanged
+out=$( (cd "$PCX" && git push -q origin main) 2>&1 ); lback "$PCX"; pcw "PC12 pre-push with a list its pin doesn't name: its hint runs" "$out" "$PCX"
 PCI="$TMP/pc-inst"; chmod -R u+w "$PCI" 2>/dev/null; rm -rf "$PCI"; cp -a "$I2" "$PCI"; chmod -R u+w "$PCI"; rm -f "$PCI/leak-detection/spawn.gitleaks.toml"
 pcx; pcnote c; out=$( (cd "$PCX" && env -u KIT_INSTALL git -c core.hooksPath="$PCI/leak-detection" commit -q -m c) 2>&1 )
                                                pcw "PC13 pre-commit with no credential rules: its hint runs" "$out" "$PCX"
@@ -1525,7 +2144,7 @@ pcx; pcnote g; out=$( (cd "$PCX" && KIT_INSTALL_ROOT="$PCR" git commit -q -m g) 
 pcx; echo '# drift' >> "$PCX/.git/hooks/pre-commit"; pcnote h; out=$( (cd "$PCX" && git commit -q -m h) 2>&1 )
                                                pcw "PC18 the stub differs from the release's: its hints run" "$out" "$PCX"
 # At a commit, kit-pin to refuses while the refused commit's change is staged, so the hint sets it aside first, and
-# brings it back after (§353 F2): its steps, followed in order from the project, let the commit through.
+# brings it back after: its steps, followed in order from the project, let the commit through.
 pc25=1; steps=$(printf '%s\n' "$out" | sed -n 's/.*then commit again: //p' | head -1)
 if [[ -n "$steps" ]]; then
     pc25=0; IFS=';' read -r -a st <<< "$steps"
@@ -1541,12 +2160,111 @@ pcx; out=$( (cd "$PCX" && env -u LEAK_PATTERN bash "$I2/leak-detection/scan-tree
 pcx; tpin "$PCX/.github/leak-pattern.pin" "zqother" 1; git -C "$PCX" add .github; git -C "$PCX" commit -q --no-verify -m ci
 out=$( (cd "$PCX" && LEAK_PATTERN="$MARK" bash "$I2/leak-detection/scan-tree.sh") 2>&1 ); pcw "PC21 the CI scan with a secret its pin doesn't name: its hint runs" "$out" "$PCX"
 # The history check, and the installer.
-pcx; out=$( (cd "$PCX" && "$I2/bin/kit-history-audit" .) 2>&1 ); pcw "PC22 the history check with no list: its hint runs" "$out" "$PCX"
-pcx; printf "LEAK_PATTERN='zqchanged'\n" > "$PCX/.git/leak-pattern"; out=$( (cd "$PCX" && "$I2/bin/kit-history-audit" .) 2>&1 )
+pcx; laside "$PCX"; out=$( (cd "$PCX" && "$I2/bin/kit-history-audit" .) 2>&1 ); lback "$PCX"
+                                               pcw "PC22 the history check with no list: its hint runs" "$out" "$PCX"
+pcx; laside "$PCX"; tlist "$PCX" zqchanged; out=$( (cd "$PCX" && "$I2/bin/kit-history-audit" .) 2>&1 ); lback "$PCX"
                                                pcw "PC23 the history check with a list its pin doesn't name: its hint runs" "$out" "$PCX"
 out=$(irun v1.0.1);                            pcw "PC24 install-release over an install that exists: its hint runs" "$out" "$PCP"
 chmod -R u+w "$PCX" "$PCI" "$PCR" 2>/dev/null; rm -rf "${PCX:?}" "${PCI:?}" "${PCR:?}"
 fi
+
+# ============================== the list's place: kit-pin's move step ============================
+# A project's list moves out of its clone's .git into one file per project under the home folder's
+# .config/morrowcairn/lists/ (that folder and morrowcairn/ mode 700, the file 600), named by the project's own random id,
+# the one line of its tracked kit.list-id. kit-pin move-list makes the id where there is none and copies .git/leak-pattern
+# there byte for byte, never over a file that differs, and leaves the old file for the person; to and migrate run the
+# same step, to before it changes anything, and a to that goes red puts back what it made. check names the list it
+# read by the id, never printing it. TH stands for the home folder throughout.
+lmcount() { find "$LML" -mindepth 1 2>/dev/null | wc -l | tr -d ' '; }       # how many entries TH's lists folder holds
+mode_of() { python3 -I - "$1" <<'PY'
+import os, stat, sys
+print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])
+PY
+}
+lmrepo() {  # DIR [TESTS-LINE]: one commit holding kit-pin.tests; the suite's one-row list in .git/leak-pattern, pinned
+    git init -q -b main "$1"; ident "$1"; printf '%s\n' "${2:-# none}" > "$1/kit-pin.tests"; echo a > "$1/a.txt"
+    git -C "$1" add -A; git -C "$1" commit -q --no-verify -m one
+    printf "LEAK_PATTERN='%s'\n" "$MARK" > "$1/.git/leak-pattern"; chmod 600 "$1/.git/leak-pattern"; tpin "$1/.git/leak-pattern.pin" "$MARK" 1
+    cp -p "$1/.git/leak-pattern" "$1.old-list"; }
+lmkp() { local d=$1; shift; (cd "$d" && env -u LEAK_PATTERN "$KP" "$@") 2>&1; }  # DIR ARGS...: kit-pin there, no list in the environment
+LM="$TMP/lm"; lmrepo "$LM"
+out=$(lmkp "$LM" move-list); rc=$?
+[[ $rc -eq 0 && "$(lmid "$LM")" =~ ^[0-9a-f]{32}$ && -f "$(lmf "$LM")" && "$out" != *SYNTH-MARKER* ]] \
+    && cmp -s "$(lmf "$LM")" "$LM.old-list" && cmp -s "$LM.old-list" "$LM/.git/leak-pattern" \
+    && [[ "$(mode_of "$(lmf "$LM")")" == 600 && "$(mode_of "$LML")" == 700 && "$(mode_of "$TH/.config/morrowcairn")" == 700 ]]
+                                               result "LM1 move-list makes kit.list-id and copies .git/leak-pattern to its place (folders 700, file 600), the old file left as it was" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+id1=$(lmid "$LM"); cp -p "$(lmf "$LM")" "$TMP/lm-new"; n1=$(lmcount)
+out=$(lmkp "$LM" move-list); rc=$?
+[[ $rc -eq 0 && "$(lmid "$LM")" == "$id1" && "$(lmcount)" == "$n1" ]] && cmp -s "$TMP/lm-new" "$(lmf "$LM")" && cmp -s "$LM.old-list" "$LM/.git/leak-pattern"
+                                               result "LM2 move-list again: the list already in its place byte for byte, nothing changes" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+printf "LEAK_PATTERN='%s'\n" zqother > "$(lmf "$LM")"; cp -p "$(lmf "$LM")" "$TMP/lm-other"
+out=$(lmkp "$LM" move-list); rc=$?
+[[ $rc -ne 0 && "$out" == *"never overwrites"* ]] && cmp -s "$TMP/lm-other" "$(lmf "$LM")" && cmp -s "$LM.old-list" "$LM/.git/leak-pattern"
+                                               result "LM3 move-list refuses where its place holds a different list, and overwrites neither file" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+cp -p "$TMP/lm-new" "$(lmf "$LM")"
+LT="$TMP/lm-to"; lmrepo "$LT"
+out=$(lmkp "$LT" to v1.0.0); rc=$?
+[[ $rc -eq 0 && -f "$LT/kit.pin" && "$(lmid "$LT")" =~ ^[0-9a-f]{32}$ ]] && cmp -s "$(lmf "$LT")" "$LT.old-list" \
+    && cmp -s "$LT.old-list" "$LT/.git/leak-pattern" && [[ "$(mode_of "$(lmf "$LT")")" == 600 ]]
+                                               result "LM4 to: the move makes kit.list-id, copies .git/leak-pattern to its place at mode 600 and leaves the old file" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+out=$(lmkp "$LT" check); rc=$?
+[[ $rc -eq 0 && "$out" == *"lists/$(lmid "$LT")"* && "$out" != *SYNTH-MARKER* ]]
+                                               result "LM5 check names the list it read by the project's id, and never prints the list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+LR="$TMP/lm-red"; lmrepo "$LR" "exit 1"; n1=$(lmcount)
+out=$(lmkp "$LR" to v1.0.0); rc=$?
+[[ $rc -ne 0 && ! -e "$LR/kit.list-id" && ! -e "$LR/kit.pin" && "$(lmcount)" == "$n1" ]] && cmp -s "$LR.old-list" "$LR/.git/leak-pattern"
+                                               result "LM6 a to that goes red puts back the id and the list it made; the old file stays" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+LX="$TMP/lm-differ"; lmrepo "$LX"; printf '%s\n' "$(lid)" > "$LX/kit.list-id"; git -C "$LX" add kit.list-id; git -C "$LX" commit -q --no-verify -m id
+mkdir -p "$LML"; printf "LEAK_PATTERN='%s'\n" zqother > "$(lmf "$LX")"; cp -p "$(lmf "$LX")" "$TMP/lx-other"
+out=$(lmkp "$LX" to v1.0.0); rc=$?
+[[ $rc -ne 0 && "$out" == *"never overwrites"* && ! -e "$LX/kit.pin" && ! -e "$LX/.git/hooks/pre-push" ]] && cmp -s "$TMP/lx-other" "$(lmf "$LX")"
+                                               result "LM7 to refuses before it changes anything where the list's place holds a different list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+LG="$TMP/lm-migrate"; lmrepo "$LG"; git -C "$LG" config core.hooksPath leak-detection
+out=$(lmkp "$LG" migrate v1.0.0); rc=$?
+[[ $rc -eq 0 && -f "$LG/kit.pin" && "$(lmid "$LG")" =~ ^[0-9a-f]{32}$ ]] && cmp -s "$(lmf "$LG")" "$LG.old-list" && cmp -s "$LG.old-list" "$LG/.git/leak-pattern"
+                                               result "LM8 migrate: the same move, the old file left" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+# A move onto a release whose reader names the list's place says what a new project made from it starts with (no
+# do-not-publish list, the line saying so pinned; no identity guard), that the project moved keeps its own list and its
+# own identity, and the one setting for each: the list's file at its place, by this project's id, and the sentinel.
+dn_says() { [[ "$1" == *"starts with two checks off"* && "$1" == *"keeps its own list and its own identity"* \
+               && "$1" == *"kit:no-identity-list"* && "$1" == *"lists/$2"* && "$1" == *"UNSET-SEE-REPO-GENESIS"* ]]; }  # OUTPUT ID
+DN="$TMP/dn-to"; lmrepo "$DN"; out=$(lmkp "$DN" to v1.0.0); rc=$?
+[[ $rc -eq 0 ]] && dn_says "$out" "$(lmid "$DN")"
+                                               result "DN1 to names a new project's two defaults, says this project keeps its own list and identity, and gives each one's setting" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+DM="$TMP/dn-migrate"; lmrepo "$DM"; git -C "$DM" config core.hooksPath leak-detection; out=$(lmkp "$DM" migrate v1.0.0); rc=$?
+[[ $rc -eq 0 ]] && dn_says "$out" "$(lmid "$DM")"
+                                               result "DN2 migrate says the same" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+# No list from the caller's environment: check and repin read the list at its place, whatever LEAK_PATTERN holds.
+out=$( (cd "$LT" && env LEAK_PATTERN=zqother "$KP" check) 2>&1 ); rc=$?
+[[ $rc -eq 0 && "$out" == *"lists/$(lmid "$LT")"* && "$out" != *"in this environment"* && "$out" != *SYNTH-MARKER* ]]
+                                               result "LE3 check reads the list at its place, whatever LEAK_PATTERN holds" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+LE="$TMP/le-repin"; lmrepo "$LE"; lmkp "$LE" move-list >/dev/null; cp -p "$LE/.git/leak-pattern.pin" "$TMP/le.pin"
+out=$( (cd "$LE" && env LEAK_PATTERN=zqother "$KP" repin local) 2>&1 ); rc=$?
+[[ $rc -eq 0 && "$out" == *"already matches its pin"* ]] && cmp -s "$TMP/le.pin" "$LE/.git/leak-pattern.pin"
+                                               result "LE4 repin reads the list at its place, whatever LEAK_PATTERN holds" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+rm -f "$(lmf "$LE")"
+out=$( (cd "$LE" && env LEAK_PATTERN="$MARK|zqmore" "$KP" repin local) 2>&1 ); rc=$?
+[[ $rc -ne 0 ]] && cmp -s "$TMP/le.pin" "$LE/.git/leak-pattern.pin"
+                                               result "LE4b repin takes no list from LEAK_PATTERN: with none at its place it refuses, and the pin stays" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+want_says "MI26 that refusal names the do-not-publish list and the move" $rc "$out" "there is no do-not-publish list to pin at" "You can: move it with"
+rm -f "$LE/.git/leak-pattern"; out=$( (cd "$LE" && "$KP" repin local) 2>&1 ); rc=$?
+want_says "MI27 repin with no list anywhere says what you can do and what to ask the project's owner" $rc "$out" \
+    "there is no do-not-publish list to pin" "You can: put the project's list at" "The project's owner: whether this project keeps a do-not-publish list"
+printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='zqtwo'" > "$(lmf "$LE")"; out=$( (cd "$LE" && "$KP" repin local) 2>&1 ); rc=$?
+want_says "MI29 repin of a list pre-push can't read names the do-not-publish list and says what you can do" $rc "$out" \
+    "the do-not-publish list (" "You can: give it the shape pre-push reads"
+rm -f "$(lmf "$LE")"; mv "$LE/kit.list-id" "$TMP/le-id.aside"; out=$( (cd "$LE" && "$KP" repin local) 2>&1 ); rc=$?
+mv "$TMP/le-id.aside" "$LE/kit.list-id"
+want_says "MI28 repin with no place for the list names the do-not-publish list and says what you can do" $rc "$out" \
+    "there is no do-not-publish list to pin: its place can't be found" "You can: give the project its place"
+lmstrip() { awk '/^kit_list_home\(\) \{/ {print; s=1; next} s && /^\}/ {s=0} !s {print}'; }    # stdin: without that body
+a=$(lmstrip < "$ROOT/leak-detection/read-leak-pattern.sh"); bad=""
+{ [[ "$(lmstrip < "$KPK/leak-detection/read-leak-pattern.sh")" == "$a" ]] \
+  && ! cmp -s "$ROOT/leak-detection/read-leak-pattern.sh" "$KPK/leak-detection/read-leak-pattern.sh"; } || bad+=" kit-pin's copy"
+b=$(git -C "$K" show v1.0.0:leak-detection/read-leak-pattern.sh 2>/dev/null)
+[[ -n "$b" && "$(printf '%s\n' "$b" | lmstrip)" == "$a" && "$b" != "$(cat "$ROOT/leak-detection/read-leak-pattern.sh")" ]] || bad+=" v1.0.0's"
+[[ "$a" == *"kit_list_home() {"* && -z "$bad" ]]
+                                               result "LM9 the suite's reader copies (kit-pin's, and every release's from v1.0.0) differ from the shipped reader in kit_list_home's body alone" $? "differing elsewhere, or not swapped:${bad:- none}"
 
 echo
 echo "install_test: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -1,4 +1,4 @@
-# The kit's stand-in machine (decisions log §284 ruling 1, §288): an org-like Linux box for the kit's git-level
+# The kit's stand-in machine: an org-like Linux box for the kit's git-level
 # suites. Built by tests/standin/run.sh, which passes BASE as an image pinned by digest, so a red run and a green run
 # are on the same image. It adds only what the suites need from the distribution (git, python3) and a user without
 # sudo. Nothing from the host is baked in: the runner mounts a one-commit snapshot of the kit, the gitleaks binary,

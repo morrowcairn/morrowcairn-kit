@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # smoke_test.sh — the user's path, end to end, on the machine that runs it: install a release with
-# tools/install-release.sh, make a project as patterns/local-spawn.md says, pin its identity list (bin/kit-pin repin),
-# commit and push through its stubs, and
+# tools/install-release.sh, make a project as patterns/local-spawn.md says, pin its do-not-publish list
+# (bin/kit-pin repin), commit and push through its stubs, and
 # see a planted credential refused at commit and a planted identity marker refused at push (pre-commit doesn't read
-# the identity list; pre-push does).
+# the do-not-publish list; pre-push does).
 #
 #   tests/smoke_test.sh [ROOT]    ROOT = a checkout of this kit (default: the one holding this file)
 #
@@ -79,6 +79,29 @@ else
     notrun install "no kit clone"
 fi
 
+# ============================== the install's list reader, a test copy ============================
+# A project's list lives under the home folder the user database gives, never $HOME's. So that no step reads or writes
+# the real one, the install's reader is swapped, once installed, for a copy whose kit_list_home alone prints TH, and its
+# manifest line rewritten to match, as the spawn then pins: every list below is in TH. If the swap didn't take, every
+# later step is skipped, and the script stops.
+TH="$T/home"; mkdir -p "$TH"
+ssum() { local s; if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum < "$1"); else s=$(shasum -a 256 < "$1"); fi; printf '%s' "${s%% *}"; }
+RDR="$INST/leak-detection/read-leak-pattern.sh"
+if [[ -f "$INST/MANIFEST.sha256" && -f "$RDR" ]]; then
+    chmod u+w "$INST" "$INST/leak-detection" "$RDR" "$INST/MANIFEST.sha256"
+    RS_BODY="    printf '%s\\n' '$TH'   # a suite's test copy: its scratch home" \
+        awk '/^kit_list_home\(\) \{/ {print; print ENVIRON["RS_BODY"]; s=1; next} s && /^\}/ {s=0} !s {print}' "$RDR" > "$T/reader.swap" \
+        && cat "$T/reader.swap" > "$RDR" \
+        && awk -v s="$(ssum "$RDR")" '$2 == "leak-detection/read-leak-pattern.sh" {$0 = s "  " $2} {print}' "$INST/MANIFEST.sha256" > "$T/manifest.swap" \
+        && cat "$T/manifest.swap" > "$INST/MANIFEST.sha256"
+    chmod a-w "$RDR" "$INST/MANIFEST.sha256" "$INST/leak-detection" "$INST"
+    if [[ "$(bash -c '. "$1" && kit_list_home' _ "$RDR" 2>/dev/null)" == "$TH" ]]; then pass "test reader" "the install's lists are found in the scratch home"
+    else fail "test reader" "the install's reader doesn't find its home in the scratch home; stopping before any step that reads a list"
+         echo; echo "smoke_test: $PASS passed, $FAIL failed, $NOTRUN not run"; exit 1; fi
+else
+    notrun "test reader" "no install"
+fi
+
 # ============================== a project, as patterns/local-spawn.md says ======================
 SP="$T/project"
 if [[ -f "$INST/MANIFEST.sha256" ]]; then
@@ -109,9 +132,11 @@ fi
 
 # ============================== push, then the two planted stand-ins ============================
 if git -C "$SP" rev-parse -q --verify HEAD >/dev/null 2>&1; then
-    printf "LEAK_PATTERN='%s'\n" "$MARK" > "$SP/.git/leak-pattern"
-    # Its pin, as leak-detection/README.md's Setup writes it; pre-push refuses a list without one (decisions log §112).
-    out=$( (cd "$SP" && "$INST/bin/kit-pin" repin local --first) 2>&1 ); rc=$?
+    # The list at its place, named by the kit.list-id kit-pin to made at spawn, which commit one carries: written over
+    # the line the block pinned (no list to start, the default), and repinned citing its decision, as local-spawn says.
+    (umask 077 && printf "LEAK_PATTERN='%s'\n" "$MARK" > "$TH/.config/morrowcairn/lists/$(cat "$SP/kit.list-id" 2>/dev/null)")
+    # Its pin, as leak-detection/README.md's Setup writes it; pre-push refuses a list without one.
+    out=$( (cd "$SP" && "$INST/bin/kit-pin" repin local --ruling §1) 2>&1 ); rc=$?
     if [[ $rc -eq 0 && -f "$SP/.git/leak-pattern.pin" ]]; then pass "list pinned" "$(one "$(printf '%s\n' "$out" | head -n 1)")"
     else fail "list pinned" "exit $rc: $(one "$out")"; fi
     git init -q --bare "$T/project-remote.git" && git -C "$SP" remote add origin "$T/project-remote.git"
@@ -135,10 +160,10 @@ if git -C "$SP" rev-parse -q --verify HEAD >/dev/null 2>&1; then
     if [[ $rc -ne 0 ]]; then fail "planted marker refused at push" "the commit itself was refused (exit $rc): $(one "$out")"
     else
         out=$( (cd "$SP" && git push -q origin main) 2>&1 ); rc=$?
-        if [[ $rc -ne 0 && "$out" == *"identity markers"* \
+        if [[ $rc -ne 0 && "$out" == *"listed terms"* \
               && "$(git -C "$T/project-remote.git" rev-parse main 2>/dev/null)" == "$head1" ]]; then
             pass "planted marker refused at push"
-        else fail "planted marker refused at push" "exit $rc, not refused for identity markers: $(one "$out")"; fi
+        else fail "planted marker refused at push" "exit $rc, not refused for listed terms: $(one "$out")"; fi
     fi
 else
     for s in "list pinned" push "planted credential refused at commit" "planted marker refused at push"; do notrun "$s" "no commit one"; done

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run.sh — the kit's stand-in machine (decisions log §284 ruling 1, §288): build the two images, then run the kit's
+# run.sh — the kit's stand-in machine: build the two images, then run the kit's
 # git-level suites (hooks, install, smoke) in a fresh container for each org-like condition, and print one line a
 # suite and condition. Kit-only (kit-manifest.txt classes tests/standin/ kit); Linux with Docker; the containers have
 # no network; no model call.
@@ -9,7 +9,7 @@
 #
 # What goes into a container: a one-commit snapshot of COMMIT's tree under a test identity (no history: the kit's
 # .git stays out), the gitleaks binary first on this machine's PATH, entry.sh and the IT hook, all read-only. Nothing
-# else from the home folder: no identity list, no credentials, no keys. Each container runs with --rm.
+# else from the home folder: no do-not-publish list, no credentials, no keys. Each container runs with --rm.
 # Results: one folder a condition under STANDIN_OUT (default: a new temp folder, printed), holding facts.txt,
 # exits.txt and a log a suite. Exit 0 when every suite passed in every condition; 1 when any failed (failures are
 # findings: read the logs); 2 when an image, the snapshot or a container couldn't be made.
@@ -19,8 +19,8 @@
 set -u
 KIT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd) || exit 2
 HERE="$KIT/tests/standin"
-# Base images pinned by digest, so a red run and a green run are on the same image (decisions log §288). Bumped by
-# hand: a new digest is a new baseline, and the plan records it.
+# Base images pinned by digest, so a red run and a green run are on the same image. Bumped by
+# hand: a new digest is a new baseline.
 UBUNTU=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 DEBIAN=debian:11@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
 # Debian 11 is past its end of life: deb.debian.org's security pool answers 404 for its packages (measured 10-24), so

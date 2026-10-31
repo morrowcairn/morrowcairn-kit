@@ -66,8 +66,10 @@ machine's user-level `CLAUDE.md`, never from here: a spawn holds no copy of it, 
 
 <!-- TODO: adjust to this project's identity requirements; delete if not applicable. -->
 - AI-authored content is never attributed to a human. Where authorship is ambiguous, label it.
-- Commit identity is set **per-repo** and **verified by reading it back** before the first commit —
-  see `patterns/repo-genesis.md` in the kit's pinned release.
+- Commits go under the identity git resolves for this clone: the machine's, or the one its
+  organization's IT sets. The identity guard is off by default; `patterns/repo-genesis.md`'s step 1a,
+  in the kit's pinned release, turns it on. Either way, the identity git will record is **read back**
+  before the first commit (its step 3).
 - Machine-specific identity and remotes live in local operator notes at `.local/operator-notes.md`
   (gitignored; pre-commit refuses anything staged under `.local/`), **never in tracked files.**
   Credentials go in neither: keep them in a secrets store, never in a plain file.

@@ -28,7 +28,7 @@ refuse() {
 
 # A pass comes only from the pass point at the end of this file. Any other exit 0 -- an early exit, or a stop on an
 # unset variable that the shell reports as 0, as bash 3.2 can -- is turned into a refusal, and any stop short of the
-# pass point removes the staging folder, as a refusal does (decisions log §96, §100, §105). A refusal's own non-zero
+# pass point removes the staging folder, as a refusal does. A refusal's own non-zero
 # exit is left as it is.
 kit_passed=0
 kit_guard() {
@@ -72,7 +72,7 @@ rc=$?
 if why=$(kit_no_sha256); then refuse "$why, so the install's manifest can't be written"; fi
 # The move into place is python3's os.rename (below): checked here, so a python3 that can't run (none, or Windows'
 # store alias) refuses before anything is built. Both launches are isolated (-I), so no module the environment plants
-# on PYTHONPATH or in the user site runs inside the install (decisions log §147, §148; install_test IR13, IR14).
+# on PYTHONPATH or in the user site runs inside the install (install_test IR13, IR14).
 python3 -I -c 'import os' >/dev/null 2>&1 || refuse "python3 can't run here, so the install can't be moved into place in one step"
 root=${KIT_INSTALL_ROOT:-${HOME:-}/.local/share/morrowcairn/releases}
 target="$root/$tag"
@@ -106,13 +106,12 @@ printf 'tag=%s\ncommit=%s\ntree=%s\n' "$tag" "$commit" "$(git rev-parse "$commit
 
 # The release's own hook suite, on the staged install. GIT_CEILING_DIRECTORIES keeps git from finding a
 # repository above it, so the suite's clone cases skip, counted, instead of testing some other clone. A refusal
-# names the suite's failing cases, up to 40 (decisions log §105).
+# names the suite's failing cases, up to 40.
 [[ -f "$staging/tests/hooks_test.sh" ]] || abandon "$tag has no tests/hooks_test.sh to run on the install"
 # KIT_INSTALL_CHECK tells the suite it runs as part of an install: a check that can't be exercised because this
 # machine's python3 has its user site off (PY2) is a loud skip, not a failure, since the isolation itself (python3
 # -I, shown by PY1) doesn't depend on that machine setting. In CI and a direct run the marker is absent, so the same
-# check fails there instead -- a gate check is never silently skipped (decisions log §152; hooks_test PY2, install
-# test IR15, IR16).
+# check fails there instead -- a gate check is never silently skipped (hooks_test PY2, install test IR15, IR16).
 suite=$(KIT_INSTALL_CHECK=1 GIT_CEILING_DIRECTORIES="$root" bash "$staging/tests/hooks_test.sh" "$staging" 2>&1)
 rc=$?
 (( rc == 0 )) || abandon "the release's hook suite failed on the staged install (exit $rc); nothing was installed" \

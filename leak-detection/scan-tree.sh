@@ -11,19 +11,19 @@
 # kit's policy: leak-detection/README.md, Setup) and locally against a full list; a line naming a
 # category would be true of one and false of the other.
 #
-# Exit 0 = examined and clean, or the pinned reserved value saying the project has no identity list (said so). Exit 1 =
-# markers found, pattern unset, a pattern its pin doesn't name, grafts, or the scan could not run.
+# Exit 0 = examined and clean, or the pinned reserved value saying the project has no do-not-publish list (said so).
+# Exit 1 = markers found, pattern unset, a pattern its pin doesn't name, grafts, or the scan could not run.
 # Output is file:line only -- echoing matched content would put the markers into a build log --
 # and never git's own error text, which can quote the pattern.
 #
 set -uo pipefail
-# Text handling runs byte-wise, matching in the caller's locale (decisions log §155 to §159), as in pre-push: every
+# Text handling runs byte-wise, matching in the caller's locale, as in pre-push: every
 # text tool here runs under LC_ALL=C, each matcher in the locale saved here (install test LG1).
 KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
 export LC_ALL=C
 
-# It runs outside a hook, so it follows no git setting it inherits (the user-level rule 13 (c); decisions log §120,
-# §121): every GIT_ variable from the caller goes, so git finds the repository from the folder the scan runs in, and
+# It runs outside a hook, so it follows no git setting it inherits (the gates skill's procedure 13, item 3): every
+# GIT_ variable from the caller goes, so git finds the repository from the folder the scan runs in, and
 # replace refs are off. A repository with grafts is refused below (hooks_test RG5, RG6).
 for v in $(compgen -e); do case $v in GIT_*) unset "$v" ;; esac; done
 export GIT_NO_REPLACE_OBJECTS=1
@@ -41,8 +41,8 @@ kit_no_sha256() {
     printf 'neither sha256sum (GNU coreutils) nor shasum (Perl) is installed'
 }
 
-# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value (decisions
-# log §108, §112). A row is one top-level alternative of the extended regex: groups, bracket expressions and escapes
+# A list's pin: two lines, rows= and sha256=, giving how many rows the list holds and the SHA-256 of its value. A row
+# is one top-level alternative of the extended regex: groups, bracket expressions and escapes
 # don't split one. One routine, the same text in each script that reads a pin (install test PN0). kit_list_rows VALUE
 # prints how many rows VALUE holds; kit_list_head VALUE N prints its first N rows as written; kit_pin_check VALUE PINFILE
 # succeeds when VALUE is the list PINFILE names, and otherwise fails with KP_ERROR saying why, in rows, never in a term
@@ -85,19 +85,19 @@ kit_pin_check() {
     return 0
 }
 
-# A project with no identity list says so with the reserved value in its secret, pinned like any list: the scan then
-# reads no tracked file for identity terms and says so (decisions log §308, §310 (a)). An unset secret still refuses.
+# A project with no do-not-publish list says so with the reserved value in its secret, pinned like any list: the scan
+# then reads no tracked file for identity terms and says so. An unset secret still refuses.
 KIT_NO_LIST='kit:no-identity-list'
 if [ -z "${LEAK_PATTERN:-}" ]; then
     echo "::error::LEAK_PATTERN secret is unset on this repository."
     echo "::error::Set it with 'gh secret set LEAK_PATTERN'. Do NOT add the pattern to this file."
-    echo "::error::If this project has no identity list, set the secret to $KIT_NO_LIST and pin it (\"\$INST/bin/kit-pin\" repin ci --first)."
+    echo "::error::If this project has no do-not-publish list, set the secret to $KIT_NO_LIST and pin it (\"\$INST/bin/kit-pin\" repin ci --first)."
     echo "::error::INST is your install of the release this project pins, as patterns/local-spawn.md names it: ~/.local/share/morrowcairn/releases/vX.Y.Z, or under KIT_INSTALL_ROOT."
     exit 1
 fi
 
 # CI's list must be the one its tracked pin names, .github/leak-pattern.pin: a secret cut, or changed in place, would scan
-# for less while every run kept passing (decisions log §108, §112). bin/kit-pin repin ci writes the pin, in a commit
+# for less while every run kept passing. bin/kit-pin repin ci writes the pin, in a commit
 # reviewed like any other. A refusal gives rows, never a term or a hash.
 if why=$(kit_no_sha256); then
     echo "::error::$why, so LEAK_PATTERN can't be checked against its pin."
@@ -116,7 +116,7 @@ if ! kit_pin_check "$LEAK_PATTERN" "$top/.github/leak-pattern.pin"; then
     exit 1
 fi
 if [ "$LEAK_PATTERN" = "$KIT_NO_LIST" ]; then
-    echo "clean: identity checks are off for this project: its LEAK_PATTERN secret is the pinned line saying it has no identity list, so no tracked file was scanned for identity terms"
+    echo "clean: the do-not-publish check is off for this project: its LEAK_PATTERN secret is the pinned line saying it has no do-not-publish list, so no tracked file was scanned for listed terms"
     exit 0
 fi
 
@@ -154,7 +154,7 @@ if [ "$rc" -eq 0 ]; then
     # Same rule for the allowlist filter, which decides by count and only then names: grep -c -v exits 1 when every hit
     # was allowlisted, and above 1 when it did not run. A broken allowlist must not erase real hits. Both steps read
     # every line as text (-a): without it, grep in a UTF-8 locale takes a line holding invalid UTF-8 as binary and
-    # prints nothing for it, and v0.9.0 reported such a hit clean (decisions log §145, §148).
+    # prints nothing for it, and v0.9.0 reported such a hit clean.
     frc=0
     nline=$(printf '%s\n' "$scan" | LC_ALL="$KIT_CALLER_LOCALE" grep -a -c -v -i -E -e "$ALLOW") || frc=$?
     if [ "$frc" -le 1 ] && [ "$nline" -gt 0 ]; then
@@ -174,7 +174,7 @@ fi
 if [ -n "$hits" ]; then
     # Name each hit's file and line (never the matched text). cut and sort read bytes (LC_ALL=C): BSD cut in a UTF-8
     # locale stops on an invalid byte in a hit's line ("Illegal byte sequence") and would name nothing while the scan
-    # still refused (decisions log §150, §152). git grep already decided the match reading every line as text (-a);
+    # still refused. git grep already decided the match reading every line as text (-a);
     # this only splits each line on ':' to take its path and line number.
     nhit=$(printf '%s\n' "$hits" | LC_ALL=C cut -d: -f1 | LC_ALL=C sort -u | wc -l)
     echo "::error::$nhit of $nfiles tracked files match LEAK_PATTERN (file:line below; matched text not shown):"

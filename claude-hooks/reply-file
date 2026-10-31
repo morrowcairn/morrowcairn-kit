@@ -1,0 +1,236 @@
+#!/usr/bin/env -S python3 -I
+#
+# reply-file — a Claude Code Stop hook: each report a session writes in a turn goes to a file of its own.
+#
+# A report ends at a report's end line naming this session,
+#     End of report <project> <label> #N (session <first eight characters of the session ID>)
+# with -directM or -wakeM after N where the tag carries one, when that line is the turn's last line, or, mid-turn,
+# when the line before it is the report's path line: a line whose last word is that report's own file in the [reply
+# folder] setting, ~/ allowed (the rules file's section 4). A session that reports a relay and then starts a waiting one
+# in the same turn ends the first report mid-turn. Each report, from the turn's start or the previous report's end
+# line to its own, is written to the [reply folder] setting as <project>-<label>-<id8>-<NN>.md, the project first:
+# lowercase, N padded to two digits, the tag kept (proj-blue-1a2b3c4d-04-direct1.md). The file's name comes from the
+# end line, and the hook writes nowhere but that folder.
+# Nothing is ever overwritten: a second report under one name goes to -resend2, then -resend3, and a report already
+# filed byte for byte isn't filed again, so a later turn end over the same text files nothing new. Nothing is masked:
+# the file holds what the session showed. An end line naming another session, or one mid-turn with no path line before
+# it (a quoted one), ends no report.
+#
+# Off until the person names it in their settings (`kit-pin user` links it at hooks/morrowcairn-reply-file in Claude
+# Code's config folder, a path an upgrade never changes). The setting is read from rules/morrowcairn-local.md in that
+# folder (CLAUDE_CONFIG_DIR where it is set, else ~/.claude), on the line
+#     - **[reply folder]:** PATH
+# PATH starting / or ~/, as it is or in backticks. An empty setting, or no such file or line, writes nothing.
+#
+# The turn: Claude Code's Stop input holds the final message's text (last_assistant_message) and the transcript's path
+# (transcript_path); its hooks page says the transcript is written asynchronously and may not hold the final message
+# yet. So the hook reads the turn's text from the transcript, the assistant's text since the person's last message (a
+# tool result, a background task's notice, another session's message or a compaction summary starts no turn), and adds
+# last_assistant_message when the transcript doesn't end with it. With no transcript it can read, the turn is
+# last_assistant_message alone.
+#
+# Exit 0 when it filed the reports or had nothing to do; 1, with one line on stderr, when the setting can't be used or
+# a write fails, which Claude Code shows as a non-blocking hook error: the turn ends either way. It prints nothing on
+# stdout, so it never asks Claude Code to keep going. Started with -I, so no module from the caller's environment
+# loads; the two hooks share no module for the same reason (isolated mode adds no script folder to the path).
+# Tests: tests/install_test.sh, RF0 to RF11d.
+
+import json
+import os
+import re
+import sys
+
+SETTING = "[reply folder]"
+END = re.compile(r"End of report ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) #([0-9]+)(-(?:direct|wake)[0-9]+)? "
+                 r"\(session ([0-9A-Fa-f]{8})\)")
+NOT_TYPED = ("peer", "task-notification")       # origin kinds of a message nobody typed
+
+
+def fail(why):
+    sys.stderr.write("reply-file: %s; nothing written.\n" % why)
+    sys.exit(1)
+
+
+def setting(name):
+    """The value after NAME's colon in morrowcairn-local.md; "" when the file or the line isn't there."""
+    conf = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    path = os.path.join(conf, "rules", "morrowcairn-local.md")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return ""
+    except OSError as e:
+        fail("can't read %s (%s)" % (path, e.strerror))
+    head = "- **%s:**" % name
+    for line in lines:
+        if line.startswith(head):
+            value = line[len(head):].strip()
+            if len(value) >= 2 and value[0] == value[-1] == "`":
+                value = value[1:-1].strip()
+            return value
+    return ""
+
+
+def place(value, name):
+    """VALUE as an absolute path: / as it is, ~/ under the home folder; anything else can't be used."""
+    path = os.path.expanduser(value) if value.startswith("~/") else value
+    if not os.path.isabs(path):
+        fail("the %s setting isn't a path starting / or ~/" % name)
+    return path
+
+
+def same(path, data):
+    try:
+        with open(path, "rb") as f:
+            return f.read() == data
+    except OSError:
+        return False
+
+
+def typed(r):
+    """A message the person typed or pasted: not a tool result, a side chain, a meta or compaction record, or a
+    message from another session or a background task."""
+    if r.get("type") != "user" or r.get("isSidechain") or r.get("isMeta") or r.get("isCompactSummary"):
+        return False
+    if "toolUseResult" in r or (r.get("origin") or {}).get("kind") in NOT_TYPED:
+        return False
+    c = (r.get("message") or {}).get("content")
+    if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
+        return False
+    return isinstance(c, (str, list))
+
+
+def turn_texts(path):
+    """The assistant's text blocks since the transcript's last typed message, in order; None when there is no
+    transcript to read or no typed message in it."""
+    if not isinstance(path, str) or not path:
+        return None
+    rows = []
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+    except OSError:
+        return None
+    start = None
+    for i, r in enumerate(rows):
+        if typed(r):
+            start = i
+    if start is None:
+        return None
+    texts = []
+    for r in rows[start + 1:]:
+        if r.get("type") != "assistant" or r.get("isSidechain"):
+            continue
+        for b in (r.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"]:
+                texts.append(b["text"])
+    return texts
+
+
+def ends_with(texts, last):
+    """True when the turn's text already ends with LAST: its last block, or its last few joined (a message of several
+    text blocks)."""
+    want = last.strip()
+    for k in range(1, min(len(texts), 8) + 1):
+        tail = [t.strip() for t in texts[-k:]]
+        if any(sep.join(tail) == want for sep in ("\n\n", "\n", "")):
+            return True
+    return False
+
+
+def reports(body, session, folder):
+    """[(text, file name)] for each report in BODY: from the start, or the previous report's end line, to an end line
+    naming SESSION that is the last line or has its path line before it. Text after the last end line is no report's."""
+    lines = body.split("\n")
+    filled = [i for i, ln in enumerate(lines) if ln.strip()]
+    out, start, prev = [], 0, None
+    for i in filled:
+        m = END.fullmatch(lines[i].strip())
+        if m and m.group(5).lower() == session[:8].lower():
+            project, label, n, tag = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+            base = "%s-%s-%s-%02d%s" % (project.lower(), label.lower(), session[:8].lower(), int(n), tag)
+            words = lines[prev].split() if prev is not None else []
+            named = words[-1].strip("`'\"()<>.,;:") if words else ""
+            named = os.path.expanduser(named) if named.startswith("~/") else named
+            if i == filled[-1] or named == os.path.join(folder, base + ".md"):
+                part = lines[start:i + 1]
+                while part and not part[0].strip():
+                    part = part[1:]
+                out.append(("\n".join(part), base))
+                start = i + 1
+        prev = i
+    return out
+
+
+def file_report(folder, base, text):
+    """Writes TEXT as BASE.md in FOLDER, or as the first free -resendK.md; nothing when one of them already holds it."""
+    data = (text if text.endswith("\n") else text + "\n").encode("utf-8", errors="replace")
+    k = 1
+    while True:
+        path = os.path.join(folder, base + ("" if k == 1 else "-resend%d" % k) + ".md")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            if same(path, data):
+                return
+            k += 1
+            if k > 99:
+                fail("%s already has 99 files" % base)
+            continue
+        except OSError as e:
+            fail("can't write %s (%s)" % (path, e.strerror))
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        except OSError as e:
+            fail("can't write %s (%s)" % (path, e.strerror))
+        finally:
+            os.close(fd)
+        return
+
+
+def main():
+    value = setting(SETTING)
+    if not value:
+        return 0
+    folder = place(value, SETTING)
+    try:
+        event = json.load(sys.stdin)
+    except (ValueError, OSError):
+        fail("its input isn't the JSON Claude Code sends a Stop hook")
+    if not isinstance(event, dict) or "last_assistant_message" not in event or not isinstance(event.get("session_id"), str):
+        fail("the Stop input carries no last_assistant_message or session_id")
+    last, session = event["last_assistant_message"], event["session_id"]
+    if not isinstance(last, str):
+        last = ""
+    texts = turn_texts(event.get("transcript_path"))
+    if texts is None:
+        texts = [last] if last.strip() else []
+    elif last.strip() and not ends_with(texts, last):
+        texts.append(last)
+    body = "\n\n".join(texts).rstrip()
+    if not body.strip():
+        return 0
+    found = reports(body, session, folder)
+    if not found:
+        return 0
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+    except OSError as e:
+        fail("can't make the reply folder %s (%s)" % (folder, e.strerror))
+    for text, base in found:
+        file_report(folder, base, text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

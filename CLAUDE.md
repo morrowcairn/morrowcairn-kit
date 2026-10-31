@@ -21,8 +21,9 @@ The kit's releases go to a public beta repository, and anyone may install one: o
 machine, or on an organization's, under its IT's settings. Each install's hooks decide what that
 person's projects may commit and push, and its doctrine shapes how every session on that machine
 works. The operator sees none of those machines, so a failure there surfaces only if someone
-reports it. The costly failure is a silent fail-open: an identity term or a credential let through
-to a remote, which can't be reliably withdrawn once pushed and may surface only at a later audit;
+reports it. The costly failure is a silent fail-open: a term someone agreed or is required to keep confidential,
+or a credential, let through to a remote, which can't be reliably withdrawn once pushed and may surface only at a
+later audit;
 or a doctrine error, which re-aims every session of everyone who imports that release at once. A
 gate that fails closed stalls every project pinned to that release until it's fixed, but it is
 noticed at once, and it says why. So every tracked line is written for a reader the operator
@@ -58,11 +59,9 @@ This frame calibrates every judgment below.
 
 ## Doctrine
 
-Kit-owned, loaded with this file, and corrected by each kit upgrade (`skills/README.md` says what
-loads when). Keep these two lines: without them the files are never read.
-
-@skills/working-from-a-brief.md
-@skills/shell-commands.md
+The kit's rules reach this repository's sessions through the user level, not through this file:
+`bin/kit-pin user` links a release's `rules/morrowcairn.md` and its triggered skills into Claude Code's
+user-level folders, so this file imports nothing.
 
 ## Working with the human here
 
@@ -83,36 +82,37 @@ loads when). Keep these two lines: without them the files are never read.
 
 ## Environment
 
-What the kit's scripts and tests need, as measured (§ is the kit's development decisions log, not published). A
-version named is one that passed, not a measured minimum.
+What the kit's scripts and tests need, as measured. A version named is one that passed, not a measured minimum.
 
 - **Linux:** bash, git, python3, gitleaks, and `sha256sum` or `shasum`. CI's `ubuntu-latest` (bash 5.2,
-  git 2.55) runs the four suites and the user's path green on every push (§98, §102).
+  git 2.55) runs the four suites on pushes to `main` and on pull requests, and the user's path on pushes to `main`.
 - **A stock Mac:** `/bin/bash` 3.2, BSD tools and `shasum`, git and python3 from Apple's developer
   tools, and gitleaks added: the user's path passes, from clone and install to the planted refusals, with
   PATH only `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` and gitleaks' folder (git 2.50 and python3 3.9, on a
-  runner with Xcode; §99, §105). On a Mac with neither Xcode nor the Command Line Tools,
+  runner with Xcode, last on v0.12.0's code). On a Mac with neither Xcode nor the Command Line Tools,
   `/usr/bin/git` and `/usr/bin/python3` only offer to install the tools (`xcode-select --install`): not
   measured here. gitleaks isn't part of macOS: CI installs its release archive, checked against the
-  published sha256 (§98); Homebrew's `brew install gitleaks` is the other route, not measured. No kit
+  published sha256; Homebrew's `brew install gitleaks` is the other route, not measured. No kit
   script uses bash 4's features or the GNU-only flags the kit once needed (`xargs -d`, `mv -T`,
   `sed -i`, `date -d`); two copy-paste patterns do (`dry_run_gated_runner.sh`, `mapfile`;
-  `atomic_deploy.sh`, `stat -c`) (§104).
+  `atomic_deploy.sh`, `stat -c`).
 - **Windows: not yet passing.** Under Git Bash, the suites fail 5 cases on kit causes, and an install
-  made with Git Bash's defaults is refused (§102). Don't rely on it there.
+  made with Git Bash's defaults is refused. Don't rely on it there.
 - git 2.31 or later: `bin/kit-pin` uses `git rev-parse --path-format` (git's release notes; the oldest
   git run here is 2.43).
 - python3: pre-push's binary scan (a push carrying a binary), install-release's one-step rename, checked
-  before anything is built, and the load check (§99). Run here: 3.12.
+  before anything is built, and the load check; and the home folder a project's list lives under, read from
+  the user database (pre-push and the history audit; kit-pin; pre-commit's
+  withholding of `.local/` names). Run here: 3.12.
 - `sha256sum` or `shasum -a 256`: every script that hashes takes either, and with neither refuses,
-  naming both (§91).
+  naming both.
 - gitleaks: both hooks and CI's tree scan. Both the kit's CI and a project's (`ci/gitleaks.yml`)
-  install 8.30.1, checked against its sha256 (§98, §104).
+  install 8.30.1, checked against its sha256.
 - curl and Claude Code's `claude`: the load check alone, for its stub's one ping when it refuses and
   the headless probe.
 - `.gitattributes` keeps LF in every text file whatever `core.autocrlf` says, so a clone made with Git
-  for Windows' default still runs (§99).
+  for Windows' default still runs.
 - **To run the suites:** `hooks_test.sh`, which an install runs, passes under `/bin/bash` 3.2 and BSD
-  tools (§99). The other three use GNU `sed -i`, `date -d` and `find -perm /` (read, not run without
-  them; macOS CI adds Homebrew's coreutils, gnu-sed, findutils and bash, §98, §104).
+  tools. The other three use GNU `sed -i`, `date -d` and `find -perm /` (read, not run without
+  them; macOS CI adds Homebrew's coreutils, gnu-sed, findutils and bash).
   `KIT_TEST_BASH3` names a bash 3 for the bash 3 cases.

@@ -48,7 +48,7 @@ free_bytes=$(( $(df -P --output=avail "$(dirname "$TARGET")" | tail -1) * 1024 )
 # --- transfer aside, then swap ------------------------------------------------------------
 log "transferring to ${TARGET}.new"
 # cp gives ${TARGET}.new the source's mode under the umask, and mv keeps it: a live file at 0755 or 0644 swapped
-# from a 0600 source becomes 0600 (measured, decisions log §323). Where the live file's mode matters, as for a script
+# from a 0600 source becomes 0600 (measured). Where the live file's mode matters, as for a script
 # a scheduler runs, copy it onto ${TARGET}.new before the swap.
 if ! cp "$SRC" "${TARGET}.new"; then
     DEPLOY_FAILED=1

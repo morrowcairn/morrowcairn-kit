@@ -1,0 +1,101 @@
+#!/usr/bin/env -S python3 -I
+#
+# compaction-log — a Claude Code PostCompact hook: one line per completed compaction, appended to the
+# [compaction log] setting,
+#     2026-10-27 18:30:05 CDT | <session ID> | auto
+# the local time, the session ID and what triggered it (manual, after /compact; auto, when the context fills or an
+# idle session is compacted), from the PostCompact input Claude Code's hooks page documents. A session's reading is a
+# count of its ID's lines. A character other than a letter, digit, dot, underscore or hyphen in either field is
+# written as ?, so each compaction stays one line.
+#
+# Off until the person names it in their settings (`kit-pin user` links it at hooks/morrowcairn-compaction-log in
+# Claude Code's config folder, a path an upgrade never changes). The setting is read from rules/morrowcairn-local.md
+# in that folder (CLAUDE_CONFIG_DIR where it is set, else ~/.claude), on the line
+#     - **[compaction log]:** PATH
+# PATH starting / or ~/, as it is or in backticks; its folder is made if it isn't there. An empty setting, or no such
+# file or line, writes nothing.
+#
+# Exit 0 when it appended the line or had nothing to do; 1, with one line on stderr, when the setting can't be used or
+# the append fails, which Claude Code shows as a non-blocking hook error: a hook can't change a compaction. Started
+# with -I, so no module from the caller's environment loads; the two hooks share no module for the same reason.
+# Tests: tests/install_test.sh, CL1 and CL2.
+
+import json
+import os
+import re
+import sys
+import time
+
+SETTING = "[compaction log]"
+
+
+def fail(why):
+    sys.stderr.write("compaction-log: %s; nothing written.\n" % why)
+    sys.exit(1)
+
+
+def setting(name):
+    """The value after NAME's colon in morrowcairn-local.md; "" when the file or the line isn't there."""
+    conf = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    path = os.path.join(conf, "rules", "morrowcairn-local.md")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return ""
+    except OSError as e:
+        fail("can't read %s (%s)" % (path, e.strerror))
+    head = "- **%s:**" % name
+    for line in lines:
+        if line.startswith(head):
+            value = line[len(head):].strip()
+            if len(value) >= 2 and value[0] == value[-1] == "`":
+                value = value[1:-1].strip()
+            return value
+    return ""
+
+
+def place(value, name):
+    """VALUE as an absolute path: / as it is, ~/ under the home folder; anything else can't be used."""
+    path = os.path.expanduser(value) if value.startswith("~/") else value
+    if not os.path.isabs(path):
+        fail("the %s setting isn't a path starting / or ~/" % name)
+    return path
+
+
+def field(event, key):
+    value = event.get(key)
+    return re.sub(r"[^A-Za-z0-9._-]", "?", value) if isinstance(value, str) and value else "?"
+
+
+def main():
+    value = setting(SETTING)
+    if not value:
+        return 0
+    path = place(value, SETTING)
+    try:
+        event = json.load(sys.stdin)
+    except (ValueError, OSError):
+        fail("its input isn't the JSON Claude Code sends a PostCompact hook")
+    if not isinstance(event, dict):
+        fail("its input isn't the JSON Claude Code sends a PostCompact hook")
+    line = "%s | %s | %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S %Z"), field(event, "session_id"), field(event, "trigger"))
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    except OSError as e:
+        fail("can't open %s (%s)" % (path, e.strerror))
+    try:
+        data = line.encode("utf-8")
+        if os.write(fd, data) != len(data):
+            fail("a short write to %s" % path)
+        os.fsync(fd)
+    except OSError as e:
+        fail("can't append to %s (%s)" % (path, e.strerror))
+    finally:
+        os.close(fd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

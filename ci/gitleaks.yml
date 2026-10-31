@@ -34,7 +34,7 @@ jobs:
 
       # One gitleaks version, its archive checked against the sha256 written here, which is the one the release
       # publishes (gitleaks_8.30.1_checksums.txt). The kit's own gitleaks.yml carries the same step, line for line
-      # (kit_docs_test K26), so a kit release moves both together, test-first (decisions log §69, §98, §103). gitleaks
+      # (kit_docs_test K26), so a kit release moves both together, test-first. gitleaks
       # goes on the PATH once, for every later step, from a folder of its own, not the checkout.
       - name: Install gitleaks
         run: |

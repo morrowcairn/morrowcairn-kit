@@ -13,7 +13,7 @@ When it applies: the operator asks to wrap up or close a session.
 
 1. Hygiene first, and say what you did.
    - The decisions log, the follow-up queue and the handoff file are current, so a new session could take over
-     from the handoff alone. The handoff file is procedure 10's (`skills/working-from-a-brief.md`, item 4).
+     from the handoff alone. The handoff file is the rules file's (`rules/morrowcairn.md`, section 10).
    - Say what's committed, pushed, tagged and deployed. Name anything finished but not shipped: committed but not
      released, or pushed but not deployed.
    - Name any public text that now describes something that has changed: a README, setup requirements, a website.
@@ -31,12 +31,12 @@ When it applies: the operator asks to wrap up or close a session.
    overrides each one. Record each in the queue or the decisions log.
 3. Separately: what you got wrong this session, whether you or the operator caught it, and what you're still unsure
    about.
-4. Close by saying whether the session has compacted and whether you'd recommend rotating: procedure 10's compaction
-   line and rotation (`skills/working-from-a-brief.md`, items 3 and 1).
+4. Close by saying whether the session has compacted and whether you'd recommend rotating: the rules file's
+   compaction line and rotation (`rules/morrowcairn.md`, section 10).
 
 Five is a ceiling, not a target. Don't recap the session's work; this report is about what needs a decision.
 
 **Would revisit if:** close reports stop surfacing items the operator decides on, or the tool itself tracks what a
 session leaves finished but not shipped.
 
-*Provenance: `skills/PROVENANCE.md`, line 12.*
+*Provenance: `skills/PROVENANCE.md`, the line for procedure 12.*

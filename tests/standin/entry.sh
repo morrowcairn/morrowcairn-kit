@@ -14,7 +14,7 @@
 #   old-git           user-gitleaks, on the older image (its git below the 2.31 that pre-push's merge scan needs)
 # Under the two hooks-path conditions it also runs smoke_test once more under the user's own git config, not the empty
 # global file the suites use, so kit-pin to, a commit and a push meet the org's hooks path as a user's would; that run
-# passes only if the org's hook ran in its project for both the commit and the push (§288's gap; §294).
+# passes only if the org's hook ran in its project for both the commit and the push, the gap this run was added for.
 set -u
 cond=${1:?a condition}; T=tester; H=/home/tester
 case "$cond" in no-sudo|user-gitleaks|it-hookspath|global-hookspath|old-git) ;; *) echo "unknown condition: $cond" >&2; exit 2 ;; esac

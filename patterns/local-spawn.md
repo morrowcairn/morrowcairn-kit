@@ -42,10 +42,19 @@ echo '# Test commands of this project, one per line; bin/kit-pin to runs them be
 
 cd "${DST:?}"
 git init -b main                    # name the branch: the default is git's choice, not the kit's
-git config --local user.name  UNSET-SEE-REPO-GENESIS   # sentinel: pre-commit refuses until the real
-git config --local user.email unset@invalid.local      # identity is set and read back (repo-genesis)
 "${INST:?}/bin/kit-pin" to "${REL:?}"   # BEFORE commit one: kit.pin and the stubs guard the commit that cannot be rewritten
-# ...then patterns/repo-genesis.md (in the release's install): set --local identity, READ IT BACK, then commit one.
+# No do-not-publish list to start, the kit's default: the one line saying so, at the list's place, which the install's
+# reader names from kit.list-id (never written over a file there), and its first pin.
+( . "${INST:?}/leak-detection/read-leak-pattern.sh" && kit_list_file && set -C && umask 077 \
+  && echo "LEAK_PATTERN='kit:no-identity-list'" > "${KL_FILE:?}" )
+"${INST:?}/bin/kit-pin" repin local --first
+echo "This project starts with no do-not-publish list: the one line saying so is at its place,"
+echo "pinned, so its pushes say the do-not-publish check is off, and still scan for credentials."
+echo "If it will hold terms you've agreed or are required to keep confidential, write them there"
+echo "now and repin (patterns/local-spawn.md): nothing will remind you later."
+echo "The identity guard is off: commit one goes under the identity git resolves here. patterns/repo-genesis.md says how"
+echo "to check that identity, and how to turn the guard on."
+# ...then patterns/repo-genesis.md (in the release's install): check the identity git will record, then commit one.
 ```
 
 **Run the block whole, in one shell.** An agent's shell calls often keep no variables, so a piece of
@@ -58,8 +67,11 @@ was in, and gave that folder's repository the placeholder identity. In a termina
 **Pin before the first commit, not after.** A new repository has no hooks at all, and the first commit
 is the one the hooks most need to see: nothing earlier can be rewritten away. `kit-pin to` writes
 `kit.pin` and the two stubs in `.git/hooks`, which check the install against the pin on every commit
-and push and then run the release's hooks. It prints where pre-push will read the identity list
-from, or the next step if no list is set.
+and push and then run the release's hooks. It also writes `kit.list-id`, a random id that names the
+project's do-not-publish list, and makes the list's folder, `~/.config/morrowcairn/lists/` (mode 700; `~` the
+home folder the user database gives): the list lives there, as `lists/<id>`, outside every repository,
+the same file for every clone. Commit one carries `kit.list-id`. `to` prints where pre-push will read
+the do-not-publish list from, or the next step if no list is set.
 
 **Inventory a destination that is not empty.** The first spawned instance's destination already held
 a folder of sixteen files that was not part of the project and that the kit's `.gitignore` does not
@@ -70,17 +82,28 @@ cover. Nothing in the procedure would have stopped `git add -A` from sweeping it
 whose `git init` produced `master` had to rename an unborn branch to match the kit's `main`.
 `git init -b main` pins it.
 
-**Run `bin/kit-pin check` after commit one** (the install's: `"$INST/bin/kit-pin" check`). It says the
-pin, the install, the stubs and the hooks path are in order, and where the identity list comes from.
-Until the project has its identity list and the list's pin, it finishes with exit 3: installed and
-pinned, but every push refused. Then ask once: **does this project have an identity list?**
-- *Yes:* write the list and its pin as `leak-detection/README.md`, Setup, says (a first pin only after
-  the list is checked against the source it was made from), and check passes.
-- *No* (a work project, say, where names are everywhere): write the one line saying so, and pin it:
-  `echo "LEAK_PATTERN='kit:no-identity-list'" > "$(git rev-parse --git-dir)/leak-pattern"`, then
-  `"$INST/bin/kit-pin" repin local --first`. Check passes, saying identity checks are off; every push
-  says so too and still scans for credentials. Never write this line over a real list: its pin refuses
-  it, and a project going public needs a real list (`bin/kit-history-audit` refuses the line).
+**Two checks start off; below, how to turn on each.** The kit's default is the setup an organization's IT would
+accept, so a new project starts with neither of these; the block says so as it ends.
+- *The do-not-publish list.* The block writes the one line saying the project has none,
+  `LEAK_PATTERN='kit:no-identity-list'`, at the list's place, and pins it. `bin/kit-pin check` (the install's:
+  `"$INST/bin/kit-pin" check`) passes, saying the do-not-publish check is off; every push says so too and still scans for
+  credentials. Ask once, now: **will this project hold terms you've agreed or are required to keep confidential?**
+  Nothing reminds the project later. *Yes:* put the list in place of the line, then repin it, citing the § of the
+  project's decisions log that records the decision (a change other than an append takes one). The write below refuses
+  unless the file at the list's place holds that line alone, and only then replaces it, in one step, through a file
+  beside it:
+  ```sh
+  ( f=~/.config/morrowcairn/lists/"$(cat kit.list-id)"
+    [ "$(cat "$f" 2>/dev/null)" = "LEAK_PATTERN='kit:no-identity-list'" ] \
+      || { echo "refused: $f doesn't hold the no-list line alone; nothing written" >&2; exit 1; }
+    umask 077 && set -C && echo "LEAK_PATTERN='term1|term2'" > "$f.new" && mv "$f.new" "$f" )
+  ```
+  Then `"$INST/bin/kit-pin" repin local --ruling §N` (`leak-detection/README.md`, Setup and Changing the list). A
+  project going public needs a real list: `bin/kit-history-audit` refuses the line.
+- *The identity guard.* Commit one goes under the identity git resolves for this clone: the machine's, or the one its
+  organization's IT sets. To turn the guard on, write `patterns/repo-genesis.md`'s sentinel identity in the clone
+  before commit one (its step 1a): pre-commit then refuses every commit until a real identity is set and read back.
+A project made before this release keeps its list and its identity as they are: moving it (`kit-pin to`) changes neither.
 The project holds no hook suite: the kit's suites test the hooks before every release.
 
 **Record where the kit lives.** Put the kit's location and the release you made the project from in
@@ -140,7 +163,7 @@ why — a future reader finding a machine-default identity cannot otherwise tell
 
 ## Would revisit if:
 
-The manifest's completeness test (`tests/kit_docs_test.sh`, K18) stops running before a release, or
+The manifest's completeness test (in `tests/kit_docs_test.sh`) stops running before a release, or
 the manifest starts naming files one by one outside `tests/`. A hand-maintained inventory is a promise
 to update it that nobody keeps: the kit's own README once listed every file by name and
 went stale in the same commit that added two of them. The manifest is an inventory too, but one whose

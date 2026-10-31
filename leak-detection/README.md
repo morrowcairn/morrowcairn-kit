@@ -25,7 +25,8 @@ this against this exact ruleset. A fake AWS key pair was blocked. A file holding
 Security number, date of birth, account and routing numbers, a passport number, a name and an
 address committed clean. A CSV with "account number" in its header row and bare digits below is
 missed entirely: keyword-anchored rules cannot reach across the line break, and un-anchoring them
-would fire on every nine-digit identifier.
+would fire on every nine-digit identifier. Nor does it catch an ordinary password: four stand-in lines
+(`password = Summer2024!` among them) committed clean against the kit's rules with gitleaks 8.30.1.
 
 So a green hook is **not** the control for personal or financial records. The control is keeping
 raw records out of the tree altogether, at any path, ignored or not. Write that rule in the
@@ -34,10 +35,10 @@ project's `CLAUDE.md`, and never let a green scan stand in for it.
 ## Setup
 
 ```bash
-"$INST/bin/kit-pin" to vX.Y.Z                                      # a project: kit.pin and the stubs, per clone
+"$INST/bin/kit-pin" to vX.Y.Z                                      # a project: kit.pin, the stubs, kit.list-id
 git config core.hooksPath leak-detection                            # the kit itself: hooks from its working tree
-echo "LEAK_PATTERN='marker1|marker2'" > "$(git rev-parse --git-dir)/leak-pattern"   # every term, local only
-"$INST/bin/kit-pin" repin local --first                             # its pin, beside it (a first pin: below)
+(umask 077 && set -C && echo "LEAK_PATTERN='marker1|marker2'" > ~/.config/morrowcairn/lists/"$(cat kit.list-id)")   # every term; never over a file there
+"$INST/bin/kit-pin" repin local --first                             # its pin, in .git (a first pin: below)
 gh secret set LEAK_PATTERN < "$(git rev-parse --git-dir)/leak-pattern.ci"   # CI: the non-confidential terms only
 "$INST/bin/kit-pin" repin ci --first                                # CI's pin: commit .github/leak-pattern.pin
 ```
@@ -45,6 +46,24 @@ gh secret set LEAK_PATTERN < "$(git rev-parse --git-dir)/leak-pattern.ci"   # CI
 A project runs these hooks from a release's install (`$INST`), through two stubs in `.git/hooks` that check
 the install against the project's `kit.pin` first (`patterns/local-spawn.md`, `patterns/local-upgrade.md`).
 The kit runs them from its own working tree: it is where releases come from, not a pinned project.
+
+**Where the list lives.** A project's list is one file outside every repository, `~/.config/morrowcairn/lists/<id>`,
+the folder mode 700 and the file 600. The id is the one line of the project's tracked `kit.list-id`, 32 random hex
+digits that `kit-pin to` writes, so every clone of the project on a machine reads the same file, a renamed or moved
+folder keeps it, and the name says nothing about the project. `~` is the home folder the user database gives for the
+running user, never `HOME` or `XDG_CONFIG_HOME`: a gate finds its terms in a fixed place, never in its caller's
+environment. The list reader, `read-leak-pattern.sh`, is the one place that says this (`kit_list_file`). A list's
+old place, `.git/leak-pattern`, is no longer read: `"$INST/bin/kit-pin" move-list` copies it to the new place, byte
+for byte, never over a list that differs, and leaves the old file for you to delete once nothing reads it (`to` and
+`migrate` run the same step). The kit's own repository has its `kit.list-id` too, and ran `move-list` once.
+
+**No list from the environment.** pre-push, `kit-pin`'s `check` and `repin`, and the history audit read the list
+only from its file at its place: a `LEAK_PATTERN` set in the environment is ignored, so no program can stand a list of
+its own, cut short or harmless, in for the project's. Earlier releases' pre-push took a list from
+`LEAK_PATTERN` ahead of the file; that route is gone. To try a list, write it at its place, then run
+`"$INST/bin/kit-pin" check`, and repin it if it changed (Changing the list, below). CI's tree scan is the one reader
+that takes `LEAK_PATTERN` from the environment, where it is the repository's own named secret, checked against the
+tracked `.github/leak-pattern.pin`.
 
 **What they need.** git 2.31 or later (both hooks and `bin/kit-pin` refuse an older one, naming it); gitleaks on
 `PATH` (both hooks refuse without it, saying it may be missing or hidden, as a sandbox that blocks reading the home
@@ -68,18 +87,36 @@ and exactly one `LEAK_PATTERN='...'` line as the setup line writes it, or `expor
 with nothing after the closing quote. pre-push refuses a file in any other shape, a second
 `LEAK_PATTERN` line included. A term can't hold an apostrophe yet.
 
-**A project with no identity list says so with one line.** A missing list refuses every push, naming
-the line, so "forgot" is never read as "don't want". The line is the reserved value, pinned like any
-list:
+**Bounding a row.** An install carries no list: a project writes its own rows, taking these forms from here, and
+repins (Changing the list, below). A row is one alternative of the list's extended regex, which the gates read with
+`git grep -E` and `grep -E`, so a bound is written with alternation and bracket classes, never with a lookaround,
+which extended regexes don't have.
+- *A row that holds a name* is bounded by letters, `(^|[^[:alpha:]])term([^[:alpha:]]|$)`: a letter beside the term
+  joins it into another word, and a digit, an underscore, punctuation, a line's start or its end separates it. `\b`
+  in its place lets a term run into a digit or an underscore through.
+- *A row that holds a number,* an address or an id number, is bounded by "not a digit" on each side. The IPv4 row:
+  `(^|[^0-9])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9]|$)`. It matches at a line's start and at its end; a letter, an
+  underscore and a full stop all separate the number, so an address joined to a word, ending a sentence or before a
+  file extension is caught; a digit joins it into a longer number, so a longer run of digits, or a part with four
+  digits, isn't. A dotted run of five or more short numbers (an OID, a long version string) matches it too. A bound
+  of `[^0-9.]` misses an address followed by a full stop, and `\b` one joined to a letter or an underscore.
+- pre-push reads no file name in its identity scan (the layer table, below); a name the list matches is withheld
+  when a block names its file. The hook suite (`tests/hooks_test.sh`) holds both forms as stand-ins, a case for each.
+
+**A project with no do-not-publish list says so with one line.** A missing list refuses every push, naming
+the line, so "forgot" is never read as "don't want". A new project made by `patterns/local-spawn.md` starts
+with the line already in place and pinned, the kit's default, and the block says so; a project that will hold
+terms it must keep confidential writes its list over the line and repins it, citing its decision (`repin local
+--ruling §N`). The line is the reserved value, pinned like any list:
 
 ```bash
-echo "LEAK_PATTERN='kit:no-identity-list'" > "$(git rev-parse --git-dir)/leak-pattern"
+(umask 077 && set -C && echo "LEAK_PATTERN='kit:no-identity-list'" > ~/.config/morrowcairn/lists/"$(cat kit.list-id)")
 "$INST/bin/kit-pin" repin local --first
 ```
 
-With it, pre-push turns its identity layers off, says so on every push, and still runs the credential
-scan; `kit-pin check` reports identity checks off. For CI, set the secret to that reserved line's value,
-`kit:no-identity-list`, and pin it (`repin ci --first`); the tree scan then says identity checks are off. A list file that exists but
+With it, pre-push turns its do-not-publish check off, says so on every push, and still runs the credential
+scan; `kit-pin check` reports the do-not-publish check off. For CI, set the secret to that reserved line's value,
+`kit:no-identity-list`, and pin it (`repin ci --first`); the tree scan then says the do-not-publish check is off. A list file that exists but
 can't be read refuses with a message of its own, never the missing list's. The pin guards the line:
 written over a real list, it doesn't match that list's pin, and changing a list's rows needs the
 owner's words (below). A project going public needs a real list: `bin/kit-history-audit` refuses the
@@ -89,8 +126,8 @@ pushes with no note: move such a project onto this release before writing the li
 **Each list is pinned.** pre-push refuses unless the local list is the one `.git/leak-pattern.pin` names, and
 CI's scan refuses unless the `LEAK_PATTERN` secret is the one the tracked `.github/leak-pattern.pin` names. A pin
 holds the list's rows (its top-level alternatives) and the SHA-256 of its value, so a list cut, or changed in
-place, refuses where a count alone would pass. The local pin stays untracked beside the list, as the list does: a
-hash of the whole list lets anyone holding a guess at it confirm the guess. CI's list holds no confidential term, so its
+place, refuses where a count alone would pass. The local pin stays untracked in `.git`, as the list stays outside the
+repository: a hash of the whole list lets anyone holding a guess at it confirm the guess. CI's list holds no confidential term, so its
 pin is tracked, and a change to it is a reviewed commit. CI's secret can't be read back, so its exact value is kept,
 untracked, in `.git/leak-pattern.ci`, with no trailing newline. A refusal gives rows, never a term or a hash.
 `bin/kit-pin check` finishes with exit 3 while pre-push would refuse every push: no usable list, or one its pin
@@ -100,9 +137,9 @@ doesn't name.
 the copy its rows were made from (another list they were copied from, compared by exact text), or the records of
 each row's addition; never the list against itself. A project moving onto an install takes its pins in that move
 (`patterns/local-upgrade.md`). A project with no confidential terms of its own says so with the pinned line above;
-it may instead keep a local list of only the terms that aren't confidential, the ones `kit-pin`'s setup text calls
-"the terms that identify no one" (a synthetic canary, machine paths, an IP pattern), as its CI list does, and pin
-it.
+it may instead keep a local list of the same kind of terms CI's list holds (a synthetic canary, machine paths, an IP
+pattern), and pin it. CI's secret never holds terms you've agreed or are required to keep confidential; those stay
+only in the local list.
 
 **Changing the list.** After any change, repin it, `bin/kit-pin repin local` (or `ci`), which tells an append from
 anything else:
@@ -119,19 +156,35 @@ anything else:
 **kit-pin never replaces a hooks path silently.** A hooks path sends git past the stubs, so `kit-pin to`
 and `kit-pin check` refuse one set in the clone itself, and name it. `kit-pin migrate` is the
 deliberate replacement, for a project that still runs a hooks path: it keeps any hooks in `.git/hooks`
-aside, unsets the path, names it, and puts everything back if its check fails.
+aside, unsets the path, names it, and puts everything back if its check fails. A path other than the
+kit's own old one (`leak-detection`) is the repository's, a hook manager's such as `.husky` (or Husky
+v9's `.husky/_`): its hooks keep running after the move, through a relay for each one that path holds
+(below) and, for pre-commit and pre-push, through relays kept as `<hook>.project`, which the stubs run
+before the kit's checks.
 
 **An org's hooks still run.** Where an org's IT sets `core.hooksPath` at the system or global level,
 `kit-pin to` sets a hooks path for the project's clone alone, on the stubs, and names the org's folder.
 Each stub runs the org's hook for its event first, as git would: by its own path, with the same
 arguments and standard input, from the top of the work tree. Then it runs the kit's checks. Either
-refusing refuses the commit or push. `kit-pin check` refuses an org's hooks path the clone doesn't
-override this way. A hook the project already has in `.git/hooks` is never overwritten: `to` keeps it
-as `<hook>.project`, and the stub runs it after the org's hook and before the kit's checks. One it
-can't run that way (a link, a folder, a file that isn't executable) makes `to` refuse and name it.
-The kept hook is the kit's to run, so it is never skipped: if it later loses its execute bit, the stub
-refuses the commit or push and names it, to restore the bit or remove the file, as with `hook-checks/`.
-An org's hook that isn't executable is skipped, as git skips it, and the kit's checks still run.
+refusing refuses the commit or push. For each other hook the org's folder holds when `to` runs, `to`
+writes a relay (`org-hook`) under its name, which runs the org's hook of that name the same way, then a
+kept `<hook>.project`, reading the org's folder from the line `to` records beside it (`.kit-hooks`).
+Only those get a relay: git starts a process for every hook it finds, so a relay under every name made
+a 60-commit rebase or a 200-ref fetch many times slower. So a hook IT adds later has no relay, and until
+`to` runs again the stub refuses every commit, naming the hook and the commands to run (`git stash`,
+`to`, `git stash pop --index`); it refuses the same way when git reads another org folder than the one
+recorded. A hook IT removes stops running, as under git, and `to` drops its relay. Three are never
+relayed: `push-to-checkout` and `proc-receive` change what git does by being there at all, and git
+finds `fsmonitor-watchman` through `core.fsmonitor`, not by its name; `kit-pin check` names any of the
+org's hooks the clone doesn't run, and refuses an org's hooks path the clone doesn't override this way,
+a relay that isn't the release's, a hook the org's folder holds that has no relay, and a recorded folder
+that isn't the one git reads now (run `to` again for either). A hook the project already has in
+`.git/hooks` is never overwritten: `to` keeps it as `<hook>.project`, and the kit runs it after the
+org's hook and before its checks. One it can't run that way (a link, a folder, a file that isn't
+executable) makes `to` refuse and name it. The kept hook is the kit's to run, so it is never skipped: if
+it later loses its execute bit, the kit refuses and names it, to restore the bit or remove the file, as
+with `hook-checks/`. An org's hook that isn't executable is skipped, as git skips it, and the kit's
+checks still run.
 
 **The two lists differ on purpose.** The local file holds every term. The repository secret holds
 only the terms that aren't confidential themselves: a synthetic canary, machine-path patterns, an
@@ -290,10 +343,10 @@ a fixture that trips four of nine has reproduced the coverage gap it exists to c
 `monitoring-ping-url-uuid`. (Three gitleaks *default* rules fire alongside them, `generic-api-key`,
 `jwt` and `private-key` — expected, `useDefault` is on.)
 
-`tests/hooks_test.sh` makes this check on every run, one case per rule (GR1 to GR9): each rule must
+`tests/hooks_test.sh` makes this check on every run, one case per rule: each rule must
 catch its own block of the fixture, scanned alone, under its own id. A refusal alone proves nothing
 here, since the default rules refuse the whole fixture with no custom rule at all. Further shapes a rule
-must catch have blocks of their own, under `# <rule id>, <note>`, and cases of their own (GR10 on). The
+must catch have blocks of their own, under `# <rule id>, <note>`, and cases of their own. The
 scan above stays as a way to see the findings for yourself.
 
 Run each canary at setup, and again after any change to that layer's pattern, rules, or workflow.
@@ -334,7 +387,7 @@ the files at the pushed tip, not each commit's, so a name added and removed with
 **A project that pushes straight to a public remote runs the history check before each such push**:
 `bin/kit-history-audit --control`, then `bin/kit-history-audit --remote origin` (in the install, beside these
 hooks; "Before a repository goes public", below), which reads every commit reachable from any ref here, the ones
-about to be pushed among them; it has no mode that reads a push's commits alone (decisions log §320). An identity term
+about to be pushed among them; it has no mode that reads a push's commits alone. An identity term
 in an author or committer field, a message, a tag object or a pushed ref's name is refused at push
 (pre-push's metadata layer); in CI it is not read at all. Credential shapes are different: pre-push
 runs gitleaks over the lines every new commit adds, not only the tip, and the binary scan, where it is
@@ -357,9 +410,9 @@ only ASCII letters fold, and a list row holding a letter outside ASCII blocks on
 written in. pre-push matches ref names, tag objects and the file names it reports twice, under `LC_ALL=C`
 and in the saved locale, and a match in either counts. A project's own checks run in the saved locale.
 The binary scan names each binary it refuses or clears, but withholds a path the list matches, and so
-does pre-commit's refusal of a staged `.local/` path (its list from `.git/leak-pattern`; with none, no
+does pre-commit's refusal of a staged `.local/` path (its list from the project's list file; with none, no
 name is listed).
-`tests/install_test.sh`'s LG1 fails a gate that misses the rule, and any matcher its allowlist doesn't
+A lint in `tests/install_test.sh` fails a gate that misses the rule, and any matcher its allowlist doesn't
 name.
 
 ## Before a repository goes public: the full-history identity check
@@ -369,8 +422,8 @@ The layers above read what each push adds; none reads all of history, so a term 
 a file a later commit removed, can sit in a repository that was never refused. Before a repository is
 made public or given a public remote, run `bin/kit-history-audit` (in the install, beside these hooks)
 in it. It reads every commit reachable from any ref, and every one only its reflog still holds, against
-the project's own list in `.git/leak-pattern`, checked against its pin (a list in the environment is
-ignored): author and committer names and emails, messages, the paths each commit touches and the lines
+the project's own list at its place (`~/.config/morrowcairn/lists/<id>`), checked against its pin (a list in the
+environment is ignored): author and committer names and emails, messages, the paths each commit touches and the lines
 it adds (binary files' too, and a merge's against its first parent), every tag object's tagger and
 message, and every ref name, the remote's included (`--remote NAME`, `origin` by default when there is
 one, `none` to skip). Each field is searched by `git grep` and by `grep`, each under `LC_ALL=C` and in
@@ -389,4 +442,4 @@ of the list, none printed, plants one in all ten fields of a throwaway repositor
 commit of its own, and passes only when the audit refuses all ten fields and every row's commit. A row it
 can't make a term from (a back-reference, say) fails the control, named by number. A clean audit is
 evidence only after its control has gone red. `tests/hooks_test.sh`
-holds its cases (HA0 to HA29, HC1 to HC6).
+holds its cases.
