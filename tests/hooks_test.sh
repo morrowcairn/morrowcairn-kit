@@ -310,6 +310,14 @@ l9o=$(cd "$R" && printf 'refs/heads/main %s refs/heads/main %s\n' "$BSHA" "$Z" >
                                                         want_refused "L9 identity: a hit in a file whose name holds invalid UTF-8 beside the marker refuses" $rc "$l9o$l9e" "listed terms"
                                                         no_leak_at   "L9b identity: a block does not print that file name, printed raw (core.quotePath off)" "$l9o" "$l9e"
 git -C "$R" config --unset core.quotePath
+# A block names at most 40 hits and counts the rest, so a tree full of hits can't flood the terminal; it still refuses.
+: > "$R/m41.txt"; for ((i = 1; i <= 41; i++)); do echo "line $i $MARK" >> "$R/m41.txt"; done; commit "$R" m41
+M41=$(git -C "$R" rev-parse HEAD)
+out=$(direct "$HK/pre-push" "$M41"); rc=$?; n=$(printf '%s\n' "$out" | awk '/^  .+:([0-9]+|binary)$/ { c++ } END { print c + 0 }')
+[[ $rc -ne 0 && "$n" == 40 && "$out" == *"more matching lines"* ]]
+                                                        want_ok      "L10 identity: a block with more than 40 hits refuses, names 40 and counts the rest" $? "exit $rc, $n named"
+                                                        no_leak      "L10b identity: that block does not print the matched text" "$out"
+git -C "$R" rm -q m41.txt; commit "$R" m41-gone
 
 # ============================== pre-push, a bounded row's sides =================================
 # A list row bounded on a side keeps a letter there from joining the term into another word, and lets anything
@@ -607,6 +615,20 @@ from_base idt; echo "names $MARK" > "$C/idt.txt"; commit "$C" idt
 out=$(push "idt:refs/heads/idt");              want_refused "P11 identity marker is blocked at push" $? "$out" "listed terms"
 from_base rn; git -C "$C" mv README.md READ.md; commit "$C" rename
 out=$(push "rn:refs/heads/rn");                want_ok "P12 rename-only commit passes unscanned" $? "$out" "none adding text"
+# The credential scan's count: pre-push reads the first "N commits scanned" gitleaks prints and refuses any count but
+# the one it expects, since a partial scan is not a clean one. Stand-in gitleaks binaries first on PATH, never a switch
+# in the hook, each printing its counts and no leaks.
+gsstand() { local d=$1 n; shift; mkdir -p "$d"
+            { printf '#!/bin/sh\n'; for n in "$@"; do printf 'echo "INF %s commits scanned." >&2\n' "$n"; done
+              printf 'echo "INF no leaks found" >&2\nexit 0\n'; } > "$d/gitleaks"; chmod 0755 "$d/gitleaks"; }
+gsstand "$TMP/gl-gs0" 0; gsstand "$TMP/gl-gs01" 0 1; gsstand "$TMP/gl-gs10" 1 0
+from_base gs; echo one > "$C/gs.txt"; commit "$C" gs
+out=$(push "gs:refs/heads/gs" "$TMP/gl-gs0:$PATH"); rc=$?; on_remote refs/heads/gs && rc=0
+                                               want_refused "GS1 pre-push: a credential scan that reports 0 commits where 1 adds text is refused, a partial scan" $rc "$out" "a partial scan is not a clean one"
+out=$(push "gs:refs/heads/gs" "$TMP/gl-gs01:$PATH"); rc=$?; on_remote refs/heads/gs && rc=0
+                                               want_refused "GS1b ... the first count printed decides: 0, then 1, is refused" $rc "$out" "a partial scan is not a clean one"
+out=$(push "gs:refs/heads/gs" "$TMP/gl-gs10:$PATH")
+                                               want_ok      "GS1c control: 1, then 0, goes through, the first count read" $? "$out" "1 of 1 commit(s) adding text scanned, clean"
 # P9: a remote-tracking ref left pointing at a commit the remote no longer has.
 git init -q --bare "$TMP/stale.git"; git -C "$C" remote add s "$TMP/stale.git"
 from_base stale; cp "$FIXTURE" "$C/settings.local.txt"; commit "$C" "stale creds"; CRED=$(git -C "$C" rev-parse HEAD)

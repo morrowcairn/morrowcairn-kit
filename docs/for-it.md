@@ -23,7 +23,8 @@ removing the hook stubs that run it (below).
   home folder and their projects.
 - Claude Code, for the rules and skills; the hooks run without it.
 - Linux or macOS. On macOS, the kit's test suites and its install path passed on a GitHub-hosted macOS runner on this
-  release's code. **Native Windows is not supported**; Windows runs it inside WSL2 (below, **not yet tested**).
+  release's code. **Native Windows is not supported**; Windows runs it inside WSL2 (below: measured on two machines,
+  not yet on one an organization manages).
 
 ## What it writes
 
@@ -39,14 +40,20 @@ Outside a project, every file and folder, with its mode and what writes it:
 | links in Claude Code's folder (`~/.claude/rules/morrowcairn.md`, `~/.claude/skills/gates`, `record-stamps`, `session-close`, `~/.claude/hooks/morrowcairn-reply-file`, `morrowcairn-compaction-log`) | links into the read-only install | `kit-pin user` |
 | `~/.local/state/morrowcairn/load-probe/` | the person's default | the daily load check, only if the person runs it |
 | the file `KIT_LOAD_CHECK_REPORT` names: the daily check's last report | the person's default | the daily load check, only where the person sets that variable |
-| `~/.claude/rules/morrowcairn-local.md`, this machine's settings for the rules file and the two hooks | the person's default | the person, from the kit's example; the kit never writes it |
-| the reply folder that file names (`[reply folder]`): one file per session report, `<project>-<label>-<session>-<NN>.md`, the report's text as the session wrote it, unmasked, so it can hold work content | files 600, never overwritten; the folder 700 where the hook makes it | the reply-file hook (a Claude Code Stop hook), only once the person names it in their own settings |
+| `~/.claude/rules/morrowcairn-local.md`, this machine's settings for the rules file and the two hooks | the person's default | the setup session writes it from the person's answers where the person's answer to the setup's first question lets it, approved at Claude Code's prompt and never over a file that is there; otherwise the person, from the file the setup shows or the kit's example. Someone who runs no relays has none |
+| the reply folder that file names (`[reply folder]`): one file per session report, `<project>-<label>-<session>-<NN>.md`, the report's text as the session wrote it, unmasked, so it can hold work content | files 600, never overwritten; the folder 700 where the hook makes it. On WSL the setup offers `/mnt/c/Users/<the person's Windows user>/claude-replies`, on the Windows side, where a browser attaches files from: WSL keeps no Linux file modes there by default, so that Windows folder's own permissions apply | the reply-file hook (a Claude Code Stop hook), only once the person names it in their own settings |
 | the compaction log that file names (`[compaction log]`): one line per compaction, the time, the session ID and what triggered it | 600; its folder 700 where the hook makes it | the compaction-log hook (a PostCompact hook), the same way |
+| `~/.claude/settings.json`, the person's own Claude Code settings: an entry for each optional hook the person turns on | the file's own | the setup session, only for a hook the person turns on and only where the person's answer to the setup's first question lets it, each edit approved at Claude Code's prompt, keeping what is there; otherwise the person, from the lines the setup gives |
+| `~/.local/bin/gitleaks`, gitleaks' program | executable, as unpacked from its archive | the setup session, only where gitleaks is missing and the person says yes to its download, checked against the sha256 the kit pins, at Claude Code's prompt |
+| `~/.local/share/morrowcairn/load-check/kit-load-check-stub`, a copy of the daily load check's stub, outside the install | as copied | the setup session, only where the person wants the daily load check and the person's answer to the setup's first question lets it, at Claude Code's prompt, never over a file that is there; otherwise the person |
+| the person's crontab: one daily line that runs that copy, with a PATH that finds `claude` | the system's: readable only by the person and root | the setup session, as for the copy; or the person. A ping URL, where the person wants one, goes on a line of its own above that line, as `KIT_LOAD_CHECK_PING=<URL>`, added by the person and never through the session: crontab passes it into the job's environment, which only its owner can read, never onto a command line, which every local user can; it reaches the person's later jobs in that crontab too. The stub hands it to `curl` on its standard input |
 
 For the list's folder, `~` is the home folder the system's user database gives for the person, never the `HOME`
 variable. The user pin and Claude Code's folder follow the usual variables (`XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`)
 where they are set. An install builds in a staging folder beside it, then renames it into place. `kit-pin user`
-changes no Claude Code settings file; the two hooks it links run only once the person names them in their own settings.
+changes no Claude Code settings file; the two hooks it links run only once the person's own settings name them. The
+setup prompt adds them to those settings only where the person asks, each edit approved at Claude Code's own prompt,
+and otherwise gives the person the lines; it never edits a managed settings file.
 
 Inside each project: `kit.pin` and `kit.list-id` (tracked: the release, and a random id that names the project's list,
 which says nothing about the project); two stubs, `.git/hooks/pre-commit` and `pre-push` (755); the list's pin,
@@ -59,7 +66,10 @@ Git settings the kit sets, every one in the project's clone (`git config --local
   sets), whose hooks the relays then run.
 - `user.name` and `user.email`: only when the person turns the identity guard on (its placeholder), then the identity
   they set and read back.
-A new project's `git init` writes git's own defaults; the kit sets no other key.
+A new project's `git init` writes git's own defaults; the kit sets no other key. One step of the setup prompt, not the
+kit's code, may set a key at user scope: where git resolves no `user.name` or `user.email` at all, the setup asks the
+person for them and sets them with `git config --global`, or shows the commands, as the person answered its first
+question; it never changes an identity git already resolves, which IT may have set.
 
 The rules file has each Claude Code session keep records of its work: a handoff file where the project keeps its
 handoffs (asking the project's owner first if that is a tracked repository an organization owns), the project's
@@ -93,6 +103,9 @@ folder for the project, and, only where `morrowcairn-local.md` names them, one l
   doesn't list, it says only how many. The report on the machine keeps the details.
 - CI, if a project copies the kit's workflow files: GitHub-hosted runners, and a gitleaks download from github.com
   checked against its sha256.
+- The setup prompt, only where the person accepts its offer to fetch a missing gitleaks: one download of the release
+  archive from github.com, checked against the sha256 the kit pins in `ci/gitleaks.yml` before it is unpacked. The
+  person decides; on a no, the setup says what to install and where to get it, and waits.
 Nothing else in the kit's code opens a network connection. gitleaks scans locally (**not yet tested** here: it is
 gitleaks' own behaviour).
 
@@ -132,9 +145,11 @@ IT hook the clone doesn't relay.
   identity in the project's clone; every commit is then refused until a real identity is set and read back.
 - **The binary-file check.** To turn it on: commit a `kit.binaries` file holding `scan=on`.
 - **The two Claude Code hooks** (a file per session report; a compaction log). To turn them on: name them in the
-  person's Claude Code settings, with their folders in `~/.claude/rules/morrowcairn-local.md`.
+  person's Claude Code settings, with their folders in `~/.claude/rules/morrowcairn-local.md`. The setup prompt offers
+  to add them, and does only where the person asks.
 - **The daily load check.** To turn it on: copy the install's `bin/kit-load-check-stub` to a folder of the person's
-  own, outside the install, and schedule that copy to run once a day (the setup prompt shows the line).
+  own, outside the install, and schedule that copy to run once a day (the setup prompt offers to set it up, with the
+  person's approval, or shows the line).
 - **CI.** To turn it on: copy the kit's `ci/` workflow files into the project and set its repository secret.
 
 ## How to turn it off, or remove it
@@ -163,7 +178,8 @@ IT hook the clone doesn't relay.
   copy only where the project holds one.
 - **The user level:** where the person turned the two Claude Code hooks on, first remove their entries in the person's
   Claude Code settings, and the reply files and compaction log that `~/.claude/rules/morrowcairn-local.md` names. Then,
-  in every case, remove `morrowcairn-local.md` itself (the setup prompt has every person copy it in), the links in
+  in every case, remove `morrowcairn-local.md` itself where there is one (the setup prompt writes it for someone who
+  runs relays), the links in
   `~/.claude` named above, and `~/.config/morrowcairn/user.pin`.
 - **The daily load check:** remove its scheduled line and the copy of `bin/kit-load-check-stub` that line runs, from
   the person's own folder; then `~/.local/state/morrowcairn/` and the report file `KIT_LOAD_CHECK_REPORT` names.
@@ -174,15 +190,26 @@ IT hook the clone doesn't relay.
 
 ## On Windows: WSL2
 
-**Not yet tested**: a rehearsal on a Windows machine under WSL2 is planned before this release's first use at work.
+**Measured on two Windows machines under WSL2**, on v0.12.0's code (v0.12.1 changes pre-push, a gate, in how it writes
+two counts, not in what it refuses; the load check's stub; the reply-file hook; the three test suites an install
+carries; the deploy pattern; and the documents): a laptop with Ubuntu 24.04, where v0.12.0's setup prompt ran and the
+two Claude Code hooks passed a live test; and a fresh desktop with Ubuntu 26.04 (uutils coreutils by default, git 2.53,
+Python 3.14), where a draft of this release's setup prompt ran end to end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential, a
+listed term) refused as designed; on the Linux side file modes and LF line endings were kept. On the Windows side
+(`/mnt/c`), every file showed mode 777, `chmod` had no effect, and commits and pushes ran 3 to 5 times slower; line
+endings stayed LF. **Not yet measured:** a machine an organization manages, with IT's settings in force.
 - Install WSL2 (not WSL1) and a Linux distribution; inside it, the tools above and Claude Code.
-- Keep projects in WSL's own file system, under the Linux home, not under `/mnt/c`.
+- Keep projects in WSL's own file system, under the Linux home, not under `/mnt/c`. The setup keeps code, projects,
+  the kit's clone and its install there; its one default on the Windows side, for someone who runs relays, is the
+  reply folder (`/mnt/c/Users/<the person's Windows user>/claude-replies`), so a browser can attach its files.
+- The daily load check runs only while WSL is running: a day WSL isn't started goes unchecked.
 - Use WSL's git on those projects, never Git for Windows on the same repository.
 - The list then lives in the Linux home's `~/.config/morrowcairn/lists/`, inside the distribution.
 - Inside WSL, Claude Code reads the Linux managed-settings location, unless the organization's Windows policy turns on
   `wslInheritsWindowsSettings` or it uses server-managed settings: check that the policy reaches WSL.
-- The rehearsal has to confirm: the kit's test suites pass there; a project made there commits and pushes through its
-  hooks; the home folder the kit reads is WSL's; and the projects' file modes and line endings survive.
+- The two runs above confirmed the test suites, commits and pushes through the hooks, and file modes and line endings
+  on the Linux side. *Inferred, not checked on its own:* the home folder the kit reads is WSL's, since the listed-term
+  refusal worked from the list at its place.
 
 ## Open questions for IT
 

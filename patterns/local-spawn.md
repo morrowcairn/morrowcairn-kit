@@ -89,7 +89,9 @@ accept, so a new project starts with neither of these; the block says so as it e
   `"$INST/bin/kit-pin" check`) passes, saying the do-not-publish check is off; every push says so too and still scans for
   credentials. Ask once, now: **will this project hold terms you've agreed or are required to keep confidential?**
   Nothing reminds the project later. *Yes:* put the list in place of the line, then repin it, citing the § of the
-  project's decisions log that records the decision (a change other than an append takes one). The write below refuses
+  project's decisions log that records the decision (a change other than an append takes one). Write that record
+  without naming any listed term: say how many terms the list holds and why, since pre-push refuses a push that carries
+  a listed term, the decisions log's included. The write below refuses
   unless the file at the list's place holds that line alone, and only then replaces it, in one step, through a file
   beside it:
   ```sh

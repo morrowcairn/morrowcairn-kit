@@ -223,6 +223,11 @@ cp -p "${lsf:?}" "$E/np-line.aside" 2>/dev/null; (umask 077 && printf "LEAK_PATT
 lssum=$(cksum < "$lsf"); printf '%s\n' "$lscmd" | (cd "$SN" && HOME="$TH" bash) >/dev/null 2>&1; lsrc=$?
 [[ -n "$lscmd" && $lsrc -ne 0 && "$(cksum < "$lsf")" == "$lssum" ]]
                                                want_ok "NP6 local-spawn's step for adding a list refuses a list already at its place, leaving it unchanged" $? "exit $lsrc: ${lscmd:-no command found}"
+# The decision a list records is written without naming any listed term: a record that names one is refused at the
+# next push, the decisions log included (measured on a fresh machine's run).
+lsp=$(tr -s ' \n' '  ' < "$ROOT/patterns/local-spawn.md" 2>/dev/null)
+[[ "$lsp" == *"without naming any listed term"* && "$lsp" == *"how many terms the list holds"* ]]
+                                               want_ok "NP7 local-spawn says to record the list's decision without naming any listed term" $? ""
 cp -p "$E/np-line.aside" "${lsf:?}" 2>/dev/null; rm -f "${lsf:?}.new"
 printf '%s\n' "$lscmd" | (cd "$SN" && HOME="$TH" bash) >/dev/null 2>&1; lsrc=$?
 [[ $lsrc -eq 0 && "$(cat "$lsf")" == "LEAK_PATTERN='term1|term2'" && ! -e "$lsf.new" ]]
@@ -630,6 +635,17 @@ J9=$(rsec 9)
                                                want_ok "R14 a session may recommend rotation with no compaction" $? ""
 [[ "$(rsec 11)" == *"This covers items already dated, not only new ones."* ]]
                                                want_ok "R15 no artificial delays covers items already dated" $? ""
+# Someone who runs no relays is told to follow only what fits them: the preamble says a session that has received no
+# relay skips §2 to §4, §10 and §1's numbering of direct messages; §1's direct messages, §3, §4 and §10 each say they
+# apply once a session has received a relay; and the explainer gives the reason.
+rpre=$(awk '/^## 1\. / {exit} {print}' "$RF" 2>/dev/null | tr -s '[:space:]' ' ')
+rapp='This section applies once a session has received a relay.'
+[[ "$rpre" == *"An owner may work with Claude Code sessions"* \
+   && "$rpre" == *"A session that has received no relay follows all of this file but §2 to §4, §10 and §1's numbering of direct messages, which are for relays."* \
+   && "$(rsec 1)" == *"Once a session has received a relay, the owner can still instruct it directly"* \
+   && "$(rsec 3)" == " $rapp"* && "$(rsec 4)" == " $rapp"* && "$(rsec 10)" == " $rapp"* ]] \
+  && grep -qF 'received no relay' "$RX" 2>/dev/null
+                                               want_ok "R16 a session that has received no relay skips the relay sections, each saying so, and the explainer says why" $? ""
 
 # ============================== record templates ================================================
 grep -q 'Contradicts if true' "$ROOT/records/decisions_log.md" 2>/dev/null
@@ -687,8 +703,9 @@ SPF="$ROOT/docs/setup-prompt.md"
 { [[ -n "$sprel" && -n "$spurl" && -f "$SPF" ]] && grep -qF "git clone $spurl " "$SPF" && grep -qF "checkout $sprel" "$SPF" \
   && grep -qF "tools/install-release.sh $sprel" "$SPF" && grep -qF "releases/$sprel/bin/kit-pin user $sprel" "$SPF" \
   && ! grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$SPF" | grep -qvxF "$sprel" \
-  && grep -qF 'Never edit a settings file' "$SPF" && grep -qF 'docs/for-it.md' "$SPF"; } 2>/dev/null
-                                               want_ok "SP1 the setup prompt installs the README's release from its address, edits no settings file and names the IT document" $? "release ${sprel:-none found}, address ${spurl:-none found}"
+  && grep -qF 'Never edit a managed settings file' "$SPF" && grep -qF 'never write over a file that is already there' "$SPF" \
+  && ! grep -qF 'Never edit a settings file' "$SPF" && grep -qF 'docs/for-it.md' "$SPF"; } 2>/dev/null
+                                               want_ok "SP1 the setup prompt installs the README's release from its address, edits no managed settings and no file already there, and names the IT document" $? "release ${sprel:-none found}, address ${spurl:-none found}"
 # It finds the organization's settings by reading them, not by asking a person who may not know: /status's Setting
 # sources line, the managed files on Linux and WSL, and a remote policy, which only IT can show.
 { grep -qF '/status' "$SPF" && grep -qF 'Setting sources' "$SPF" && grep -qF '/etc/claude-code/managed-settings.json' "$SPF" \
@@ -707,13 +724,15 @@ sp8=$(awk '/^8\. / {p=1} /^9\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
    && "$sp8" != *"don't offer it"* ]]
                                                want_ok "SP4 under a lock on skills the setup prompt still offers the daily load check, saying it checks the rules file only" $? "${sp8:0:200}"
 # Step 5's kit-pin writes into Claude Code's own folder, which Claude Code's sandbox, where it is on, keeps a session's
-# commands out of (measured: the rules, skills and hooks folders): the person runs it in their own terminal and the
-# session reads back what it printed. Step 6's copy lands in the same folder, so the person runs it there too.
+# commands out of (measured: the rules, skills and hooks folders). So the session runs it, and where the sandbox blocks
+# it, retries it outside the sandbox, which Claude Code asks the person to approve ("Bash command (unsandboxed)", in its
+# sandboxing documentation); only where unsandboxed commands are turned off (allowUnsandboxedCommands set false, by IT,
+# say) does it hand the person the command, saying why, to type after ! or in a terminal; it reads back what it printed.
 sp5=$(awk '/^5\. / {p=1} /^6\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
-sp6=$(awk '/^6\. / {p=1} /^7\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
-[[ "$sp5" == *"in my own terminal, outside Claude Code"* && "$sp5" == *"sandbox"* && "$sp5" == *"what it printed"* \
-   && "$sp6" == *"in my own terminal"* ]]
-                                               want_ok "SP5 the person runs step 5's kit-pin and step 6's copy in their own terminal, the prompt saying why" $? "${sp5:0:200}"
+[[ "$sp5" == *"Run it yourself"* && "$sp5" == *"Bash command (unsandboxed)"* && "$sp5" == *"allowUnsandboxedCommands"* \
+   && "$sp5" == *"saying why"* && "$sp5" == *"after !"* && "$sp5" == *"what it printed"* \
+   && "$sp5" != *"I run it myself, in my own terminal"* ]]
+                                               want_ok "SP5 step 5's kit-pin is run by the session, outside the sandbox at Claude Code's prompt where needed, and handed over only where that is off, saying why" $? "${sp5:0:200}"
 # A refusal is reported when it happens. Only a plain read that needs no review is rerun in a plain form, and saying so;
 # once a check refuses a command, anything that writes, deletes or sends waits for the person, in any form. The wait
 # follows a refusal only: a model read it as every step and asked before the clone and the install.
@@ -727,25 +746,207 @@ sph=$(awk '/^```text$/ {p=1; next} /^1\. / {p=0} p' "$SPF" 2>/dev/null | tr -s '
 # rather than reports, stopping at the first tool missing or too old: asked twice to repeat the versions before step 2,
 # a model let the commands' own output stand. Step 10's summary lists them.
 sp1=$(awk '/^1\. / {p=1} /^2\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
-sp10=$(awk '/^10\. / {p=1} /^```$/ {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+sp10=$(awk '/^12\. / {p=1} /^```$/ {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$sp1" == *"git --version"* && "$sp1" == *"gitleaks version"* && "$sp1" == *"python3 --version"* \
    && "$sp1" == *"sha256sum --version"* && "$sp1" == *"shasum --version"* && "$sp1" == *"no loop and no variable"* \
    && "$sp1" == *"Stop at the first tool that is missing or too old"* && "$sp1" != *"before going on to step 2"* \
    && "$sp1" != *"Report each one's version"* ]]
                                                want_ok "SP7 step 1 checks each tool with its own version command, one per tool, with no loop and no variable, stopping at the first missing or too old" $? "${sp1:0:200}"
 [[ "$sp10" == *"summary: the versions step 1 found,"* ]]
-                                               want_ok "SP9 step 10's summary lists the versions step 1 found" $? "${sp10:0:200}"
-# The opening says the person runs the one command that links the session rules (step 5 has them do it), and step 1
-# names the gitleaks the kit is tested with, since only git's minimum is stated and an older gitleaks lacks a command.
+                                               want_ok "SP9 the last step's summary lists the versions step 1 found" $? "${sp10:0:200}"
+# The opening says Claude Code leads: the session does each step it may, with the person's approval at Claude Code's
+# own prompts, and hands over a command only where it can't, saying why; and step 1 names the gitleaks the kit is tested
+# with, since only git's minimum is stated and an older gitleaks lacks a command.
 spo=$(awk '/^```text$/ {exit} {print}' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
-[[ "$spo" == *"shows you the one command that links the session rules at your user level, which you run in your own terminal"* \
-   && "$spo" != *"and links the session rules at your user level"* && "$sp1" == *"gitleaks on PATH (the kit is tested with 8.30.1)"* ]]
-                                               want_ok "SP10 the opening has the person run the command that links the session rules; step 1 names the gitleaks tested" $? "${spo:0:200}"
+[[ "$spo" == *"Claude Code leads"* && "$spo" == *"your approval at Claude Code's own prompts"* \
+   && "$spo" == *"only where it can't, saying why"* && "$spo" != *"which you run in your own terminal"* \
+   && "$sp1" == *"gitleaks on PATH (the kit is tested with 8.30.1)"* ]]
+                                               want_ok "SP10 the opening says Claude Code leads, each step done with the person's approval, a command handed over only where it can't; step 1 names the gitleaks tested" $? "${spo:0:200}"
 # Step 4 reports the install's last lines as printed, without explaining them: a model explained the hook suite's skips
 # wrongly from a comment.
 sp4=$(awk '/^4\. / {p=1} /^5\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$sp4" == *"last lines as it printed them, without explaining them"* ]]
                                                want_ok "SP8 step 4 reports the install's last lines as printed, without explaining them" $? "${sp4:0:200}"
+# The guided setup (v0.12.1): a person who doesn't know the kit's author's way of working was lost at the settings file
+# and the last questions. Claude Code asks one plain question at a time, each saying what it's for and what skipping it
+# means, with a default to accept; it keeps everything in the Linux home on WSL; it fetches a missing gitleaks only
+# against the sha256 the kit pins; the relay settings and hooks only after a yes to relays; it writes the settings file
+# itself, never over one; it offers to add each hook to the person's settings or to give the lines; it offers to set up
+# the daily check; and, for relays, it prints the chat's half for a claude.ai Project, as it is.
+sph2=$(awk '/^```text$/ {p=1; next} /^1\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sph2" == *"one question at a time"* && "$sph2" == *"what it's for and what skipping it means"* \
+   && "$sph2" == *"'ok' takes it, 'skip' skips it"* && "$sph2" == *"only when you truly can't, saying why"* ]]
+                                               want_ok "SP11 the prompt asks one plain question at a time, saying what each is for and what skipping means, with a default; a command only when the session can't" $? "${sph2:0:200}"
+sp3=$(awk '/^3\. / {p=1} /^4\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp3" == *"WSL"* && "$sp3" == *"/mnt/c"* && "$sp3" == *"Linux home"* && "$sp3" == *"Windows tools can change their line endings"* \
+   && "$sp3" != *"lose their Linux permissions and line endings"* \
+   && "$sp3" == *"Windows side"* && "$sp3" == *"~/morrowcairn-kit"* ]] && grep -qF '~/projects/<name>' "$SPF"
+                                               want_ok "SP12 step 3 keeps everything in the Linux home on WSL, never /mnt/c, says why, warns at a Windows-side start, and gives the folders' defaults" $? "${sp3:0:200}"
+# The person decides on the download, plainly, with no question about IT's approval: the setup asks for none anywhere
+# (the owner's ruling against an IT-approval step); on a no it says what to install and where, and waits.
+[[ "$sp4" == *"May I download gitleaks"* && "$sp4" == *"ci/gitleaks.yml"* && "$sp4" == *"sha256"* \
+   && "$sp4" == *"what to install and where to get it"* && "$sp4" == *"wait until I say it's there"* \
+   && "$sp4" != *"IT"* && "$sp1" == *"unless it is gitleaks"* ]] \
+  && ! grep -qE 'IT (lets|allows|approves) |whether (my |your )?IT (lets|allows)' "$SPF" "$ROOT/docs/for-it.md" "$ROOT/CHANGELOG.md"
+                                               want_ok "SP13 a missing gitleaks is downloaded only if the person says so, checked against the sha256 the kit pins; on a no, what to install and where; no IT-approval question anywhere" $? "${sp4:0:200}"
+sp6=$(awk '/^6\. / {p=1} /^7\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp6" == *"Will you run work through relays"* && "$sp6" == *"If I say no, write no settings file"* \
+   && "$sp6" == *"[owner phrase]"* && "$sp6" == *"[reply folder]"* && "$sp6" == *"[relay log]"* && "$sp6" == *"[owner's queue]"* \
+   && "$sp6" == *"[compaction log]"* && "$sp6" == *"morrowcairn-local.md"* && "$sp6" == *"never over a file that is already there"* \
+   && "$sp6" != *"in my own terminal"* ]]
+                                               want_ok "SP14 the relay settings come only after a yes to relays, and the session writes the settings file itself, never over one" $? "${sp6:0:200}"
+sp7=$(awk '/^7\. / {p=1} /^8\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp7" == *"add it to my user settings yourself"* && "$sp7" == *"give me the lines to paste"* \
+   && "$sp7" == *"my answer at the start"* && "$sp7" != *"I choose"* && "$sp7" == *"Under a lock on hooks"* && "$sp7" == *"/hooks"* ]]
+                                               want_ok "SP15 each optional hook follows the person's answer at the start: added to their settings by the session, or the lines given; skipped under a lock on hooks" $? "${sp7:0:200}"
+[[ "$sp8" == *"set it up yourself"* && "$sp8" == *"my answer at the start"* && "$sp8" == *"crontab"* \
+   && "$sp8" == *"whether a scheduler is running"* ]]
+                                               want_ok "SP16 the daily check follows the person's answer at the start: set up by the session, with approval, a scheduler checked first, or each change shown" $? "${sp8:0:200}"
+# The person's comfort, asked once (the owner's direction after his second rehearsal): before step 1, one question, the
+# session doing every step itself, Claude Code's settings and the crontab included, or showing each change, its default
+# "do it for me"; the session then drives the whole setup through its last step, the person reading nothing.
+sph3=$(awk '/^```text$/ {p=1; next} /^1\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sph3" == *"Before step 1, ask me once"* && "$sph3" == *"Claude Code's settings, the kit's settings file and your crontab included"* \
+   && "$sph3" == *"[do it for me]"* && "$sph3" == *"every later step follows that answer"* \
+   && "$sph3" == *"Drive the whole setup"* && "$sph3" == *"without waiting for me to ask"* ]]
+                                               want_ok "SP20 the prompt asks the person's comfort once, before step 1, defaulting to doing it all, and drives the setup through its last step" $? "${sph3:0:200}"
+# A last step checks it works, the session doing it: the daily check as cron runs it; for relay users, a test relay with
+# the session's own ID and a Claude Code color for the reply-file hook, and /compact for the compaction log.
+sp11=$(awk '/^11\. / {p=1} /^12\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp11" == *"Check that it works"* && "$sp11" == *"the way cron runs it"* && "$sp11" == *"test relay"* \
+   && "$sp11" == *"CLAUDE_CODE_SESSION_ID"* && "$sp11" == *"/color"* && "$sp11" == *"/compact"* \
+   && "$sp11" == *"each result plainly"* ]]
+                                               want_ok "SP21 a last step checks it works: the daily check as cron runs it, a test relay for the reply-file hook, /compact for the compaction log" $? "${sp11:0:200}"
+# On WSL the reply folder alone sits on the Windows side, where a browser attaches its files; code, projects, the clone
+# and the install stay in the Linux home; and the daily check runs only while WSL is running.
+[[ "$sp3" == *"code, projects, the kit's clone and its install"* && "$sp6" == *"/mnt/c/Users/"* \
+   && "$sp6" == *"where a browser attaches files from"* && "$sp8" == *"runs only while WSL is running"* ]]
+                                               want_ok "SP22 on WSL, the reply folder's default on the Windows side, the rest in the Linux home, and the daily check only while WSL runs" $? "${sp6:0:200}"
+# A copy handed over or made tests whether its destination is there first: cp -n warns on GNU coreutils 9.4 and acts
+# differently on a Mac.
+grep -qF '[ -e DEST ] && echo "already there: DEST" || cp SRC DEST' "$SPF" && grep -qF 'coreutils 9.4' "$SPF" \
+  && ! grep -qE 'cp -n|--no-clobber' "$SPF"
+                                               want_ok "SP23 the setup's copies test whether the destination is there first, never cp -n" $? ""
+sp10c=$(awk '/^10\. / {p=1} /^11\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp10c" == *"only if I said I'll run work through relays"* && "$sp10c" == *"docs/drafting-chat-instructions.md"* \
+   && "$sp10c" == *"as it is"* && "$sp10c" == *"Set project instructions"* ]]
+                                               want_ok "SP17 for relay users only, the chat's half is printed as it is, a claude.ai Project the alternative" $? "${sp10c:0:200}"
+# The block goes into the account's instructions by default, its first line turning it on only where the person says
+# they're working with the kit (the owner's relays come from many projects at once), with no lane question; a Project
+# is the alternative. The scope line is the printed header's, not the chat document's.
+[[ "$sp10c" == *"Use what follows only in a chat where I say we're working with the Morrowcairn kit"* \
+   && "$sp10c" == *"Instructions"* && "$sp10c" == *"Your Claude"* && "$sp10c" != *"lane ["* \
+   && "$sp10c" != *"what to call that chat's lane"* ]] && ! grep -qF "working with the Morrowcairn kit" "$ROOT/docs/drafting-chat-instructions.md"
+                                               want_ok "SP24 step 10's block goes into the account's instructions, its first line turning it on only where the person says they use the kit; no lane question" $? "${sp10c:0:200}"
+# The owner phrase is how a session tells the person's own instructions from pasted text, so it is kept exactly, each
+# alternative listed exactly; a run once added "or a close variation".
+[[ "$sp6" == *"so they must be exact"* && "$sp6" == *"Record my words exactly as I type them"* \
+   && "$sp6" == *"never add \"or a close variation\""* ]]
+                                               want_ok "SP25 the owner phrase is recorded exactly, each alternative exactly, never widened" $? "${sp6:0:200}"
+# A fresh machine had no git identity, so a first commit failed: the setup checks, asks for one only where git resolves
+# none, says a public host shows the email and offers its no-reply address, and never changes one already set (IT may
+# have set it).
+sp9=$(awk '/^9\. / {p=1} /^10\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp9" == *"git config user.email"* && "$sp9" == *"no-reply"* && "$sp9" == *"a public host"* \
+   && "$sp9" == *"Never change an identity git already resolves"* && "$sp9" == *"my first commit will ask"* ]]
+                                               want_ok "SP26 before new projects, a git identity only where git resolves none, its email's visibility said, a no-reply offered" $? "${sp9:0:200}"
+# Step 9 says in one plain clause what the do-not-publish list does, so a session has the words: it stops a push that
+# carries one of its terms (pre-push), and stops no one writing or committing them locally (pre-commit reads the list
+# only to withhold names).
+[[ "$sp9" == *"stops a push that carries one of its terms"* && "$sp9" == *"doesn't stop anyone writing or committing them locally"* ]]
+                                               want_ok "SP27 step 9 says what the do-not-publish list does: it stops a push carrying a term, not writing or committing one" $? "${sp9:0:200}"
+# Claude Code's sandbox, where it is on, may refuse step 9's git config --global (it writes ~/.gitconfig) and fail step
+# 11's run of the daily check for its own reasons: each retries outside the sandbox at Claude Code's prompt, as step 5
+# does, following the person's answer at the start, and step 11 says which run gave which result.
+[[ "$sp9" == *"outside the sandbox"* && "$sp9" == *"Bash command (unsandboxed)"* && "$sp9" == *"~/.gitconfig"* \
+   && "$sp11" == *"outside the sandbox"* && "$sp11" == *"Bash command (unsandboxed)"* && "$sp11" == *"which run gave which result"* ]]
+                                               want_ok "SP28 steps 9 and 11 retry a sandbox refusal outside the sandbox at Claude Code's prompt, as step 5 does, by the person's answer" $? "${sp9:0:120} / ${sp11:0:120}"
+# Step 5's kit-pin user writes into Claude Code's own folder, so it follows the person's answer at the start too: on
+# "show me" the person gets the command.
+[[ "$sp5" == *"Follow my answer at the start"* && "$sp5" == *"If I said show me, hand me the command"* ]]
+                                               want_ok "SP29 step 5 follows the person's answer at the start: on show me, the session hands over kit-pin user's command" $? "${sp5:0:200}"
+# The documents agree with it: the README's setup paragraph, its CI secret lines, the IT document, the local example and
+# v0.12.1's CHANGELOG entry.
+rmi=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$rmi" == *"with your approval at Claude Code's own prompts"* && "$rmi" == *"Claude Code settings only when you say so"* \
+   && "$rmi" != *"editing no settings file itself"* ]]
+                                               want_ok "RM11 the README's setup paragraph says the session does each step with approval and edits Claude Code's settings only when asked" $? "${rmi:0:200}"
+grep -qF 'reads a repository secret named `LEAK_PATTERN`, which you set' "$ROOT/README.md" && grep -qF 'no kit step sets it' "$ROOT/README.md" \
+  && ! grep -qF 'which the setup fills' "$ROOT/README.md"
+                                               want_ok "RM12 the README says the person sets CI's LEAK_PATTERN secret, and no kit step does" $? ""
+FIT="$ROOT/docs/for-it.md"
+grep -qF 'the setup session writes it from the person' "$FIT" && ! grep -qF 'the kit never writes it' "$FIT" \
+  && grep -qF 'only where the person asks' "$FIT" && ! grep -qF 'has every person copy it in' "$FIT"
+                                               want_ok "FI1 the IT document says the setup writes the local settings, and Claude Code's settings only where the person asks" $? ""
+grep -qF 'a missing gitleaks' "$FIT" && grep -qF 'against the sha256 the kit pins' "$FIT"
+                                               want_ok "FI2 the IT document names the setup's one download, a missing gitleaks, checked against the sha256 the kit pins" $? ""
+grep -qF 'The setup prompt writes this file from your answers' "$ROOT/rules/morrowcairn-local.example.md"
+                                               want_ok "LX1 the local example says the setup writes it from the person's answers" $? ""
+# As the setup's step 6 does it: itself, at Claude Code's prompt, for someone who asked it to do the steps, or by a
+# copy command handed over, for someone who asked to be shown each change.
+lx2=$(tr -s ' \n' '  ' < "$ROOT/rules/morrowcairn-local.example.md")
+[[ "$lx2" == *"if you asked it to do the setup's steps for you"* && "$lx2" == *"handing you one command that copies it there"* \
+   && "$lx2" != *"with Claude Code's approval prompt"* ]]
+                                               want_ok "LX2 the local example says the setup writes it itself or hands over a copy command, as the person answered" $? "${lx2:0:200}"
+c121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$c121" == *"v0.12.1 is another, a patch"* && "$c121" == *"one question at a time"* && "$c121" == *"patterns/practices.md"* \
+   && "$c121" == *"sets the CI secret"* && "$c121" == *"v0.12.0's stub put it on curl's command line"* \
+   && "$c121" == *"asks you once"* && "$c121" == *"checks that it works"* ]]
+                                               want_ok "CL5 v0.12.1's entry names the guided setup, says v0.12.0 added patterns/practices.md, and the person sets CI's secret" $? "${c121:0:200}"
+# gitleaks put in ~/.local/bin is found by the install that follows, whose own hook suite needs it on PATH, and the
+# person learns whether new terminals will find it (Ubuntu's login profile adds that folder when it exists; macOS's
+# default PATH has none in the home). The daily check's ping link reaches the stub only through its environment, so the
+# person adds it to the scheduled line themselves, never through the conversation, and the line is then a private one.
+[[ "$sp4" == *"with ~/.local/bin at the front of PATH"* && "$sp4" == *"whether my new terminals will find gitleaks"* \
+   && "$sp4" == *"~/.profile"* ]]
+                                               want_ok "SP18 step 4 runs the install with ~/.local/bin on PATH and says whether new terminals will find gitleaks" $? "${sp4:0:200}"
+# A job's command line is readable by every local user while it runs, its environment by its owner alone; so the link
+# goes on a crontab line of its own, above the check's, which crontab(5) makes part of the environment of the jobs after it.
+[[ "$sp8" == *"KIT_LOAD_CHECK_PING=<my URL> on a line of its own"* && "$sp8" == *"above the check's line"* \
+   && "$sp8" == *"never at the start of the check's line"* && "$sp8" == *"reaches any later job"* \
+   && "$sp8" == *"a link to keep private"* && "$sp8" == *"I add it myself"* && "$sp8" != *"at the start of that line"* ]] \
+  && grep -E '^\| the person.s crontab' "$FIT" 2>/dev/null | grep -qF 'on a line of its own above that line'
+                                               want_ok "SP19 step 8's ping link goes on a crontab line of its own above the check's, added by the person, never in the job's line; the IT document's row says so" $? "${sp8:0:200}"
+rmi3=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$rmi3" == *"asks you once whether it should do every step itself"* && "$rmi3" == *"checks that it works"* ]]
+                                               want_ok "RM14 the README's setup paragraph says the setup asks once how much it may do, then drives to a check that it works" $? "${rmi3:0:200}"
+fit4=$(grep -E '^\| ' "$FIT" 2>/dev/null)
+[[ "$fit4" == *"the person's answer to the setup's first question"* ]] && grep -qF '/mnt/c/Users/' "$FIT" 2>/dev/null
+                                               want_ok "FI4 the IT document says the setup's writes follow the person's answer to its first question, and where the reply folder sits on WSL" $? ""
+# WSL2 as measured, not "not yet tested": two Windows machines, Ubuntu 24.04 and 26.04 under WSL2; the setup end to end;
+# the five suites green on 26.04 with uutils; the Windows side's costs; an organization-managed machine not measured.
+wsr=$(tr -s ' \n' '  ' < "$ROOT/README.md"); wsi=$(tr -s ' \n' '  ' < "$FIT"); wsc=$(tr -s ' \n' '  ' < "$ROOT/CLAUDE.md")
+wsl121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$wsr" != *"where it hasn't yet run"* && "$wsr" == *"Ubuntu 24.04 and 26.04"* && "$wsr" == *"3 to 5 times slower"* \
+   && "$wsr" == *"an organization manages"* && "$wsi" != *"**Not yet tested**: a rehearsal"* && "$wsi" != *"(below, **not yet tested**)"* \
+   && "$wsi" == *"uutils"* && "$wsi" == *"3 to 5 times slower"* && "$wsi" == *"Ubuntu 26.04"* && "$wsc" == *"Windows, inside WSL2"* \
+   && "$wsc" == *"Ubuntu 26.04"* && "$wsl121" == *"WSL2"* && "$wsl121" == *"3 to 5 times slower"* ]]
+                                               want_ok "WS1 README, the IT document, CLAUDE.md and v0.12.1's entry give WSL2 as measured on two machines, its costs, and what isn't measured" $? ""
+# Which setup ran where: v0.12.0's setup prompt on the 24.04 laptop, a draft of this release's on the 26.04 desktop, both
+# installing v0.12.0's code; "the setup ran end to end" alone read as this release's.
+[[ "$wsr" == *"v0.12.0's setup prompt on the 24.04 laptop"* && "$wsr" == *"a draft of this release's on the 26.04 desktop"* \
+   && "$wsr" == *"both installing v0.12.0's code"* && "$wsl121" == *"where v0.12.0's setup prompt ran"* \
+   && "$wsl121" == *"where a draft of this release's setup prompt ran end to end"* && "$wsl121" == *"both installing v0.12.0's code"* \
+   && "$wsi" == *"where v0.12.0's setup prompt ran"* && "$wsi" == *"where a draft of this release's setup prompt ran end to end"* ]]
+                                               want_ok "WS2 README, the IT document and v0.12.1's entry say which setup prompt ran on which machine, both installing v0.12.0's code" $? ""
+# What v0.12.1 changes beyond the documents, as the IT document says it: pre-push (a gate, in how it writes two counts),
+# the load check's stub, the reply-file hook, the three test suites an install carries, and the deploy pattern.
+[[ "$wsi" != *"changes only the load check's stub"* && "$wsi" == *"v0.12.1 changes pre-push, a gate"* \
+   && "$wsi" == *"the load check's stub"* && "$wsi" == *"the reply-file hook"* \
+   && "$wsi" == *"the three test suites an install carries"* && "$wsi" == *"the deploy pattern"* ]]
+                                               want_ok "FI5 the IT document says what v0.12.1 changes: pre-push, the stub, the reply-file hook, three suites, the deploy pattern, the documents" $? ""
+# v0.12.1's entry names the two code changes this relay adds: the reply-file hook matching a path line whole when the
+# reply folder's path holds a space, and the deploy pattern's headroom line, which GNU df refused.
+[[ "$wsl121" == *"the reply-file hook"* && "$wsl121" == *"a space"* && "$wsl121" == *"options -P and --output are mutually exclusive"* \
+   && "$wsl121" == *"df -Pk"* ]]
+                                               want_ok "CL6 v0.12.1's entry names the reply-file hook's path match with a space and the deploy pattern's df line" $? "${wsl121:0:200}"
+rmi2=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$rmi2" == *"If you say you'll run work through relays, it writes the kit's settings file"* ]]
+                                               want_ok "RM13 the README's setup paragraph writes the settings file only for someone who says they'll run relays" $? "${rmi2:0:200}"
+fit=$(grep -E '^\| ' "$FIT" 2>/dev/null)
+[[ "$fit" == *'`~/.local/bin/gitleaks`'* && "$fit" == *'load-check/kit-load-check-stub'* && "$fit" == *'crontab'* \
+   && "$fit" == *'`~/.claude/settings.json`'* ]]
+                                               want_ok "FI3 the IT document's file table names what the setup writes at the person's say: gitleaks, the stub's copy, the crontab line, the hooks' entries" $? ""
 # M1 in an install: an install has no git history of its own, so its skip says where M1 runs instead; "rerun after
 # commit one" is for a project. The block is hooks_test's own, run in a folder git finds no repository in.
 M=$(mktemp -d); mkdir -p "$M/none"
@@ -873,6 +1074,46 @@ ssy=$(grep -v -E '^[[:space:]]*(#|$)' "$SSY" 2>/dev/null)
 fx=$(git -C "$ROOT" ls-files -- leak-detection/fixtures)
 [[ "$fx" == "leak-detection/fixtures/synthetic_config.txt" ]]
                                                want_ok "K28b the folder it ignores holds the credential fixture and nothing else" $? "$(printf '%s' "$fx" | tr '\n' ' ')"
+
+# ============================== head and tail counts, the -n form ===============================
+# head's and tail's count written straight after the command name (a minus or a plus, then digits) is the obsolete
+# form: POSIX replaced it with -n, and uutils' tail, Ubuntu 26.04's default, has been reported refusing one. Every
+# shipped file and every suite writes the count with -n (tail's from-line form as -n +N). obsolete_ht prints the
+# path and line of each use in the files it is given, never the line itself.
+obsolete_ht() { LC_ALL=C grep -a -H -n -E '(^|[^[:alnum:]_.-])(head|tail)[[:space:]]+[-+][0-9]' "$@" 2>/dev/null | cut -d: -f1,2; }
+# The files: every tracked file the manifest doesn't keep in the kit (the first entry that matches decides, as the
+# install's reader does), and every file under tests/, the kit-only suites included.
+ht_files=()
+while IFS= read -r f; do ht_files+=("$f"); done < <(git -C "$ROOT" ls-files | awk '
+    NR == FNR { if (/^[^#]/ && NF == 2) { c[++n] = $1; e[n] = $2 } next }
+    { k = "owned"; for (i = 1; i <= n; i++) if ($0 == e[i] || (substr(e[i], length(e[i])) == "/" && index($0, e[i]) == 1)) { k = c[i]; break }
+      if (k != "kit" || index($0, "tests/") == 1) print }' "$MANIFEST" -)
+ht=""; (( ${#ht_files[@]} > 50 )) && ht=$( (cd "$ROOT" && obsolete_ht "${ht_files[@]}" </dev/null) | tr '\n' ' ')
+(( ${#ht_files[@]} > 50 )) && [[ -z "$ht" ]]
+                                               want_ok "HT1 no shipped file or suite writes head's or tail's count in the obsolete form (head -N, tail -N, tail +N)" $? "${ht:-none}(${#ht_files[@]} files)"
+# The matcher itself, on planted lines: the three obsolete forms caught, the -n forms and other flags passed. The
+# planted command names come from variables, so this file's own text never holds the form it looks for.
+W=$(mktemp -d); hd=head; tl=tail
+printf '%s\n' "a | $hd -1" "b | $tl -3" "c | $tl +2" "d | $hd -n 1" "e | $tl -n 3" "f | $tl -n +2" "g | $hd -c 4" \
+    "h=\$(x | $tl -n 1)" "i  $hd -40)" > "$W/p.sh"
+ht=$(obsolete_ht "$W/p.sh" | tr '\n' ' ')
+[[ "$ht" == "$W/p.sh:1 $W/p.sh:2 $W/p.sh:3 $W/p.sh:9 " ]]
+                                               want_ok "HT1b the matcher catches head -N, tail -N and tail +N, and passes -n N, -n +N and -c" $? "${ht:-none}"
+rm -rf "${W:?}"
+
+# ============================== the deploy pattern, run =========================================
+# patterns/atomic_deploy.sh read its headroom with df's -P and --output together, which GNU df refuses ("options -P and
+# --output are mutually exclusive"), so on GNU it stopped before any transfer, whatever came after df. Run here in
+# scratch, by this machine's own tools: a new artifact swapped over an old one, through to the smoke gate, a stand-in
+# smoke_check on PATH passing only when the live file holds the new artifact.
+W=$(mktemp -d); mkdir -p "$W/bin" "$W/live"
+printf 'new artifact\n' > "$W/new.txt"; printf 'old artifact\n' > "$W/live/app.txt"
+printf '#!/bin/sh\n[ "$(cat "$1")" = "new artifact" ]\n' > "$W/bin/smoke_check"; chmod +x "$W/bin/smoke_check"
+out=$(cd "$W" && env PATH="$W/bin:$PATH" TARGET="$W/live/app.txt" bash "$ROOT/patterns/atomic_deploy.sh" "$W/new.txt" 2>&1); rc=$?
+[[ $rc -eq 0 && "$(cat "$W/live/app.txt")" == "new artifact" && ! -e "$W/live/app.txt.new" \
+   && "$out" == *"smoke gate"* && "$out" == *"SUMMARY: deploy complete, smoke gate green"* ]]
+                                               want_ok "DP1 the deploy pattern runs here through its headroom line and swap to a green smoke gate" $? "exit $rc: $out"
+rm -rf "${W:?}"
 
 echo
 echo "kit_docs_test: $PASS passed, $FAIL failed, $SKIP skipped"

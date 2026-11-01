@@ -14,6 +14,74 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v0.12.1
+
+v0.12.1 is another, a patch: nothing a hook or check refuses changed, so a project needs no move; pre-push writes two
+counts in a portable form, and the load check's stub, the reply-file hook, the deploy pattern, the setup prompt, the
+session rules' reach and the documents that describe them changed. What changed:
+- **The setup prompt is led by Claude Code.** It asks you once whether it should do every step itself, your Claude
+  Code settings and crontab included, or show you each change to make, and every later step follows that answer; then
+  it drives the whole setup, asking plain questions, one question at a time, each saying what it's for and what
+  skipping it means, with a default to take, doing each step itself with your approval at Claude Code's own prompts,
+  and handing you a command only where it can't, saying why. It runs `kit-pin user` itself, outside Claude Code's
+  sandbox where it has to, with your approval; it offers to fetch a missing gitleaks, checked against the sha256 the
+  kit pins, if you say so, or says what to install and where to get it, and waits; on WSL it keeps code, projects, the
+  clone and the install in the Linux home, warning at once if it was started on the Windows side, and offers the reply
+  folder on the Windows side, where a browser attaches files from; it offers to set up the daily load check, saying
+  on WSL that it runs only while WSL is running; any copy it makes tests whether the destination is there first; and
+  at the end it checks that it works: the daily check run as cron runs it, and, for someone who runs relays, a test
+  relay for the reply-file hook and `/compact` for the compaction log. `kit-pin user` follows the first answer too,
+  handed over as a command to someone who asked to be shown each change; where Claude Code's sandbox refuses the git
+  identity's `git config --global` or the daily check's test run, the session retries it outside the sandbox at Claude
+  Code's prompt, as it does for `kit-pin user`, or hands it over, by that answer.
+- **The reply-file hook with a space in the reply folder's path.** A report that ends mid-turn is filed when the line
+  before its end line names its file; the hook took that line's last word as the path, so a folder such as a Windows
+  user's `/mnt/c/Users/First Last/claude-replies` on WSL never matched, and the report ran on into the next one's file.
+  It now matches a line that ends with the report's own file by its whole path, a space in it included; for a path
+  without a space, the match is the same as before, and a line naming any other path still files nothing.
+- **The deploy pattern runs on GNU.** `patterns/atomic_deploy.sh` read its headroom with `df -P --output=avail`, which
+  GNU coreutils' `df` refuses ("options -P and --output are mutually exclusive"), so a copy stopped before any transfer,
+  leaving the live file untouched. It reads the space available from `df -Pk`'s fourth column with awk, the same value
+  `--output=avail` gives, and a check in the kit's own tests runs it through to its smoke gate.
+- **The daily check's ping link stays private.** The setup has you put `KIT_LOAD_CHECK_PING` on a crontab line of its
+  own, above the check's line, where it reaches the job's environment, which only you can read; and the stub hands
+  the link to curl on its standard input. v0.12.0's stub put it on curl's command line, which other users on the
+  machine could read for up to ten seconds while a failure ping was sent.
+- **The relay settings only for people who run relays.** The settings file's five entries, and the two optional hooks,
+  belong to working through relays; the setup asks about them only after you say you'll do that, writes
+  `morrowcairn-local.md` itself, never over a file already there, and, for each hook, adds it to your Claude Code
+  settings when you say so, or gives you the lines to paste. Someone who runs no relays gets no settings file.
+- **The session rules for people who run no relays.** The rules file says that a session which has received no relay
+  skips its sections on relays, labels, reports and the handoff file, and the numbering of direct messages, and
+  follows the rest. Section 1's bullet on direct messages and sections 3, 4 and 10 say so themselves; section 2 acts
+  only on a relay. `docs/rules-explained.md` gives the reason.
+- **The drafting chat's half, for claude.ai.** For someone who runs relays, the setup prints the install's
+  `docs/drafting-chat-instructions.md`, as it is, under a short header filled from their answers, to keep in the
+  account's instructions in claude.ai, its first line turning it on only in chats where they say they're working with
+  the kit; a claude.ai Project is the alternative.
+- **A git identity where there is none.** Where git resolves no name or email, the setup asks for them, says a public
+  host shows that email and offers the host's no-reply address, and sets them for git or shows the commands; it never
+  changes an identity already set.
+- **The owner phrase, exactly.** The setup records the words the person gives for it as typed, each alternative too,
+  since a session tells the person's own instructions from pasted text by them.
+- **The README** says that the person sets the CI secret, `LEAK_PATTERN`, and that no kit step sets it; v0.12.0's
+  said the setup fills it. The IT document says the setup writes the local settings file, edits Claude Code's
+  settings only where the person asks, and may make one download, a missing gitleaks; its file table lists what the
+  setup writes at the person's say: gitleaks' program, the daily check's copy and its crontab line, and the hooks'
+  entries.
+- **WSL2, measured.** On two Windows machines under WSL2, both installing v0.12.0's code: Ubuntu 24.04, where v0.12.0's
+  setup prompt ran and the two Claude Code hooks passed a live test; and Ubuntu 26.04 with uutils coreutils, where a
+  draft of this release's setup prompt ran end to end, the five test suites passed, and commits, pushes and both refusals worked as designed. On the Windows side (`/mnt/c`)
+  file modes are lost and commits and pushes run 3 to 5 times slower, so projects stay in the Linux home. A machine
+  an organization manages isn't measured yet. The README and the IT document say so in place of "not yet tested".
+- **head and tail counts with `-n`.** pre-push's two `head` counts and two lines of the install suite write the count
+  as `-n N`. The older form, the count straight after the command's name, is one GNU
+  coreutils' manual calls obsolete, telling scripts meant for standard hosts to use `-n` instead, so another
+  implementation may refuse it. What each line does is unchanged, and a check in the kit's own tests keeps the older
+  form out of every shipped file.
+- **A note on v0.12.0:** it also added [`patterns/practices.md`](patterns/practices.md), ten practices for the work
+  Claude Code builds; its entry below didn't say so.
+
 ## v0.12.0
 
 v0.12.0 is another, a minor: a project sees new behaviour, and moves onto it with `bin/kit-pin to v0.12.0` from the

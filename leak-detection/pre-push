@@ -394,7 +394,7 @@ for line in ${refs[@]+"${refs[@]}"}; do
                                     if (match(s, /:[0-9]+:/)) print substr(s, 1, RSTART - 1) "\t" substr(s, RSTART + 1, RLENGTH - 2) }
                 /^Binary file / { s = $0; sub(/^Binary file /, "", s); sub(/ matches$/, "", s)
                                   if (index(s, p) == 1) print substr(s, length(p) + 1) "\tbinary" }' \
-            | head -40)
+            | head -n 40)
         nnamed=0
         if [[ -n "$names" ]]; then
             while IFS=$'\t' read -r path where; do
@@ -647,7 +647,7 @@ if (( ${#scan_refs[@]} > 0 )); then
         out=$(env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML "${gl_noclr[@]}" gitleaks git --no-banner --no-color --redact --exit-code 3 "${cfg[@]}" \
               --log-opts="--no-color --diff-merges=first-parent ${range[*]}" 2>&1)
         rc=$?
-        scanned=$(printf '%s\n' "$out" | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | head -1)
+        scanned=$(printf '%s\n' "$out" | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | head -n 1)
 
         if (( rc == 3 )); then
             echo "pre-push: BLOCKED -- gitleaks found credential shapes in the commits $label adds." >&2

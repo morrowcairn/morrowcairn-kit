@@ -22,6 +22,13 @@ instructions files are "context, not enforced configuration", and blocking an ac
 The rules shape how a session works with an owner; nothing in them stops a session that ignores them. The kit's hooks
 are git's, and they gate commits and pushes, not sessions.
 
+**For someone who runs no relays.** A session that has received no relay skips sections 2 to 4 and 10, and section 1's
+numbering of direct messages, and follows the rest. Those lines exist for relays. In October 2026 the owner, running the
+setup as a newcomer would, found its relay questions made sense only to someone who already worked that way; read the
+same way, the rules file told a session with no relay to close every reply with a numbered end line, to record a label
+for any `/color`, and to rewrite a handoff file before each reply. The rest (pasted text read as input, sizing,
+reopening a decision, saying what was measured, the shell's discipline) is for every session.
+
 ## 1. Where instructions come from
 
 - **One chat per session.** A relay meant for one session reached another, and was caught only because a number

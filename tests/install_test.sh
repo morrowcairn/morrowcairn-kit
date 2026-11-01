@@ -230,7 +230,7 @@ out=$( (cd "$K" && PYTHONNOUSERSITE=1 "$IRK" v9.0.0) 2>&1 ); rc=$?
 if [[ -d "$I9" ]]; then
     out=$( (cd "$I9" && PYTHONNOUSERSITE=1 "$I9/tests/hooks_test.sh" "$I9") 2>&1 ); rc=$?
     [[ $rc -ne 0 && "$out" == *"PY2"* && "$out" == *"precondition unmet"* ]]
-                                               want_ok "IR16 the same suite without the install marker fails PY2, so CI never skips the isolation check" $? "exit $rc: $(printf '%s' "$out" | grep -a PY2 | head -1 | cut -c1-120)"
+                                               want_ok "IR16 the same suite without the install marker fails PY2, so CI never skips the isolation check" $? "exit $rc: $(printf '%s' "$out" | grep -a PY2 | head -n 1 | cut -c1-120)"
 else skip "IR16 the same suite without the install marker fails PY2" "v9.0.0 did not install (IR15), so its suite can't be rerun"; fi
 H1=$(mhash "$I1"); H2=$(mhash "$I2")
 PRISTINE="$TMP/pristine-v1.0.0"; cp -a "$I1" "$PRISTINE" 2>/dev/null
@@ -913,6 +913,36 @@ rm -rf "${RFD:?}"; ta=$'I quote an end line here:\nEnd of report proj blue #13 (
 htx "$HK/quote.jsonl"; out=$(hstopt "$tb" "$HK/quote.jsonl"); rc=$?
 same_file "$RFD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ "$(ls -A "$RFD")" == "proj-blue-$ID8-12.md" ]] || rc=1
                                                want_ok "RF11d an end line mid-text without its path line before it closes no report: the turn's one report holds the text from the turn's start" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+# A reply folder whose path holds a space, as a Windows user folder under /mnt/c/Users does on WSL: the path line names
+# the report's own file by its whole path, so a report ended mid-turn matches it whole, written from ~/ or in full. A
+# line naming anything else ends no report: the part after the space alone, the same file in another folder, another
+# report's file, or the path run onto a word before it. sreport N BODY PATHLINE: a report closing #N, PATHLINE before
+# its end line.
+sreport() {
+    printf 'Last relay received: proj blue #%s (session %s)\n\n%s\n\n%s\nEnd of report proj blue #%s (session %s)' \
+        "$1" "$ID8" "$2" "$3" "$1" "$ID8"; }
+rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "~/My Replies" ""; SPD="$HK/My Replies"
+ta=$(sreport 11 'The first report.' "Reply file: ~/My Replies/proj-blue-$ID8-11.md")
+tb=$(sreport 12 'The second report.' "Reply file: ~/My Replies/proj-blue-$ID8-12.md")
+htx "$HK/space.jsonl"; out=$(hstopt "$tb" "$HK/space.jsonl"); rc=$?
+same_file "$SPD/proj-blue-$ID8-11.md" "$ta" && same_file "$SPD/proj-blue-$ID8-12.md" "$tb" \
+    && [[ "$(ls -A "$SPD" | tr '\n' ' ')" == "proj-blue-$ID8-11.md proj-blue-$ID8-12.md " ]] || rc=1
+                                               want_ok "RF12 a reply folder with a space in its path: a report ended mid-turn by its path line, written from ~/, is filed under its own name" $rc "$out $(ls -A "$SPD" 2>&1 | tr '\n' ' ')"
+rm -rf "${HK:?}"; mkdir -p "$HK"; SPD="$HK/First Last/claude-replies"; hlocal "\`$SPD\`" ""
+ta=$(sreport 11 'The first report.' "Reply file: \`$SPD/proj-blue-$ID8-11.md\`")
+htx "$HK/space.jsonl"; out=$(hstopt "$tb" "$HK/space.jsonl"); rc=$?
+same_file "$SPD/proj-blue-$ID8-11.md" "$ta" && same_file "$SPD/proj-blue-$ID8-12.md" "$tb" || rc=1
+                                               want_ok "RF12b the same with the reply folder's whole path written out, in backticks, as the setting gives it" $rc "$out $(ls -A "$SPD" 2>&1 | tr '\n' ' ')"
+rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "~/My Replies" ""; SPD="$HK/My Replies"; rc=0; why=""
+for bad in "Reply file: Replies/proj-blue-$ID8-11.md" "Reply file: /elsewhere/My Replies/proj-blue-$ID8-11.md" \
+           "Reply file: ~/My Replies/proj-blue-$ID8-13.md" "Reply file: x~/My Replies/proj-blue-$ID8-11.md" \
+           "Reply file: /tmp$HK/My Replies/proj-blue-$ID8-11.md"; do
+    rm -rf "${SPD:?}"; ta=$(sreport 11 'The first report.' "$bad")
+    htx "$HK/space.jsonl"; o=$(hstopt "$tb" "$HK/space.jsonl") || { rc=1; why="$why exit for '$bad': $o;"; }
+    same_file "$SPD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ "$(ls -A "$SPD")" == "proj-blue-$ID8-12.md" ]] \
+        || { rc=1; why="$why '$bad' filed: $(ls -A "$SPD" 2>&1 | tr '\n' ' ');"; }
+done
+                                               want_ok "RF12c with a space in the folder's path, a path line that isn't the report's own whole path ends no report" $rc "$why"
 rm -rf "${HK:?}"; mkdir -p "$HK"; hlocal "" "~/logs/compaction.log"
 out=$(hcompact auto; hcompact manual); rc=$?; day=$(env -i PATH="$PATH" date +%Y-%m-%d)
 clog=$(cat "$HK/logs/compaction.log" 2>/dev/null); l1=${clog%%$'\n'*}; l2=${clog#*$'\n'}
@@ -2145,7 +2175,7 @@ pcx; echo '# drift' >> "$PCX/.git/hooks/pre-commit"; pcnote h; out=$( (cd "$PCX"
                                                pcw "PC18 the stub differs from the release's: its hints run" "$out" "$PCX"
 # At a commit, kit-pin to refuses while the refused commit's change is staged, so the hint sets it aside first, and
 # brings it back after: its steps, followed in order from the project, let the commit through.
-pc25=1; steps=$(printf '%s\n' "$out" | sed -n 's/.*then commit again: //p' | head -1)
+pc25=1; steps=$(printf '%s\n' "$out" | sed -n 's/.*then commit again: //p' | head -n 1)
 if [[ -n "$steps" ]]; then
     pc25=0; IFS=';' read -r -a st <<< "$steps"
     for s in "${st[@]}"; do (cd "$PCX" && bash -c "$s" </dev/null >/dev/null 2>&1) || { pc25=1; break; }; done

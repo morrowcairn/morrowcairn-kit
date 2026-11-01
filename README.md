@@ -15,24 +15,32 @@ works. Anthropic leads on Claude Code; on a work machine, your org's settings le
 each part off or remove it.
 
 **Install.** You need git 2.31 or later, gitleaks on `PATH`, python3, and `sha256sum` or `shasum`. *Where it runs:*
-Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, only inside WSL2, where it hasn't yet
-run; native Windows waits until someone needs it.
+Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, only inside WSL2: on two Windows
+machines, Ubuntu 24.04 and 26.04 under WSL2, both installing v0.12.0's code, the setup ran end to end, v0.12.0's setup
+prompt on the 24.04 laptop and a draft of this release's on the 26.04 desktop, where the five test suites passed too;
+keep your projects in the Linux home, since on the Windows side files lose their modes and commits and
+pushes run 3 to 5 times slower. Not yet tried on a machine an organization manages. Native Windows waits until someone
+needs it.
 
-The usual way is the setup prompt: paste [`docs/setup-prompt.md`](docs/setup-prompt.md)'s prompt into Claude Code. It
-checks those tools, reads which of your organization's managed settings apply, takes steps 1, 2 and 4 below with you,
-says what a new project starts with, and shows what to add to your settings for the two optional hooks and the daily
-load check, editing no settings file itself. By hand, the steps are:
+The usual way is the setup prompt: paste [`docs/setup-prompt.md`](docs/setup-prompt.md)'s prompt into Claude Code, and
+Claude Code leads. It asks you once whether it should do every step itself, your Claude Code settings and crontab
+included, or show you each change to make, and then drives the whole setup: plain questions one at a time, each with a
+default, steps 1, 2 and 4 below taken itself, with your approval at Claude Code's own prompts, a command handed to you
+only where it can't, saying why, and at the end it checks that it works. It checks those tools, reads which of your
+organization's managed settings apply, keeps your code in the Linux home on WSL, says what a new project starts with,
+and offers to set up the daily load check. If you say you'll run work through relays, it writes the kit's settings
+file, and adds the two optional hooks to your Claude Code settings only when you say so. By hand, the steps are:
 1. Clone this repository and check out the release's tag:
    `git clone https://github.com/morrowcairn/morrowcairn-kit morrowcairn`, then `cd morrowcairn` and
-   `git checkout v0.12.0`.
-2. Build the release's read-only install: `tools/install-release.sh v0.12.0`. It runs the release's own hook suite on the
-   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.12.0` (or under
+   `git checkout v0.12.1`.
+2. Build the release's read-only install: `tools/install-release.sh v0.12.1`. It runs the release's own hook suite on the
+   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.12.1` (or under
    `$KIT_INSTALL_ROOT`, to keep installs elsewhere).
 3. Make a project from it: follow the install's copy of [`patterns/local-spawn.md`](patterns/local-spawn.md), whose
    procedure pins the project to the release and puts its hooks in before commit one; then
    [`patterns/repo-genesis.md`](patterns/repo-genesis.md) for its identity and commit one. A new project starts with no
    do-not-publish list (the one line saying so, pinned) and no identity guard; local-spawn says how to turn on each.
-4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v0.12.0/bin/kit-pin user v0.12.0`
+4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v0.12.1/bin/kit-pin user v0.12.1`
    links the rules file every session loads, `rules/morrowcairn.md`, the three triggered skills and the two optional
    hooks' scripts into Claude Code's folder, writes the kit's user pin, and changes no settings file.
    [`docs/rules-explained.md`](docs/rules-explained.md) says why each rule is there;
@@ -48,8 +56,8 @@ writes.
 - *The session-report hook* (a file per report): your Claude Code settings naming it, once `kit-pin user` has linked
   it, and its folder set in `~/.claude/rules/morrowcairn-local.md`.
 - *The compaction-log hook* (a line per compaction): the same, and its log's path set in that file.
-- *The daily load check:* a line you add to your own scheduler (a crontab line, say) that runs a copy of its stub
-  once a day (below; the setup prompt shows the line).
+- *The daily load check:* a line in your own scheduler (a crontab line, say) that runs a copy of its stub once a day
+  (below); the setup prompt offers to set it up itself, with your approval, or shows you the line.
 - *CI:* the kit's `ci/` workflows, copied into the project.
 
 ---
@@ -164,9 +172,10 @@ Two layers, and they ship differently **by necessity**:
   files any new commit adds where the project turns the binary scan on, and the metadata the push adds (author and committer fields, commit
   messages, tag objects, the names of the refs pushed): not file names, or the text of a file that a
   later commit removed.
-  `.github/workflows/leak-scan.yml` reads a repository secret named `LEAK_PATTERN`, which the setup fills with
-  only terms that aren't confidential themselves, such as an IP-address pattern, or with the line saying the
-  project keeps no list. Each list is pinned, by its rows and its hash: pre-push checks the
+  `.github/workflows/leak-scan.yml` reads a repository secret named `LEAK_PATTERN`, which you set
+  yourself (`gh secret set LEAK_PATTERN`; no kit step sets it), with only terms that aren't confidential
+  themselves, such as an IP-address pattern, or with the line saying the project keeps no list. Each list is
+  pinned, by its rows and its hash: pre-push checks the
   local list against `.git/leak-pattern.pin`, untracked in the clone, and CI's scan checks the secret
   against the tracked `.github/leak-pattern.pin`. Both **fail closed when their pattern is unset, or
   isn't the one its pin names**, so a list cut short or changed in place refuses instead of scanning

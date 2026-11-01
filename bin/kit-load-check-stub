@@ -40,8 +40,15 @@ report_fail() {  # REASON
     fi
     body=$(printf 'kit load check: FAIL\nfail: %s\n' "$kind")
     if [[ -n "${KIT_LOAD_CHECK_PING:-}" ]]; then
-        curl -fsS -m 10 --data-raw "$body" "${KIT_LOAD_CHECK_PING%/}/fail" >/dev/null 2>&1 \
-            || echo "kit-load-check-stub: the fail ping did not go through" >&2
+        # The URL is a credential, and a command line is readable by every local user while it runs: curl takes it as
+        # a config line on its standard input, never as an argument (load_check_test LP3). A URL holding a quote, a
+        # backslash or a line break would need escaping there; no ping URL holds one, so none is sent and it says why.
+        local url="${KIT_LOAD_CHECK_PING%/}/fail"
+        case $url in
+            *[\"\\]*|*$'\n'*) echo "kit-load-check-stub: the ping URL holds a quote, a backslash or a line break, so no fail ping was sent" >&2 ;;
+            *) printf 'url = "%s"\n' "$url" | curl -fsS -m 10 --data-raw "$body" -K - >/dev/null 2>&1 \
+                   || echo "kit-load-check-stub: the fail ping did not go through" >&2 ;;
+        esac
     fi
 }
 refuse() {

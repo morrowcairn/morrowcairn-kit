@@ -41,8 +41,10 @@ die() { log "ERROR: $*"; exit 1; }   # define BEFORE first use: an undefined `di
 
 need_bytes=$(stat -c %s "$SRC")
 # Headroom for the new artifact ALONGSIDE the old one -- they coexist between transfer and mv,
-# and a rollback copy may too. Sizing for one copy is how deploys die at 99%.
-free_bytes=$(( $(df -P --output=avail "$(dirname "$TARGET")" | tail -1) * 1024 ))
+# and a rollback copy may too. Sizing for one copy is how deploys die at 99%. df's POSIX form (-P, in 1024-byte
+# blocks with -k) prints one line per file system under its header, the space available fourth; GNU df refuses -P
+# with --output, so this reads the column instead.
+free_bytes=$(( $(df -Pk "$(dirname "$TARGET")" | awk 'NR == 2 { print $4 }') * 1024 ))
 (( free_bytes >= need_bytes * 2 )) || die "insufficient headroom: need 2x $need_bytes, have $free_bytes"
 
 # --- transfer aside, then swap ------------------------------------------------------------

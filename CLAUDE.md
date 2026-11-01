@@ -96,6 +96,11 @@ What the kit's scripts and tests need, as measured. A version named is one that 
   script uses bash 4's features or the GNU-only flags the kit once needed (`xargs -d`, `mv -T`,
   `sed -i`, `date -d`); two copy-paste patterns do (`dry_run_gated_runner.sh`, `mapfile`;
   `atomic_deploy.sh`, `stat -c`).
+- **Windows, inside WSL2:** passes on two machines, on v0.12.0's code. Ubuntu 26.04 (uutils coreutils 0.8.0 by default,
+  git 2.53.0, Python 3.14.4): the setup end to end, the five suites green (hooks 535/0/13, install 376/0/37, kit_docs
+  123/0/0, load_check 60/0/3, smoke 9/0/0), commits, pushes and both refusals as designed, modes and LF kept in the
+  Linux home. Ubuntu 24.04: the setup and the two Claude Code hooks' live tests. Under `/mnt/c` every file shows 777,
+  `chmod` does nothing, and commits and pushes run 3 to 5 times slower. A machine an organization manages: not measured.
 - **Windows: not yet passing.** Under Git Bash, the suites fail 5 cases on kit causes, and an install
   made with Git Bash's defaults is refused. Don't rely on it there.
 - git 2.31 or later: `bin/kit-pin` uses `git rev-parse --path-format` (git's release notes; the oldest

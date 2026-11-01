@@ -5,8 +5,8 @@
 # A report ends at a report's end line naming this session,
 #     End of report <project> <label> #N (session <first eight characters of the session ID>)
 # with -directM or -wakeM after N where the tag carries one, when that line is the turn's last line, or, mid-turn,
-# when the line before it is the report's path line: a line whose last word is that report's own file in the [reply
-# folder] setting, ~/ allowed (the rules file's section 4). A session that reports a relay and then starts a waiting one
+# when the line before it is the report's path line: a line that ends with that report's own file in the [reply
+# folder] setting, its whole path, a space in it included, ~/ allowed (the rules file's section 4). A session that reports a relay and then starts a waiting one
 # in the same turn ends the first report mid-turn. Each report, from the turn's start or the previous report's end
 # line to its own, is written to the [reply folder] setting as <project>-<label>-<id8>-<NN>.md, the project first:
 # lowercase, N padded to two digits, the tag kept (proj-blue-1a2b3c4d-04-direct1.md). The file's name comes from the
@@ -33,7 +33,7 @@
 # a write fails, which Claude Code shows as a non-blocking hook error: the turn ends either way. It prints nothing on
 # stdout, so it never asks Claude Code to keep going. Started with -I, so no module from the caller's environment
 # loads; the two hooks share no module for the same reason (isolated mode adds no script folder to the path).
-# Tests: tests/install_test.sh, RF0 to RF11d.
+# Tests: tests/install_test.sh, RF0 to RF12c.
 
 import json
 import os
@@ -44,6 +44,7 @@ SETTING = "[reply folder]"
 END = re.compile(r"End of report ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) #([0-9]+)(-(?:direct|wake)[0-9]+)? "
                  r"\(session ([0-9A-Fa-f]{8})\)")
 NOT_TYPED = ("peer", "task-notification")       # origin kinds of a message nobody typed
+MARKS = "`'\"()<>.,;:"                           # quotes, brackets and punctuation a path line may put around its path
 
 
 def fail(why):
@@ -145,6 +146,24 @@ def ends_with(texts, last):
     return False
 
 
+def names(line, want):
+    """True when LINE ends with WANT, a report's own file, as a whole path: written in full, or from ~/ where WANT is
+    under the home folder, at the line's start or after a space, with quotes, brackets or punctuation around it. A path
+    with a space in it, such as a Windows user folder under /mnt/c/Users on WSL, matches whole; a path without one
+    matches exactly where the line's last word is that path, quotes and punctuation stripped from it."""
+    forms = [want]
+    home = os.path.expanduser("~").rstrip("/")
+    if want.startswith(home + "/"):
+        forms.append("~/" + want[len(home) + 1:])
+    text = line.rstrip().rstrip(MARKS)
+    for form in forms:
+        if text.endswith(form):
+            before = text[:len(text) - len(form)].rstrip(MARKS)
+            if not before or before[-1].isspace():
+                return True
+    return False
+
+
 def reports(body, session, folder):
     """[(text, file name)] for each report in BODY: from the start, or the previous report's end line, to an end line
     naming SESSION that is the last line or has its path line before it. Text after the last end line is no report's."""
@@ -156,10 +175,8 @@ def reports(body, session, folder):
         if m and m.group(5).lower() == session[:8].lower():
             project, label, n, tag = m.group(1), m.group(2), m.group(3), m.group(4) or ""
             base = "%s-%s-%s-%02d%s" % (project.lower(), label.lower(), session[:8].lower(), int(n), tag)
-            words = lines[prev].split() if prev is not None else []
-            named = words[-1].strip("`'\"()<>.,;:") if words else ""
-            named = os.path.expanduser(named) if named.startswith("~/") else named
-            if i == filled[-1] or named == os.path.join(folder, base + ".md"):
+            pathline = prev is not None and names(lines[prev], os.path.join(folder, base + ".md"))
+            if i == filled[-1] or pathline:
                 part = lines[start:i + 1]
                 while part and not part[0].strip():
                     part = part[1:]

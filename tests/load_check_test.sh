@@ -37,7 +37,7 @@ want_ok() { if [[ $2 -eq 0 && ( -z "${4:-}" || "$3" == *"$4"* ) ]]; then result 
 sha() { local s; s=$(sha256sum < "$1") && printf '%s' "${s%% *}"; }
 
 CASES=(LC0 LC0b LC16 LC4 LC5 LC7 LC8 LC9 LCe LC12 LC13 LC13b LC13c LC13d LC14 LC15 LQ2 LQ2b LQ4 LQ5 LCa LCb LCc LCd LCf LCg
-       LS1 LS2 LS3 LS4 LS5 LS6 LS6b LS7 LS8 LS14 LS14b LP1a LP1b LP1c LP1d LP1e LP2a LP2b LP2c LP2d LP2e LP2f LP2g
+       LQ1 LS1 LS2 LS3 LS4 LS5 LS6 LS6b LS7 LS8 LP3 LS14 LS14b LP1a LP1b LP1c LP1d LP1e LP2a LP2b LP2c LP2d LP2e LP2f LP2g
        LP2h LS13 LS9 LS10 LS11 LS11b LS12 EG25 EG26 EG27 LP1f)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     for c in "${CASES[@]}"; do skip "$c" "no commits yet in $ROOT: rerun after commit one"; done
@@ -58,7 +58,7 @@ git -C "$K" push -q --no-verify origin v1.0.0 2>/dev/null
 I="$KIT_INSTALL_ROOT/v1.0.0"; PRISTINE="$TMP/pristine"; cp -a "$I" "$PRISTINE" 2>/dev/null
 reset_i() { chmod -R u+w "$I" 2>/dev/null; rm -rf "${I:?}"; cp -a "$PRISTINE" "$I" 2>/dev/null; }
 H="sha256:$(sha "$I/MANIFEST.sha256" 2>/dev/null)"
-IMPORTS=(skills/working-from-a-brief.md skills/shell-commands.md)     # what the synthetic transcripts list (LQ5)
+IMPORTS=(rules/morrowcairn.md .claude/skills/gates/SKILL.md)   # what the synthetic transcripts list (LQ1, LQ5): files the install has
 canary() { grep -oE 'kc-[0-9a-f]{16}' "$I/$1" 2>/dev/null | head -n 1; }
 
 # The user level, as kit-pin's user mode leaves it: the kit's own pin, in a file of the kit's
@@ -135,6 +135,11 @@ with open(f, "w") as out:
 PY
 }
 fresh_projects() { rm -rf "${P:?}"; mkdir -p "$P"; }
+# The helper's own input holds: every file it lists is in the install, so a transcript is written, not a traceback in
+# its place (two files v0.12.0 retired were listed once, and every probe run printed a FileNotFoundError).
+fresh_projects; lq1=$(transcript "$P/-q/q1.jsonl" 2.1.290 2>&1); [[ -s "$P/-q/q1.jsonl" && -z "$lq1" ]]
+result "LQ1 the synthetic transcript helper writes its transcript, every file it lists in the install" $? "helper said: $(printf '%s' "$lq1" | tr '\n' ' ' | cut -c1-200)"
+fresh_projects
 # A transcript the freeze damaged: transcript's lines with a line of NUL bytes after the first, the shape the 10-19
 # freeze left in four transcripts on one machine.
 damaged() {  # FILE VERSION
@@ -163,7 +168,7 @@ case "${FAKE_MODE:-pass}" in
   zqanswer) echo 'zqplant-stderr' >&2; echo '{"type":"result","subtype":"success","is_error":false,"result":"zqplant-answer"}'; exit 0 ;;
 esac
 sid=0b0e5a5e-0000-4000-8000-$(printf '%012d' $$)
-mode=full; [[ "${FAKE_MODE:-pass}" == nocanary ]] && mode="nocanary:skills/shell-commands.md"
+mode=full; [[ "${FAKE_MODE:-pass}" == nocanary ]] && mode="nocanary:rules/morrowcairn.md"
 slug=$(python3 -I -c 'import os, re; print(re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(os.getcwd())))' | tr -d '\r')   # as the check names it
 bash "$FAKE_TRANSCRIPT" "$FAKE_PROJECTS/$slug/$sid.jsonl" "${FAKE_VERSION:-2.1.291}" "$mode"
 answer=$(grep -ohE 'kc-[0-9a-f]{16}' $FAKE_ANSWER_FILES | sort -u)
@@ -377,7 +382,7 @@ fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290; rm -f "$FAKE_ENV"; rep=$(lc
 names=$(cat "$FAKE_ENV" 2>/dev/null); [[ -n "$names" && $'\n'"$names"$'\n' != *$'\n'DISABLE_AUTOUPDATER$'\n'* ]] || rc=1
                                                passes "LQ4 the probe's environment carries no DISABLE_AUTOUPDATER" $rc "$rep"
 fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290; transcript "$P/-c/s3.jsonl" 2.1.290 garbage; damaged "$P/-d/d1.jsonl" 2.1.290
-transcript "$P/-b/s2.jsonl" 2.1.291 "noimport:skills/working-from-a-brief.md"
+transcript "$P/-b/s2.jsonl" 2.1.291 "noimport:rules/morrowcairn.md"
 rep=$(lc); rc=$?;                              passes "LQ5 transcripts the old scan failed on, unreadable, damaged or missing an import, no longer affect the result" $rc "$rep"
 
 # ============================== the stub: the check's own code, verified first ==================
@@ -404,11 +409,24 @@ rep=$(lc); rc=$?;                              stub_refused "LS6b and the same f
 reset_i; chmod u+w "$I/bin"; echo 'print("x")' > "$I/bin/extra.py"
 rep=$(lc); rc=$?;                              stub_refused "LS7 the stub refuses a file the manifest doesn't list" $rc "$rep" "bin/extra.py is in the install but not in its manifest"
 reset_i
-# A refusal reaches the ping as a failure, by its own route: a stand-in curl records what it was sent.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/curl-args"\n' "$TMP" > "$FB/curl"; chmod +x "$FB/curl"
+# A refusal reaches the ping as a failure, by its own route: a stand-in curl records what it was sent, its arguments
+# and, where it is handed a config on its standard input (-K -), each line of that, marked "STDIN: ".
+mkcurl() {
+    cat > "$FB/curl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMP/curl-args"
+case " \$* " in *" -K - "*) sed 's/^/STDIN: /' >> "$TMP/curl-args" ;; esac
+EOF
+    chmod +x "$FB/curl"; }
+mkcurl
 userpin v9.9.9; rm -f "$TMP/curl-args"; rep=$(lc KIT_LOAD_CHECK_PING=https://ping.invalid/zq-test); rc=$?
 grep -q 'https://ping.invalid/zq-test/fail' "$TMP/curl-args" 2>/dev/null && ! grep -q 'zq-test' "$TMP/lc.out" || rc=0
                                                stub_refused "LS8 a refusal pings the check's fail route, and never prints the ping URL" $rc "$rep" "no install for v9.9.9"
+# The ping URL is a credential, and a command line is readable by every local user while it runs: the stub hands the
+# URL to curl on its standard input, as a config line, and never as an argument.
+cargs=$(awk '!/^STDIN: /' "$TMP/curl-args" 2>/dev/null); cin=$(awk '/^STDIN: /' "$TMP/curl-args" 2>/dev/null)
+[[ $rc -ne 0 && -n "$cargs" && "$cargs" != *"ping.invalid"* && "$cin" == *'url = "https://ping.invalid/zq-test/fail"'* ]]
+                                               result "LP3 the stub's fail ping hands curl the URL on its standard input, never on its command line" $? "args: $(printf '%s' "$cargs" | tr '\n' ' ' | cut -c1-160) | stdin: $(printf '%s' "$cin" | tr '\n' ' ' | cut -c1-120)"
 userpin
 # The ping never names a file someone put in the install, only how many there are: such a name is text the kit didn't
 # write, and could be a listed term or a machine path. The report on the machine names the first. Two unlisted files, each named with a stand-in term: the ping says 2 and carries neither name.
@@ -580,7 +598,7 @@ if [[ -z "$b3why" ]]; then eg_stub_run " (bash 3)" "$B3"
 else for c in EG25 EG26 EG27; do skip "$c (bash 3)" "$b3why"; done; fi
 # The stub's ping, likewise: a copy with one refusal its ping doesn't list, its reason naming a stand-in term, put right
 # after its first check, pings the fixed line and keeps the reason in the report.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/curl-args"\n' "$TMP" > "$FB/curl"; chmod +x "$FB/curl"
+mkcurl
 inj "$STUB" "$TMP/stub-plant/kit-load-check-stub" 'release=""' "refuse \"the machine names $PL here\""; sp=$?
 fresh_projects; LC_STUB="$TMP/stub-plant/kit-load-check-stub"; stub_ping_run; LC_STUB=$STUB; (( sp == 0 )) || rc=0
                                                stub_ping_clean "LP1f a refusal the stub's ping doesn't list goes as a fixed line, its reason kept in the report" $rc "$rep" "the stub refused (the report on the machine says why)" "$PL"
