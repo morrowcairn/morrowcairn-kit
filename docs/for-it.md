@@ -14,6 +14,27 @@ Claude Code itself. The kit is built for organization-managed machines: everythi
 is off by default. The checks that stay on have deliberately no setting to turn them off: each turns off by
 removing the hook stubs that run it (below).
 
+## What this release changes
+
+v0.13.0, against v0.12.1 (read from the change itself; each change has its cases in the test suites):
+- **pre-push, a gate,** reads the do-not-publish list's pin in the repository's shared git folder, so a push from a
+  linked worktree is checked against the same pin as one from the main clone; before, such a push was refused unless
+  the worktree held a pin of its own. In a main clone, what it refuses is unchanged.
+- **kit-pin, a gate,** refuses a repository with grafts, as the hooks already did; its check fails a list that doesn't
+  compile, over which pre-push would refuse every push; it reads and writes the pin in the same shared folder; and it
+  drops the inherited git settings that choose a repository or a work tree, keeping those that choose which
+  configuration git reads, and turns replace refs off, as pre-push does.
+- **The reply-file hook** (off by default) names a second report under one relay `…-NN-part2.md`, and a different
+  report under a name already taken `…-new2.md`, where it wrote `…-resend2.md`. A report whose end line carries a tag
+  the session rules don't name, or formatting marks around it, which it didn't file before, it now files in the same
+  folder under the name that line gives; an end line it can't read it still doesn't file. Either way it shows the
+  person a warning through Claude Code, quoting a line it couldn't read; it never stops a turn from ending.
+- **The session rules**, in `rules/morrowcairn.md`, gain lines on how a session works; nothing in them runs.
+- **The setup prompt** sets only a missing git name or email, never one git already resolves, and looks first for
+  git's conditional includes, for an identity set in the environment, and for a hook already filing reports.
+- And the three test suites an install carries, and the documents. Nothing here writes, runs or sends anything v0.12.1
+  didn't (read from the change, not traced).
+
 ## What it needs
 
 - bash, git 2.31 or later, python3, gitleaks 8.30.1, and `sha256sum` or `shasum -a 256`; curl too where the person
@@ -67,9 +88,9 @@ Git settings the kit sets, every one in the project's clone (`git config --local
 - `user.name` and `user.email`: only when the person turns the identity guard on (its placeholder), then the identity
   they set and read back.
 A new project's `git init` writes git's own defaults; the kit sets no other key. One step of the setup prompt, not the
-kit's code, may set a key at user scope: where git resolves no `user.name` or `user.email` at all, the setup asks the
-person for them and sets them with `git config --global`, or shows the commands, as the person answered its first
-question; it never changes an identity git already resolves, which IT may have set.
+kit's code, may set a key at user scope: where git resolves no `user.name`, or no `user.email`, at any scope, the setup
+asks the person for the missing one only and sets that one with `git config --global`, or shows the command, as the
+person answered its first question; it never changes an identity git already resolves, which IT may have set.
 
 The rules file has each Claude Code session keep records of its work: a handoff file where the project keeps its
 handoffs (asking the project's owner first if that is a tracked repository an organization owns), the project's
@@ -117,7 +138,8 @@ gitleaks' own behaviour).
   `proc-receive`, `fsmonitor-watchman`) are named by `kit-pin check`. If IT adds a hook to its folder later, or moves
   its hooks path, the stub refuses every commit until `kit-pin to` runs again, and the refusal says so, naming the hook
   or the path and the step to run, so no IT hook is skipped quietly.
-- **Identity.** The kit sets no commit identity: commits go under the one git resolves, IT's where IT sets it.
+- **Identity.** The kit's code sets no commit identity: commits go under the one git resolves, IT's where IT sets it.
+  The setup prompt sets a name or an email at user scope only where git resolves none (above, the git settings).
 - **Signing.** The kit neither sets nor checks commit signing (**not yet tested** with IT-required signing on).
 - **Backups and data-loss tools.** The do-not-publish list is plain text at rest, in one known folder,
   `~/.config/morrowcairn/lists/`, outside every repository, so IT can exclude it from backups or point a scanner at it.
@@ -184,6 +206,13 @@ IT hook the clone doesn't relay.
 - **The daily load check:** remove its scheduled line and the copy of `bin/kit-load-check-stub` that line runs, from
   the person's own folder; then `~/.local/state/morrowcairn/` and the report file `KIT_LOAD_CHECK_REPORT` names.
 - **A release:** `chmod -R u+w` its install folder, then delete it. A project pinned to it refuses until it moves.
+- **What the setup may have set for the person** is theirs to keep or remove; nothing in the kit needs either gone. A
+  git identity at user scope, set only where git resolved none: `git config --global --show-origin --get user.name`
+  and `user.email` show each and the file it is in (`~/.gitconfig`), and `git config --global --unset user.name` (or
+  `user.email`) removes it, after which commits go under whatever identity git resolves, or ask for one. gitleaks,
+  where the setup downloaded it: `command -v gitleaks` and `gitleaks version` show the program and its version
+  (`~/.local/bin/gitleaks` where the setup put it); deleting that file removes it, after which the kit's hooks refuse
+  every commit and push until a gitleaks is on `PATH` again.
 - **Last:** `~/.config/morrowcairn/`, empty once its lists and the user pin are gone, and the person's clone of the
   kit's public repository.
 - `git commit --no-verify` and `git push --no-verify` skip the hooks; the kit can't prevent that.
@@ -192,9 +221,10 @@ IT hook the clone doesn't relay.
 
 **Measured on two Windows machines under WSL2**, on v0.12.0's code (v0.12.1 changes pre-push, a gate, in how it writes
 two counts, not in what it refuses; the load check's stub; the reply-file hook; the three test suites an install
-carries; the deploy pattern; and the documents): a laptop with Ubuntu 24.04, where v0.12.0's setup prompt ran and the
+carries; the deploy pattern; and the documents; v0.13.0's changes are under What this release changes, above): a laptop
+with Ubuntu 24.04, where v0.12.0's setup prompt ran and the
 two Claude Code hooks passed a live test; and a fresh desktop with Ubuntu 26.04 (uutils coreutils by default, git 2.53,
-Python 3.14), where a draft of this release's setup prompt ran end to end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential, a
+Python 3.14), where a draft of v0.12.1's setup prompt ran end to end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential, a
 listed term) refused as designed; on the Linux side file modes and LF line endings were kept. On the Windows side
 (`/mnt/c`), every file showed mode 777, `chmod` had no effect, and commits and pushes ran 3 to 5 times slower; line
 endings stayed LF. **Not yet measured:** a machine an organization manages, with IT's settings in force.

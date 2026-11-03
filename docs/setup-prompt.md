@@ -16,7 +16,7 @@ organization's managed settings. Under a lock the kit's git hooks still run, sin
 costs is said at the step it reaches.
 
 ```text
-Set up the Morrowcairn kit, release v0.12.1, on this machine, and lead me through it. Ask me one question at a time and
+Set up the Morrowcairn kit, release v0.13.0, on this machine, and lead me through it. Ask me one question at a time and
 wait for my answer: each question says in one plain sentence what it's for and what skipping it means, and gives a
 default in brackets; 'ok' takes it, 'skip' skips it. Drive the whole setup: after each step, go straight on to the
 next, through the last, without waiting for me to ask; I needn't read anything. Before anything else, check where this
@@ -63,7 +63,7 @@ steps below, the clone and the install among them, go ahead as written.
    kit's code, and ~/projects/<name> for each project (step 9). Ask me where to keep a clone of the kit
    [~/morrowcairn-kit], then clone it there and check out the release's tag:
    git clone https://github.com/morrowcairn/morrowcairn-kit <that folder>
-   git -C <that folder> checkout v0.12.1
+   git -C <that folder> checkout v0.13.0
 
 4. The install. If step 1 found gitleaks missing or too old, ask me, "May I download gitleaks 8.30.1 from its official
    releases on github.com and check it against the checksum the kit pins? If you say no, I'll tell you what to install
@@ -75,12 +75,12 @@ steps below, the clone and the install among them, go ahead as written.
    macOS adds no folder in the home), and if there is none, give me the one line to add. On a no: tell me what to
    install and where to get it (gitleaks 8.30.1, the version the kit is tested with, from
    https://github.com/gitleaks/gitleaks/releases), wait until I say it's there, then check it with gitleaks version.
-   Then, in the clone, run tools/install-release.sh v0.12.1, with ~/.local/bin at the front of PATH for that command
+   Then, in the clone, run tools/install-release.sh v0.13.0, with ~/.local/bin at the front of PATH for that command
    where you put gitleaks there, so the install's own hook suite finds it.
    It runs the release's own hook suite on the staged install first, then puts the read-only install in
-   ~/.local/share/morrowcairn/releases/v0.12.1. Report its last lines as it printed them, without explaining them.
+   ~/.local/share/morrowcairn/releases/v0.13.0. Report its last lines as it printed them, without explaining them.
 
-5. The session rules: ~/.local/share/morrowcairn/releases/v0.12.1/bin/kit-pin user v0.12.1. It writes into Claude
+5. The session rules: ~/.local/share/morrowcairn/releases/v0.13.0/bin/kit-pin user v0.13.0. It writes into Claude
    Code's own folder: it links the rules file, the kit's three skills and the two optional hooks' scripts there, and
    writes the kit's own pin for the user level; it changes no settings file, and replaces nothing that isn't its own
    link. Follow my answer at the start. If I said show me, hand me the command, saying that it writes into Claude
@@ -126,7 +126,11 @@ steps below, the clone and the install among them, go ahead as written.
 
 7. The two optional Claude Code hooks, only for the settings step 6 set: reply-file, a Stop hook that writes each
    session report to a file of its own in [reply folder], and compaction-log, a PostCompact hook that adds one line per
-   compaction to [compaction log]. Each runs only once my user settings name it. For each, follow my answer at the
+   compaction to [compaction log]. Each runs only once my user settings name it. Before adding reply-file, ask me to
+   type /hooks, which lists every hook Claude Code has loaded and labels where each comes from (my settings, a project,
+   a plugin, a skill, my organization), and ask me about each Stop hook it lists that isn't plainly something else: if
+   one already files session reports, tell me so and skip the kit's reply-file hook, since both would file each report,
+   the second copy as a -new or -resend file, unless I ask for both. For each, follow my answer at the
    start: if I said do it for me, add it to my user settings yourself; if I said show me, give me the lines to paste.
    Either way, show me the entry first, in the form Claude Code's hooks documentation gives, running the link kit-pin
    user printed for it. Edit the settings with Claude Code's own file tools, which ask me first, keeping everything
@@ -154,11 +158,16 @@ steps below, the clone and the install among them, go ahead as written.
    the line, show it to me, saying why, and I add it myself.
 
 9. Your git identity, then new projects. Check whether git resolves a name and an email for my commits (git config
-   user.name, git config user.email). Never change an identity git already resolves: my IT may have set it. If either
-   is missing, ask me what name and email my commits should carry, saying in one sentence that a public host shows
-   that email on every commit I push there, and offering, for anyone who publishes, the host's no-reply address (on
-   GitHub, the one its email settings page gives); set them for git as I answered at the start (git config --global,
-   or shown for me to run); or I skip, and you tell me my first commit will ask for them. git config --global writes
+   user.name, git config user.email). Also run git config --get-regexp '^includeif\.', and check, by name only, never
+   printing a value, whether EMAIL, GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME or GIT_COMMITTER_EMAIL is set
+   in this session's environment: if git has a conditional include, or any of those is set, set nothing, and tell me
+   an identity may be set for some folders or by the environment, which git config run from here doesn't show. Never
+   change an identity git already resolves, at any scope: my IT may have set it. For each of the two that is missing,
+   and only for it, ask me what my commits should carry; for the email, say in one sentence that a public host shows it
+   on every commit I push there, and offer, for anyone who publishes, the host's no-reply address (on GitHub, the one
+   its email settings page gives). Set only the missing one, at user scope, as I answered at the start (git config
+   --global user.name or user.email, or shown for me to run); or I skip, and you tell me my first commit will ask for
+   it. git config --global writes
    ~/.gitconfig, which Claude Code's sandbox, where it is on, may refuse: then, if I said do it for me, retry it outside
    the sandbox, which Claude Code asks me to approve at its "Bash command (unsandboxed)" prompt, as in step 5; where
    unsandboxed commands are turned off, show me the commands instead, saying why. Then tell me, from the
@@ -193,7 +202,10 @@ steps below, the clone and the install among them, go ahead as written.
     report.", its last line "End of relay setup <color> #1"; ask me to type /color <color> first, then paste it; answer
     it with a one-line report whose second-to-last line is that report's file in [reply folder]
     (setup-<color>-<id8>-01.md) and whose last line is "End of report setup <color> #1 (session <id8>)"; at my next
-    message, check that the file is there, and say so. If I turned the compaction-log hook on: ask me to type /compact,
+    message, ask me to type /hooks and check it lists no second Stop hook that files reports, and count every file that
+    appeared in [reply folder] since the test relay, by its time, not its name: there should be exactly one, with no
+    -new or -resend copy (a second would mean another hook files reports too); say what you found. If I turned the
+    compaction-log hook on: ask me to type /compact,
     then check that [compaction log] gained a line for your session ID, and say so.
 
 12. Finish with a short summary: the versions step 1 found, what was installed and where, what was linked, which

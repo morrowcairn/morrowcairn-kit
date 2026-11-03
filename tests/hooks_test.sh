@@ -1449,14 +1449,33 @@ git -C "$SC" rev-parse HEAD > "$SC/.git/info/grafts"
 out=$( (cd "$SC" && env LEAK_PATTERN="$MARK" "$BASH_BIN" "$SCAN" 2>&1) ); want_refused "RG6 tree scan: a repository with grafts refuses" $? "$out" "grafts"
 rm -f "$SC/.git/info/grafts"
 out=$( (cd "$SC" && env LEAK_PATTERN="$MARK" "$BASH_BIN" "$SCAN" 2>&1) ); want_ok "RG6b tree scan: the same checkout without them is clean" $? "$out" "clean:"
-# A linked worktree: git sets GIT_DIR for its hooks, and pre-push looks for the list's pin in that worktree's own git
-# dir (where bin/kit-pin repin, run there, writes it).
-WT="$TMP/rcwt"; git -C "$X" worktree add -q -b wt "$WT" "$XB" 2>/dev/null; tpin "$(git -C "$WT" rev-parse --absolute-git-dir)/leak-pattern.pin" "$MARK" 1
+# A linked worktree: git sets GIT_DIR for its hooks, which names the worktree's own git folder; pre-push reads the
+# list's pin from the repository's shared git folder, which every worktree of it shares (as kit-history-audit reads
+# it), and never from the worktree's own, so a worktree needs no pin of its own (queue 452).
+WT="$TMP/rcwt"; git -C "$X" worktree add -q -b wt "$WT" "$XB" 2>/dev/null; WTG=$(git -C "$WT" rev-parse --absolute-git-dir)
 echo "w" > "$WT/w.txt"; git -C "$WT" add w.txt
 out=$( (cd "$WT" && git commit -q -m w) 2>&1 ); want_ok "WT1 pre-commit in a linked worktree: a clean commit passes" $? "$out"
-out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_ok "WT2 pre-push in a linked worktree: a clean push passes" $? "$out"
+out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_ok "WT2 pre-push in a linked worktree with no pin of its own: a clean push passes, on the shared pin" $? "$out"
 echo "has $MARK" > "$WT/m2.txt"; git -C "$WT" add m2.txt; git -C "$WT" commit -q --no-verify -m m2
 out=$( (cd "$WT" && git push -q r wt 2>&1) ); want_refused "WT3 pre-push in a linked worktree: a marker is still blocked" $? "$out" "listed terms"
+# The worktree's own folder never stands in for the shared one: a pin there that names the list doesn't let a push
+# through when the shared pin doesn't, and a stale one there doesn't refuse a push the shared pin allows. Each push is a
+# clean commit on a branch of its own, so only the pin decides.
+wtpush() { (cd "$WT" && git checkout -q -b "$1" "$XB" && echo "$1" > "$WT/$1.txt" && git add "$1.txt" \
+              && git commit -q --no-verify -m "$1" && git push -q r "$1") 2>&1; }   # BRANCH: a clean commit, pushed
+tpin "$X/.git/leak-pattern.pin" "zqother-$MARK" 1; tpin "$WTG/leak-pattern.pin" "$MARK" 1
+out=$(wtpush wt4); want_refused "WT4 pre-push in a linked worktree: a shared pin that doesn't name the list refuses, a matching pin in the worktree's own folder never read" $? "$out" "doesn't match its pin"
+tpin "$X/.git/leak-pattern.pin" "$MARK" 1; tpin "$WTG/leak-pattern.pin" "zqstale-$MARK" 1
+out=$(wtpush wt5); want_ok "WT5 pre-push in a linked worktree: a stale pin left in the worktree's own folder is never read in the shared pin's place" $? "$out"
+rm -f "$WTG/leak-pattern.pin"
+# Grafts sit in the shared git folder (info/grafts), and each gate finds them from a linked worktree too, through
+# --git-path, never the worktree's own folder (purple's §602, F1): a commit and a push from the worktree both refuse.
+git -C "$X" rev-parse HEAD > "$X/.git/info/grafts"
+(cd "$WT" && git checkout -q -b wt6 "$XB" && echo wt6 > "$WT/wt6.txt" && git add wt6.txt) >/dev/null 2>&1
+out=$( (cd "$WT" && git commit -q -m wt6) 2>&1 ); want_refused "WT6 pre-commit in a linked worktree: grafts in the shared git folder refuse" $? "$out" "grafts"
+(cd "$WT" && git commit -q --no-verify -m wt6) >/dev/null 2>&1
+out=$( (cd "$WT" && git push -q r wt6) 2>&1 ); want_refused "WT7 pre-push in a linked worktree: grafts in the shared git folder refuse" $? "$out" "grafts"
+rm -f "$X/.git/info/grafts"
 
 # ============================== git config a gate's git calls read ==============================
 # A mailmap maps a commit's author to another name; git log --author matches the mapped name, so

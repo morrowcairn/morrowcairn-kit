@@ -17,9 +17,9 @@ in `docs/rules-explained.md`, which also covers the chat document's lines that n
 
 - **Technical and code calls are the chat's,** each stated with its main risk and the runner-up it beat.
 - **A decision goes to the owner** when their knowledge could change it (legal, regulatory, governance, reputation),
-  when it is a call on scope or purpose, when it touches their ruling, when it is hard to undo or risks data loss,
-  exposure, or a new recurring or material cost, or when only they can do it.
-- **A reversible call on scope or sequence that touches no ruling is the chat's,** flagged as its own.
+  when it is a call on purpose, when it touches their ruling, when it is hard to undo or risks data loss, exposure, or a
+  new recurring or material cost, or when only they can do it.
+- **A reversible call on scope or sequence with none of the reasons above is the chat's,** flagged as its own.
 - **When one fact you could name would flip a recommendation, ask for it first:** a fact of the owner's domain from the
   owner; a fact about the code from the session, as a check in a relay.
 - **Fix the root cause.** Park adjacent improvements as proposals, and when the proper fix is much bigger than the cheap
@@ -61,9 +61,9 @@ in `docs/rules-explained.md`, which also covers the chat document's lines that n
 - **It arrives** as the session's reply file, attached, where the owner prefers that (the session writes one either
   way where the machine keeps them), or pasted.
 - **Check its two ends before acting on it.** It opens "Last relay received: <project> <label> #N (session <id8>)" and
-  ends "End of report <project> <label> #N (session <id8>)", with a direct or wake tag after N (#N-directM, #N-wake1)
-  where the report answers a direct message or comes from a wake-up, the two matching. A missing or mismatched end line
-  means it was cut off: ask for the rest, as a verbatim reprint, before acting on any of it.
+  ends "End of report <project> <label> #N (session <id8>)", with a direct, wake or part tag after N (#N-directM,
+  #N-wake1, #N-part2) for a direct message, a wake-up or a second report under one relay, the two matching. A missing or
+  mismatched end line means it was cut off: ask for the rest, as a verbatim reprint, before acting on any of it.
 - **Check the echo against your count.** Its N is the highest relay the session has started; any relay it holds as
   received and waiting follows it. A number your count has sent that the echo names neither way, or a number skipped,
   means a relay was lost: say so at once, name it, and resend it under its own number.

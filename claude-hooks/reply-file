@@ -4,15 +4,23 @@
 #
 # A report ends at a report's end line naming this session,
 #     End of report <project> <label> #N (session <first eight characters of the session ID>)
-# with -directM or -wakeM after N where the tag carries one, when that line is the turn's last line, or, mid-turn,
-# when the line before it is the report's path line: a line that ends with that report's own file in the [reply
-# folder] setting, its whole path, a space in it included, ~/ allowed (the rules file's section 4). A session that reports a relay and then starts a waiting one
-# in the same turn ends the first report mid-turn. Each report, from the turn's start or the previous report's end
-# line to its own, is written to the [reply folder] setting as <project>-<label>-<id8>-<NN>.md, the project first:
-# lowercase, N padded to two digits, the tag kept (proj-blue-1a2b3c4d-04-direct1.md). The file's name comes from the
-# end line, and the hook writes nowhere but that folder.
-# Nothing is ever overwritten: a second report under one name goes to -resend2, then -resend3, and a report already
-# filed byte for byte isn't filed again, so a later turn end over the same text files nothing new. Nothing is masked:
+# with -directM, -wakeM or -partM after N where the tag carries one (a second report under one relay ends #N-part2,
+# R121), when that line is the turn's last line, or, mid-turn, when the line before it is the report's path line: a
+# line that ends with that report's own file in the [reply folder] setting, its whole path, a space in it included, ~/
+# allowed (the rules file's section 4). A tag the rules don't name (an older draft's #13-next1, or #13-next with no
+# number), tags run together (#4-direct1-part2), or formatting marks around the line (**, _ or `) end a report the
+# same way, so no report is left unfiled for them: such a report is filed under the name built from its end line like
+# any other, and the person is told (below). A line that starts like an end line and names no other session, but can't
+# be read (no number after #, a project with a /, no session), where an end line would close a report, files nothing:
+# it closes no report, so mid-turn its text goes with the next report, and the person is told that and why. A
+# session that reports a relay and then starts a waiting one in the same turn ends the first report mid-turn. Each
+# report, from the turn's start or the previous report's end line to its own, is written to the [reply folder] setting
+# as <project>-<label>-<id8>-<NN>.md, the project first: lowercase, N padded to two digits, the tag kept
+# (proj-blue-1a2b3c4d-04-direct1.md). The file's name comes from the end line, and the hook writes nowhere but that
+# folder.
+# Nothing is ever overwritten: a different report under a name already taken goes to -new2, then -new3, verbatim (R121;
+# files named -resendK before it are such reports), and a report already filed byte for byte isn't filed again, so a
+# later turn end over the same text files nothing new. Nothing is masked:
 # the file holds what the session showed. An end line naming another session, or one mid-turn with no path line before
 # it (a quoted one), ends no report.
 #
@@ -30,10 +38,15 @@
 # last_assistant_message alone.
 #
 # Exit 0 when it filed the reports or had nothing to do; 1, with one line on stderr, when the setting can't be used or
-# a write fails, which Claude Code shows as a non-blocking hook error: the turn ends either way. It prints nothing on
-# stdout, so it never asks Claude Code to keep going. Started with -I, so no module from the caller's environment
-# loads; the two hooks share no module for the same reason (isolated mode adds no script folder to the path).
-# Tests: tests/install_test.sh, RF0 to RF12c.
+# a write fails, which Claude Code shows as a non-blocking hook error: the turn ends either way. On stdout it prints
+# nothing, except when it has just filed a report under a tag the rules don't name (the rules file's section 4 names
+# direct, wake and part, each with its number) or from a line with marks around it, or met an end line it can't read:
+# then one JSON object holding only systemMessage, naming each file and why, or quoting each unread line and why,
+# which Claude Code's hooks page says is shown to the person as a warning. Never decision, continue or exit 2, so it
+# never asks Claude Code to keep going; a report already filed byte for byte says nothing again, though an unread line
+# is named at each turn end that reads it, as nothing records that it was named. Started with -I, so no module
+# from the caller's environment loads; the two hooks share no module for the same reason (isolated mode adds no script
+# folder to the path). Tests: tests/install_test.sh, RF0 to RF12c.
 
 import json
 import os
@@ -41,8 +54,16 @@ import re
 import sys
 
 SETTING = "[reply folder]"
-END = re.compile(r"End of report ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) #([0-9]+)(-(?:direct|wake)[0-9]+)? "
+END = re.compile(r"End of report ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) #([0-9]+)((?:-[A-Za-z]+[0-9]*)*) "
                  r"\(session ([0-9A-Fa-f]{8})\)")
+TAG = re.compile(r"-([a-z]+)([0-9]*)")            # one tag in a lowercased run of them
+NAMED = ("direct", "wake", "part")               # the tags the rules file's section 4 names, each with its number
+AROUND = " \t*_`"                                # formatting marks a line may carry around its end line
+SESSION = re.compile(r"\(session ([0-9A-Fa-f]{8})\)")
+SHAPE = re.compile(r"End of report (\S+) (\S+) #(\S+) \(session ([0-9A-Fa-f]{8})\)")
+WORD = re.compile(r"[A-Za-z0-9._-]+")            # a project or a label a file name can take
+FORM = ("the rules' form is End of report <project> <label> #N (session <id8>), with -direct1, -wake1 or -part2 "
+        "after N where one fits")
 NOT_TYPED = ("peer", "task-notification")       # origin kinds of a message nobody typed
 MARKS = "`'\"()<>.,;:"                           # quotes, brackets and punctuation a path line may put around its path
 
@@ -164,39 +185,88 @@ def names(line, want):
     return False
 
 
+def in_folder(line, folder):
+    """True when LINE ends with a file in FOLDER, whatever its name, read as names() reads a path line: the folder's
+    whole path, or from ~/, at the line's start or after a space, then a file name ending .md."""
+    folder = folder.rstrip("/")
+    forms = [folder]
+    home = os.path.expanduser("~").rstrip("/")
+    if folder.startswith(home + "/"):
+        forms.append("~/" + folder[len(home) + 1:])
+    text = line.rstrip().rstrip(MARKS)
+    for form in forms:
+        k = text.rfind(form + "/")
+        if k < 0:
+            continue
+        rest, before = text[k + len(form) + 1:], text[:k].rstrip(MARKS)
+        if rest.endswith(".md") and "/" not in rest and (not before or before[-1].isspace()):
+            return True
+    return False
+
+
+def unread_why(core):
+    """Why CORE, a line that starts like an end line, can't be read as one."""
+    if not SESSION.search(core):
+        return "it names no session as (session <id8>)"
+    m = SHAPE.fullmatch(core)
+    if not m:
+        return "it isn't End of report, a project, a label, #N and (session <id8>), one space between each"
+    if not (WORD.fullmatch(m.group(1)) and WORD.fullmatch(m.group(2))):
+        return "its project or label holds a character a file name can't safely take (only letters, digits, . _ -)"
+    return "its #%s isn't a number, with any tag after it a dash, letters and a number" % m.group(3)
+
+
 def reports(body, session, folder):
-    """[(text, file name)] for each report in BODY: from the start, or the previous report's end line, to an end line
-    naming SESSION that is the last line or has its path line before it. Text after the last end line is no report's."""
+    """([(text, file name, notes, index)], [(line, why, index)]) for BODY. A report runs from the start, or the previous
+    report's end line, to an end line naming SESSION that is the last line or has its path line before it; text after
+    the last end line is no report's. Its notes say what the person is told when it is filed: a tag the rules don't
+    name, marks around the end line. The second list holds each line that starts like an end line, names no other
+    session and stands where an end line would close a report, but can't be read: it closes nothing."""
     lines = body.split("\n")
     filled = [i for i, ln in enumerate(lines) if ln.strip()]
-    out, start, prev = [], 0, None
+    own = session[:8].lower()
+    out, unread, start, prev = [], [], 0, None
     for i in filled:
-        m = END.fullmatch(lines[i].strip())
-        if m and m.group(5).lower() == session[:8].lower():
-            project, label, n, tag = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+        s = lines[i].strip()
+        core = s.strip(AROUND)
+        closing = i == filled[-1]
+        m = END.fullmatch(core)
+        if m and m.group(5).lower() == own:
+            project, label, n, tag = m.group(1), m.group(2), m.group(3), (m.group(4) or "").lower()
             base = "%s-%s-%s-%02d%s" % (project.lower(), label.lower(), session[:8].lower(), int(n), tag)
-            pathline = prev is not None and names(lines[prev], os.path.join(folder, base + ".md"))
-            if i == filled[-1] or pathline:
+            if closing or (prev is not None and names(lines[prev], os.path.join(folder, base + ".md"))):
                 part = lines[start:i + 1]
                 while part and not part[0].strip():
                     part = part[1:]
-                out.append(("\n".join(part), base))
+                unnamed = [t.group(0) for t in TAG.finditer(tag) if not (t.group(1) in NAMED and t.group(2))]
+                notes, many = [], len(unnamed) > 1
+                if unnamed:
+                    notes.append("its tag%s %s %s one the rules name (direct, wake or part, each with its number)" % (
+                        "s" if many else "", " and ".join(unnamed), "aren't" if many else "isn't"))
+                if core != s:
+                    notes.append("its end line has formatting marks around it, which the rules' form doesn't")
+                out.append(("\n".join(part), base, notes, i))
                 start = i + 1
+        elif not m and core.lower().startswith("end of report") \
+                and all(x.lower() == own for x in SESSION.findall(core)) \
+                and (closing or (prev is not None and in_folder(lines[prev], folder))):
+            unread.append((core, unread_why(core), i))
         prev = i
-    return out
+    return out, unread
 
 
 def file_report(folder, base, text):
-    """Writes TEXT as BASE.md in FOLDER, or as the first free -resendK.md; nothing when one of them already holds it."""
+    """Writes TEXT as BASE.md in FOLDER, or as the first free -newK.md, and returns the path written; None, writing
+    nothing, when one of them already holds it."""
     data = (text if text.endswith("\n") else text + "\n").encode("utf-8", errors="replace")
     k = 1
     while True:
-        path = os.path.join(folder, base + ("" if k == 1 else "-resend%d" % k) + ".md")
+        path = os.path.join(folder, base + ("" if k == 1 else "-new%d" % k) + ".md")
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             if same(path, data):
-                return
+                return None
             k += 1
             if k > 99:
                 fail("%s already has 99 files" % base)
@@ -212,7 +282,7 @@ def file_report(folder, base, text):
             fail("can't write %s (%s)" % (path, e.strerror))
         finally:
             os.close(fd)
-        return
+        return path
 
 
 def main():
@@ -237,15 +307,24 @@ def main():
     body = "\n\n".join(texts).rstrip()
     if not body.strip():
         return 0
-    found = reports(body, session, folder)
-    if not found:
-        return 0
-    try:
-        os.makedirs(folder, mode=0o700, exist_ok=True)
-    except OSError as e:
-        fail("can't make the reply folder %s (%s)" % (folder, e.strerror))
-    for text, base in found:
-        file_report(folder, base, text)
+    found, unread = reports(body, session, folder)
+    told = []
+    if found:
+        try:
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+        except OSError as e:
+            fail("can't make the reply folder %s (%s)" % (folder, e.strerror))
+    for text, base, notes, _ in found:
+        path = file_report(folder, base, text)
+        if path and notes:
+            told.append("reply-file filed %s, but %s." % (os.path.basename(path), "; and ".join(notes)))
+    for line, why, i in unread:
+        shown = line if len(line) <= 160 else line[:157] + "..."
+        later = any(j > i for _, _, _, j in found)
+        told.append('reply-file filed nothing for the end line "%s": %s; %s.%s' % (
+            shown, why, FORM, " Its report's text went into the next report filed." if later else ""))
+    if told:
+        sys.stdout.write(json.dumps({"systemMessage": " ".join(told)}) + "\n")
     return 0
 
 

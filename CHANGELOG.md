@@ -14,6 +14,69 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v0.13.0
+
+v0.13.0 is another, a minor: what a hook or check refuses changed, so a project moves onto it on purpose, with
+`kit-pin to v0.13.0` from the new release's install. pre-push takes a push from a linked worktree that it refused
+before, and kit-pin refuses a repository with grafts and fails a list that doesn't compile; the reply-file hook's
+names, the setup prompt, the session rules and the documents that describe them changed too. What changed:
+- **A push from a linked worktree.** pre-push read the do-not-publish list's pin from the worktree's own git folder,
+  where none sits unless `kit-pin repin` was run there, so every push from a new worktree was refused until then.
+  pre-push, `kit-pin check` and `kit-pin repin` now read and write the pin in the repository's shared git folder, which
+  every worktree of it shares, as `bin/kit-history-audit` already did; a pin left in a worktree's own folder is never
+  read. `kit-pin repin ci` reads CI's record, `.git/leak-pattern.ci`, from the same shared folder. In a linked worktree
+  of a project still pinned to an earlier release, whose pre-push reads the worktree's own pin, `kit-pin check` says so
+  and that `kit-pin to v0.13.0` or later moves it.
+- **kit-pin refuses a repository with grafts,** as pre-push, pre-commit and the tree scan already do: a graft changes
+  the history git shows, and no setting turns it off. `git replace --convert-graft-file` turns grafts into replace
+  refs, which kit-pin ignores.
+- **kit-pin check fails a list that doesn't compile.** A list that matches its pin can still fail to compile as an
+  extended regex, and pre-push then refuses every push; `kit-pin check` now compiles it as pre-push's tree scan does,
+  in the caller's locale, and reports the list as failing (exit 3), naming no term. kit-pin also drops every inherited
+  git setting that chooses a repository, a work tree, an index or an object store, keeping only those that choose which
+  configuration git reads and one that only narrows where git looks for a repository, and it turns replace refs off,
+  as pre-push does.
+- **The test suites.** The load check's suite runs the stub's failure ping under bash 3.2 and with the real curl
+  against a listener on the loopback address; the hook and install suites gain the cases for each change here.
+- **Additions to the session rules**, each on the owner's ruling. The absence rule says that Claude Code's search
+  wrapper answers a `-v` under `-q` or `-l`, or with its output discarded, differently from the system grep, so a `-v`
+  test calls `/usr/bin/grep` by its path too. A small or low-risk reversible call, technical or on scope or sequence,
+  that has none of the reasons that send a call to the owner is the session's to make and go on, each one listed in its
+  report under the heading "Calls I made:" so it can be undone, never past a relay's stop condition, the size rule's
+  stops, a relay's boundary or anything another rule sends to the owner; a larger one is the drafter's, and the drafter
+  may reassign an owner's-queue entry that turns out to be its call, with its reason, shown in its next Outbox, the
+  owner able to pull it back. Those reasons name a call on purpose, no longer one on scope, here and in the drafting
+  chat's document. A check run on a release candidate is internal until it is re-read on the published release. A
+  refusal that doesn't make clear whether it is about what would be read or changed, or about how the command is
+  written, is taken as about what would be read or changed, which holds for every route. A new rule keeps the work's
+  history: a delete only of an exact duplicate or of something kept elsewhere, anything else kept or archived, what
+  holds a secret's value removed, and an archive scanned before it is made. A report that ends the session's turn says
+  so in one line, "Stopped: waiting on", then who or what. The file stands at 210 lines, its check's limit.
+- **Two fixes to the setup prompt.** Where git resolves only one of a name and an email, the setup asks for and sets
+  only the missing one, at user scope, and never one git already resolves at any scope; before it set both. Before
+  adding the reply-file hook, it looks for a Stop hook that already files session reports and, with one there, skips
+  the kit's unless the person asks for both, since each report would otherwise be filed twice, the second copy as a
+  `-resend` file; its closing test checks that exactly one file appeared for its test report. Before setting a name or
+  an email, it also looks for git's conditional includes and for an identity set in the environment, by name only,
+  and sets nothing where it finds one; it finds a Stop hook already filing reports by asking the person for `/hooks`,
+  which shows hooks from every place they come from; and its closing test checks `/hooks` again and counts every new
+  file in the reply folder by its time, not its name.
+- **The reply-file hook's names** (the owner's ruling). A second report under the same relay ends `#N-part2`, then
+  `-part3`, and the hook files it under its own name, `…-NN-part2.md`; the session rules and the drafting chat's
+  document say so. A different report under a name already taken goes to `…-new2.md`, then `-new3`, verbatim, where it
+  went to `-resend2`; the same text again still writes nothing. The setup's closing test looks for a `-new` or a
+  `-resend` copy. An end line under a tag the rules don't name, such as an older draft's `#13-next1` or `#13-next`, or
+  with formatting marks around it, now ends a report too: the hook files it verbatim under the name the line gives and
+  tells the person in a warning Claude Code shows them (a `systemMessage`, never a block); tags run together
+  (`#4-direct1-part2`) are filed the same way, with the warning only where one isn't a tag the rules name. A line that
+  starts like the session's own end line but can't be read (no number after `#`, a project with a `/`, no session ID)
+  still files nothing, its text going with the next report where one follows, and the warning quotes it and says why.
+  Before, the hook said nothing in any of these cases and filed none of them, and a report ended mid-turn under such a
+  line went into the next report's file.
+- **The IT document** says the setup sets only a missing name or email at user scope, and its removal steps say how to
+  see the git identity and the gitleaks the setup may have set for the person, and how to remove each; both are the
+  person's to keep or remove.
+
 ## v0.12.1
 
 v0.12.1 is another, a patch: nothing a hook or check refuses changed, so a project needs no move; pre-push writes two

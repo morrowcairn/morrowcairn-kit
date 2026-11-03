@@ -17,7 +17,7 @@ each part off or remove it.
 **Install.** You need git 2.31 or later, gitleaks on `PATH`, python3, and `sha256sum` or `shasum`. *Where it runs:*
 Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, only inside WSL2: on two Windows
 machines, Ubuntu 24.04 and 26.04 under WSL2, both installing v0.12.0's code, the setup ran end to end, v0.12.0's setup
-prompt on the 24.04 laptop and a draft of this release's on the 26.04 desktop, where the five test suites passed too;
+prompt on the 24.04 laptop and a draft of v0.12.1's on the 26.04 desktop, where the five test suites passed too;
 keep your projects in the Linux home, since on the Windows side files lose their modes and commits and
 pushes run 3 to 5 times slower. Not yet tried on a machine an organization manages. Native Windows waits until someone
 needs it.
@@ -32,15 +32,15 @@ and offers to set up the daily load check. If you say you'll run work through re
 file, and adds the two optional hooks to your Claude Code settings only when you say so. By hand, the steps are:
 1. Clone this repository and check out the release's tag:
    `git clone https://github.com/morrowcairn/morrowcairn-kit morrowcairn`, then `cd morrowcairn` and
-   `git checkout v0.12.1`.
-2. Build the release's read-only install: `tools/install-release.sh v0.12.1`. It runs the release's own hook suite on the
-   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.12.1` (or under
+   `git checkout v0.13.0`.
+2. Build the release's read-only install: `tools/install-release.sh v0.13.0`. It runs the release's own hook suite on the
+   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.13.0` (or under
    `$KIT_INSTALL_ROOT`, to keep installs elsewhere).
 3. Make a project from it: follow the install's copy of [`patterns/local-spawn.md`](patterns/local-spawn.md), whose
    procedure pins the project to the release and puts its hooks in before commit one; then
    [`patterns/repo-genesis.md`](patterns/repo-genesis.md) for its identity and commit one. A new project starts with no
    do-not-publish list (the one line saying so, pinned) and no identity guard; local-spawn says how to turn on each.
-4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v0.12.1/bin/kit-pin user v0.12.1`
+4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v0.13.0/bin/kit-pin user v0.13.0`
    links the rules file every session loads, `rules/morrowcairn.md`, the three triggered skills and the two optional
    hooks' scripts into Claude Code's folder, writes the kit's user pin, and changes no settings file.
    [`docs/rules-explained.md`](docs/rules-explained.md) says why each rule is there;

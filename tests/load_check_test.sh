@@ -38,7 +38,7 @@ sha() { local s; s=$(sha256sum < "$1") && printf '%s' "${s%% *}"; }
 
 CASES=(LC0 LC0b LC16 LC4 LC5 LC7 LC8 LC9 LCe LC12 LC13 LC13b LC13c LC13d LC14 LC15 LQ2 LQ2b LQ4 LQ5 LCa LCb LCc LCd LCf LCg
        LQ1 LS1 LS2 LS3 LS4 LS5 LS6 LS6b LS7 LS8 LP3 LS14 LS14b LP1a LP1b LP1c LP1d LP1e LP2a LP2b LP2c LP2d LP2e LP2f LP2g
-       LP2h LS13 LS9 LS10 LS11 LS11b LS12 EG25 EG26 EG27 LP1f)
+       LP2h LS13 LS9 LS10 LS11 LS11b LS12 EG25 EG26 EG27 LP1f LP3b LP4)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     for c in "${CASES[@]}"; do skip "$c" "no commits yet in $ROOT: rerun after commit one"; done
     echo; echo "load_check_test: $PASS passed, $FAIL failed, $SKIP skipped"; exit 0
@@ -602,7 +602,81 @@ mkcurl
 inj "$STUB" "$TMP/stub-plant/kit-load-check-stub" 'release=""' "refuse \"the machine names $PL here\""; sp=$?
 fresh_projects; LC_STUB="$TMP/stub-plant/kit-load-check-stub"; stub_ping_run; LC_STUB=$STUB; (( sp == 0 )) || rc=0
                                                stub_ping_clean "LP1f a refusal the stub's ping doesn't list goes as a fixed line, its reason kept in the report" $rc "$rep" "the stub refused (the report on the machine says why)" "$PL"
+# The fail ping under bash 3 too: a stock Mac runs the stub under its /bin/bash, 3.2, where EG25 to EG27 set no ping, so
+# the ping's own lines had only been parsed there. A refusal (a pinned release with no install) still pings, the URL
+# reaching curl on its standard input and never on curl's command line or in the stub's output, as LS8 and LP3 check
+# under this suite's bash. It catches a ping 3.2 doesn't send, a URL 3.2 puts on the command line or prints, and a
+# refusal it doesn't report. lp3b_run SUFFIX BASH.
+lp3b_run() {
+    local rep rc cargs cin
+    userpin v9.9.9; rm -f "$TMP/curl-args"
+    LC_BASH=$2; rep=$(lc KIT_LOAD_CHECK_PING=https://ping.invalid/zq-test); rc=$?; LC_BASH=bash
+    cargs=$(awk '!/^STDIN: /' "$TMP/curl-args" 2>/dev/null); cin=$(awk '/^STDIN: /' "$TMP/curl-args" 2>/dev/null)
+    [[ -n "$cargs" && "$cargs" != *"ping.invalid"* && "$cin" == *'url = "https://ping.invalid/zq-test/fail"'* \
+       && "$(cat "$TMP/lc.out")" != *"zq-test"* ]] || rc=0
+    stub_refused "LP3b$1 the stub's fail ping: sent, its URL on curl's standard input alone, never printed, the refusal reported" $rc "$rep" "no install for v9.9.9"
+    userpin; }
+lp3b_run "" bash
+if [[ -z "$b3why" ]]; then lp3b_run " (bash 3)" "$B3"; else skip "LP3b (bash 3)" "$b3why"; fi
 rm -f "$FB/curl"
+# The same ping with this machine's real curl, which reads the URL from its standard input (-K -): the stand-in above
+# only records what it was handed. A listener on the loopback address (built below at run time, as `lo`, not written
+# out), a small Python server, records each request it gets; the
+# case passes when the stub's fail ping arrives there, a POST to the URL's /fail with the fail line in its body, and the
+# URL is in neither the stub's output nor its report. no_proxy keeps a proxy setting from taking the request elsewhere.
+# It skips, saying why, with no curl or where no local port can be opened. lp4_run SUFFIX BASH.
+cat > "$TMP/lp4-server.py" <<'PY'
+import http.server, os, sys, time
+port_file, rec, addr = sys.argv[1], sys.argv[2], sys.argv[3]
+class Rec(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        with open(rec, "ab") as f:
+            f.write(b"POST " + self.path.encode() + b"\n" + body + b"\n")
+        self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+    def log_message(self, *a):
+        pass
+try:
+    srv = http.server.HTTPServer((addr, 0), Rec)
+except OSError as e:
+    with open(port_file, "w") as f:
+        f.write("nobind %s\n" % e.strerror)
+    sys.exit(0)
+with open(port_file + ".part", "w") as f:
+    f.write("%d\n" % srv.server_address[1])
+os.rename(port_file + ".part", port_file)
+srv.timeout = 0.5
+end = time.time() + 120
+while time.time() < end:
+    srv.handle_request()
+PY
+lp4why=""; lp4pid=""; lp4port=""; lo=$(printf '%d.%d.%d.%d' 127 0 0 1)
+if ! command -v curl >/dev/null 2>&1; then lp4why="curl is not installed here"
+else
+    rm -f "$TMP/lp4-port" "$TMP/lp4-rec" "$TMP/lp4-server.err"
+    python3 -I "$TMP/lp4-server.py" "$TMP/lp4-port" "$TMP/lp4-rec" "$lo" 2> "$TMP/lp4-server.err" & lp4pid=$!
+    for _ in $(seq 1 300); do [[ -s "$TMP/lp4-port" ]] && break; sleep 0.1; done   # up to 30 s: a slow runner's python
+    lp4port=$(cat "$TMP/lp4-port" 2>/dev/null)
+    if [[ "$lp4port" == nobind* ]]; then lp4why="no local port could be opened (${lp4port#nobind })"
+    elif [[ ! "$lp4port" =~ ^[0-9]+$ ]]; then
+        lp4why="the listener named no port within 30 seconds$(awk 'NF {printf ": %s", substr($0, 1, 120); exit}' "$TMP/lp4-server.err" 2>/dev/null)"
+    fi
+fi
+lp4_run() {
+    local rep rc recd url="http://$lo:$lp4port/zq-lp4"
+    userpin v9.9.9; rm -f "$TMP/lp4-rec"
+    LC_BASH=$2; rep=$(lc no_proxy="$lo" NO_PROXY="$lo" KIT_LOAD_CHECK_PING="$url"); rc=$?; LC_BASH=bash
+    recd=$(cat "$TMP/lp4-rec" 2>/dev/null)
+    [[ "$recd" == "POST /zq-lp4/fail"$'\n'"kit load check: FAIL"* && "$(cat "$TMP/lc.out")" != *"zq-lp4"* \
+       && "$rep" != *"zq-lp4"* && "$(cat "$TMP/lc.out")" != *"did not go through"* ]] || rc=0
+    stub_refused "LP4$1 the stub's fail ping with the real curl reaches a listener on this machine, its URL never printed" $rc "$rep" "no install for v9.9.9"
+    userpin; }
+if [[ -n "$lp4why" ]]; then skip "LP4" "$lp4why"; skip "LP4 (bash 3)" "$lp4why"
+else
+    lp4_run "" bash
+    if [[ -z "$b3why" ]]; then lp4_run " (bash 3)" "$B3"; else skip "LP4 (bash 3)" "$b3why"; fi
+fi
+[[ -z "$lp4pid" ]] || { kill "$lp4pid" 2>/dev/null; wait "$lp4pid" 2>/dev/null; }
 
 echo
 echo "load_check_test: $PASS passed, $FAIL failed, $SKIP skipped"

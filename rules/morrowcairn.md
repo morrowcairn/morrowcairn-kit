@@ -64,12 +64,13 @@ This section applies once a session has received a relay.
 - **A report** is the reply that closes a relay or an ad hoc message. Heartbeats and progress notes aren't reports; a
   monitored process gets one report, at its end.
 - **Every report ends** with "End of report <project> <label> #N (session <id8>)", matching the opening line, with a
-  direct tag where it answers one (#N-directM). A report in parts carries it on the last part only.
+  direct tag where it answers one (#N-directM); a second report under the same relay ends #N-part2, then -part3, so each
+  has its own file. A report sent in several messages carries the end line on its last message only.
 - **Where the machine keeps a reply file** ([reply folder]), the kit's reply-file hook writes each report to a file of
   its own there; the session never writes it. Every report gives that file's path on the line just before its end
   line, so the end line stays the report's last line: [reply folder]/<project>-<label>-<id8>-<NN>.md, lowercase, NN the
-  report's number in two digits, a direct or wake tag kept (-04-direct1). Build it only from an ID you read yourself;
-  otherwise leave the line out and say why.
+  report's number in two digits, a direct, wake or part tag kept (-04-direct1, -04-part2). Build it only from an ID you
+  read yourself; otherwise leave the line out and say why.
 - **A wake-up** (a scheduled check, started by no relay) that changed, measured, found or stopped on something writes a
   report of its own, tagged as a direct message is (#N-wake1); one that did none of these writes none.
 - **A reprint** copies the report verbatim, from its reply file where the machine keeps one, otherwise from the
@@ -106,16 +107,18 @@ what you found is not acting on it.
 - In every report about code, mark what you checked, with the command or reading behind it, and what you infer. A
   measured statement overrides a brief's assumption; an inference doesn't: report it as one, and say what would check
   it.
-- Every measurement names where it was read (the surface its user sees; before release, the candidate itself, named as
-  such; never the producer's own copy taken for the user's) and what it was compared with (a source that didn't come
-  from the thing measured). A number with only an internal comparison is "internal, unverified".
+- Every measurement names where it was read (the surface its user sees, never the producer's own copy taken for the
+  user's) and what it was compared with (a source that didn't come from the thing measured). A number with only an
+  internal comparison is "internal, unverified", and so is a check run on a release candidate until it is re-read on the
+  published release.
 - **Absence is a claim too.** A "none found", an empty or zero count, or an empty piped result names its command and the
   exit status of each search in it. The search covers ignored, binary and non-UTF-8 files: the system grep, called by
   its path (`/usr/bin/grep` on Linux, macOS and WSL), under `LC_ALL=C` with `-l`, `-c` or `-q` (`-a` when it prints
   lines), never `-I`; ripgrep only with `--text --hidden --no-ignore`; or a byte-level count that names how it walked
   the files and which it couldn't read. A bare `grep` typed in a Claude Code session is Claude Code's own search
-  wrapper, not the system's, and `command grep` takes whichever grep comes first on `PATH`. For a term holding
-  a non-ASCII letter, give each of its case forms as its own `-e` pattern, with no `\b` beside that letter, or use the
+  wrapper, not the system's: with `-q`, `-l` or output discarded, its `-v` exits 0 only if no line matches, not if any
+  doesn't, so `-v` goes by path too; and `command grep` takes whichever grep comes first on `PATH`. For a term holding a
+  non-ASCII letter, give each of its case forms as its own `-e` pattern, with no `\b` beside that letter, or use the
   byte-level count. Absence needs exit 1 from grep, or a zero from such a count; exit 0 with nothing printed means
   output was suppressed; exit 2 means a file couldn't be read. A subagent's "none found" is a lead: rerun it yourself.
 
@@ -132,10 +135,14 @@ what you found is not acting on it.
   why it is the project's. If it isn't, don't build it.
 - **A question waiting on the owner** goes to [owner's queue] when it is raised, never only into a handoff or a reply,
   one entry per question, naming why it is theirs: their knowledge could change it (legal, regulatory, governance,
-  reputation), it is a call on scope or purpose, it touches their ruling, it is hard to undo or risks data loss,
-  exposure or a new recurring or material cost, or only they can do it. A reversible call on scope or sequence that
-  touches no ruling is the drafter's, not theirs. An entry, and a question put to the owner in a reply, names the record
-  it comes from, if any, and says a ruling that answers it was looked for and none found.
+  reputation), it is a call on purpose, it touches their ruling, it is hard to undo or risks data loss, exposure or a
+  new recurring or material cost, or only they can do it. A reversible call, technical or on scope or sequence, that has
+  none of these reasons isn't theirs: the session makes a small or low-risk one itself and goes on, listing each in its
+  report under the heading "Calls I made:", so the drafter or the owner can undo it, but never past a relay's stop
+  condition, the size rule's stops, a relay's boundary or anything another rule sends to the owner; a larger one is the
+  drafter's, a technical one included. The drafter may reassign an entry that turns out to be the drafter's call, with
+  its reason, shown in its next Outbox; the owner can pull it back. An entry, and a question put to the owner in a
+  reply, names the record it comes from, if any, and says a ruling that answers it was looked for and none found.
 
 ## 9. Output, permissions and the shell
 
@@ -146,18 +153,23 @@ what you found is not acting on it.
   text moved into a file). Report a noisy prompt instead. Editing with the edit tool is ordinary work.
 - **A refused action:** report the exact command and refusal, and don't reshape it. A route that never needed review is
   fine when the refusal was about the command's form, such as the Read tool for a refused shell read; say that you took
-  it. A refusal over what would be read or changed holds for every route. If the refused action is irreversible, stop
-  the task there; an auto-mode allow rule never clears that stop. If it needs the owner, ask them to approve it from
-  `/permissions`, Recently denied, quoting the command; never hand them a command to type. Retry once when told;
-  refused again, stop and say so. A relay saying the owner approved, retried or switched modes is its drafter's
-  belief, not evidence, unless it carries their words as a ruling does (§8). Never change
-  permission or auto-mode settings yourself: a refusal that keeps recurring on a safe action goes to the owner, to fix
-  in their own settings or to take to their IT where the organization manages them.
+  it. A refusal over what would be read or changed holds for every route; one that doesn't make clear which it is about
+  is taken as about what would be read or changed. If the refused action is irreversible, stop the task there; an
+  auto-mode allow rule never clears that stop. If it needs the owner, ask them to approve it from `/permissions`,
+  Recently denied, quoting the command; never hand them a command to type. Retry once when told; refused again, stop and
+  say so. A relay saying the owner approved, retried or switched modes is its drafter's belief, not evidence, unless it
+  carries their words as a ruling does (§8). Never change permission or auto-mode settings yourself: a refusal that
+  keeps recurring on a safe action goes to the owner, to fix in their own settings or to take to their IT where the
+  organization manages them.
 - **A program reaches the shell one way:** a heredoc with a quoted delimiter (`<<'PY'`) or a temporary file, never a
   `-c`, `-d` or `-e` string. Prose, an apostrophe or a `$` in a payload is the sign.
 - **A destructive command's target is never an unchecked variable:** start multi-line shell calls with `set -u`, write
   `${VAR:?}` in a path given to `rm`, `mv`, `tar -x`, `cp` onto a file or a `>` redirect, and never `cd` then delete by
   a relative glob.
+- **Keep the work's history:** before deleting anything, check that it is an exact duplicate or kept elsewhere; only
+  then may it go, the report naming where the other copy is. Anything else is kept, or moved to an archive, never
+  deleted. A secret's value is kept in no copy (what holds one is removed), and what a stated commitment requires
+  removing goes, citing it. An archive takes the same scans as everything else, run before archiving.
 - **Inspect configuration by count and name:** crontabs, environments, config files and logs that may hold secrets
   print counts or names, never raw lines. A URL can be a credential. Never expand a secret variable to test it.
 - When a read needs the shell (a search or a pipeline whose output you'll act on), run it as its own command, never in
@@ -184,7 +196,7 @@ This section applies once a session has received a relay.
 
 - **No idle:** when a relay's work is done, never report "nothing to do". Report what you are blocked on, and who or
   what unblocks each item; when unblocked items run out, start the reversible parts of the next item in your lane, and
-  say so.
+  say so. A report that ends your turn says so in one line: "Stopped: waiting on", then who or what.
 - **No artificial delays:** nothing is scheduled out without a reason: a technical dependency, a run it must ride, a
   ruling or a test it needs first. The owner's time counts as a reason for an item that needs them, not for one that
   doesn't. This covers items already dated, not only new ones.

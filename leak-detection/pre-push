@@ -206,6 +206,10 @@ if [[ -n "$grafts" && -s "$grafts" ]]; then
     exit 1
 fi
 GITDIR="$(git rev-parse --git-dir)"
+# The list's pin sits in the repository's shared git folder, which every worktree of it shares, as the history audit
+# reads it: in a linked worktree GITDIR is that worktree's own folder, which holds no pin of the kit's, and one left
+# there is never read (queue 452; hooks_test WT2, WT4, WT5).
+PINDIR="$(git rev-parse --path-format=absolute --git-common-dir)"
 LIST_FROM=""
 # A project with no do-not-publish list says so with one deliberate line, this reserved value, pinned like any list: the
 # identity layers then stay off, said on every push, and the credential layers run. A
@@ -285,13 +289,13 @@ if [[ -z "${LEAK_PATTERN:-}" ]]; then
 fi
 
 # The list must be the one its pin names: a list cut, or changed in place, would scan for less while every push kept
-# passing. The pin sits in the clone's .git, untracked: .git/leak-pattern.pin, which
-# bin/kit-pin repin writes. A refusal gives rows, never a term or a hash.
+# passing. The pin sits in the clone's .git, untracked: .git/leak-pattern.pin, in the shared git folder (PINDIR) from
+# every worktree, which bin/kit-pin repin writes. A refusal gives rows, never a term or a hash.
 if why=$(kit_no_sha256); then
     echo "pre-push: REFUSING -- $why, so the do-not-publish list can't be checked against its pin." >&2
     exit 1
 fi
-if ! kit_pin_check "$LEAK_PATTERN" "$GITDIR/leak-pattern.pin"; then
+if ! kit_pin_check "$LEAK_PATTERN" "$PINDIR/leak-pattern.pin"; then
     echo "pre-push: REFUSING -- the do-not-publish list (from $LIST_FROM) doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." >&2
     echo "  You can: if the list changed on purpose, record why and repin it ($kp_cmd repin local; leak-detection/README.md," >&2
     echo "  Changing the list); if it didn't, put the list back." >&2

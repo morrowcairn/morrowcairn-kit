@@ -9,9 +9,10 @@
 #   bin/kit-pin migrate RELEASE                move a spawn that runs a hooks path onto RELEASE's install
 #   bin/kit-pin restore KIT-CLONE              rebuild the pinned install from a clone of the kit, then check
 #   bin/kit-pin repin local|ci [--first] [--ruling §N]
-#                                              pin the do-not-publish list (.git/leak-pattern.pin, untracked) or CI's
+#                                              pin the do-not-publish list (.git/leak-pattern.pin, untracked, in the
+#                                              shared git folder every worktree reads, as pre-push does) or CI's
 #                                              list (.github/leak-pattern.pin, tracked, from its record
-#                                              .git/leak-pattern.ci)
+#                                              .git/leak-pattern.ci, in the same shared git folder)
 #   bin/kit-pin move-list                      give this clone's project its list's place: kit.list-id where it has
 #                                              none, and a copy of .git/leak-pattern there; never overwrites a list
 #   bin/kit-pin user RELEASE                   link the release's rules file, skills and hooks into the user level
@@ -39,9 +40,31 @@
 #
 set -uo pipefail
 # Text handling runs byte-wise, as in pre-push: kit-pin splits and hashes the list, and
-# every text tool here runs under LC_ALL=C; it holds no matcher (install test LG1).
+# every text tool here runs under LC_ALL=C. Its one matcher, check's compile test of the list, runs in the caller's
+# locale, as pre-push's tree scan does (install test LG1).
 KIT_CALLER_LOCALE=${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}
 export LC_ALL=C
+# kit-pin runs outside any git hook, so no git setting it inherits chooses what git acts on (the gates skill, procedure
+# 13, item 3): every GIT_ variable goes but those that choose which configuration git reads, and the one that only
+# narrows where git looks for a repository, so kit-pin sees the hooks path and settings the person's own git sees.
+# Kept: GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GIT_CONFIG_NOSYSTEM (which files: an organization's hooks path lives
+# there), GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>, and GIT_CONFIG_PARAMETERS (values git
+# itself applies; none of them moves the work tree, core.worktree included, measured on git 2.43), and
+# GIT_CEILING_DIRECTORIES (it can only stop the search sooner). Gone with the rest: GIT_DIR, GIT_WORK_TREE,
+# GIT_COMMON_DIR, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_NAMESPACE and the other
+# variables that choose the repository, work tree, index, object store or refs; GIT_DISCOVERY_ACROSS_FILESYSTEM, which
+# widens the search; GIT_CONFIG, which only redirects the git config command, so kit-pin's own reads of it would differ
+# from what git uses (with --local it fails outright); and the variables that choose no repository and change nothing
+# kit-pin reads (trace, pager, editor, transport, identity, pathspec), since kit-pin commits, pushes and fetches
+# nothing. Replace refs are off, as in pre-push, so check reads the objects git stores (install test GD1 to GD4, GR1).
+for v in $(compgen -e); do
+    case $v in
+        GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) ;;
+        GIT_CONFIG_PARAMETERS|GIT_CEILING_DIRECTORIES) ;;
+        GIT_*) unset "$v" ;;
+    esac
+done
+export GIT_NO_REPLACE_OBJECTS=1
 
 ROOT_DIR=${KIT_INSTALL_ROOT:-${HOME:-}/.local/share/morrowcairn/releases}
 SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}
@@ -330,7 +353,7 @@ defaults_note() {   # READER: the target release's list reader; after move_list,
 }
 
 closed_head() { echo "NEXT STEP -- the do-not-publish check is currently FAILING CLOSED (it will refuse pushes):"; }
-list_exists_advice() {   # GITDIR: the next step for a list that exists but that pre-push can't use: its first pin when
+list_exists_advice() {   # PINDIR: the next step for a list that exists but that pre-push can't use: its first pin when
                          # it has none yet, else pre-push's own advice; never a command that writes the list
     closed_head
     if [[ ! -e "$1/leak-pattern.pin" && ! -L "$1/leak-pattern.pin" ]]; then
@@ -343,8 +366,20 @@ list_exists_advice() {   # GITDIR: the next step for a list that exists but that
 list_report() {   # INSTALL: where pre-push will take the do-not-publish list from and that it matches its pin (0), or
                   # that pre-push will refuse every push (3): no usable list, or one its pin doesn't name; a pinned
                   # reserved line reports identity checks off (0), as pre-push reads it
-    local inst=$1 gitdir value rc prc=0 no_list='kit:no-identity-list'
+    local inst=$1 gitdir pindir value rc prc=0 no_list='kit:no-identity-list'
     gitdir=$(git rev-parse --git-dir)
+    # The pin is read where pre-push reads it: the repository's shared git folder, which every worktree of it shares,
+    # never a linked worktree's own (queue 452; install test WK1, WK2).
+    pindir=$(git rev-parse --path-format=absolute --git-common-dir)
+    # A release before v0.13.0 has its pre-push read the pin from a linked worktree's own git folder, where this check
+    # and repin use the shared one, so a check can pass where that pre-push refuses every push from the worktree. In
+    # such a worktree, say so and name the move. A message only: nothing this check returns changes (purple's §602, F2;
+    # install test WK4 to WK4c).
+    local rel=${inst##*/}
+    if [[ "$(git rev-parse --absolute-git-dir 2>/dev/null)" != "$pindir" && "$rel" =~ ^v0\.([0-9]+)\. ]] \
+       && (( BASH_REMATCH[1] < 13 )); then
+        echo "kit-pin: this is a linked worktree, and the pinned release, $rel, has pre-push read the list's pin from this worktree's own git folder, not the shared one this check reads and repin writes, so pushes from here refuse until the project moves: kit-pin to v0.13.0 or later."
+    fi
     # A list in this caller's environment is never read: pre-push drops it unread (the gates skill, procedure 13).
     {
         # Where the release's hooks read it: the place its reader names, or .git/leak-pattern for an older release.
@@ -364,7 +399,17 @@ list_report() {   # INSTALL: where pre-push will take the do-not-publish list fr
                          printf "%s" "$LP_ERROR"; exit 1' _ "$inst/leak-detection/read-leak-pattern.sh" "$LS_FILE" 2>/dev/null)
         rc=$?
         case $rc in
-            0) if kit_pin_check "$value" "$gitdir/leak-pattern.pin"; then
+            0) if kit_pin_check "$value" "$pindir/leak-pattern.pin"; then
+                   # A list its pin names can still fail to compile, and then pre-push refuses every push. So it is
+                   # compiled as pre-push's tree scan compiles it, the same git matcher with the pattern in the same
+                   # place, in the caller's locale, over the empty tree, where a pattern that compiles finds nothing
+                   # (exit 1). Anything else is a list pre-push can't use. git's message would quote the pattern, so
+                   # none is shown (install test KL17, KL17b).
+                   if [[ "$value" != "$no_list" ]] && ! { LC_ALL="$KIT_CALLER_LOCALE" git grep --no-color -q -inE "$value" 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -- . >/dev/null 2>&1; (( $? == 1 )); }; then
+                       echo "kit-pin: $LS_SHOW matches its pin, but its pattern doesn't compile as an extended regex, so pre-push refuses every push."; closed_head
+                       echo "  Fix the pattern so it compiles, keeping its terms (an unclosed bracket or group is the usual cause), then record why and repin it ($KP_CMD repin local; leak-detection/README.md, Changing the list)."
+                       value=""; return 3
+                   fi
                    if [[ "$value" == "$no_list" ]]; then
                        echo "kit-pin: $LS_SHOW is the line saying this project has no do-not-publish list, and matches its pin -- the do-not-publish check is off; pre-push says so on every push and runs the credential scan."
                    else
@@ -375,8 +420,8 @@ list_report() {   # INSTALL: where pre-push will take the do-not-publish list fr
                    fi
                    return 0
                fi
-               echo "kit-pin: $LS_SHOW doesn't match its pin, $gitdir/leak-pattern.pin: $KP_ERROR."
-               value=""; list_exists_advice "$gitdir"; return 3 ;;
+               echo "kit-pin: $LS_SHOW doesn't match its pin, $pindir/leak-pattern.pin: $KP_ERROR."
+               value=""; list_exists_advice "$pindir"; return 3 ;;
             1) echo "kit-pin: $LS_SHOW is not in a shape pre-push reads: $value."; closed_head
                echo "  Fix its shape, keeping the list: blank lines, full-line comments and one LEAK_PATTERN='...' line (leak-detection/README.md, Setup)."
                return 3 ;;
@@ -926,7 +971,7 @@ mode_restore() {
 }
 
 mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
-    local ctx=${1:-} first=0 ruling="" gitdir top pin list value from old_rows="" old_sum new_rows new_sum head kind tmp prc
+    local ctx=${1:-} first=0 ruling="" gitdir common top pin list value from old_rows="" old_sum new_rows new_sum head kind tmp prc
     [[ $# -gt 0 ]] && shift
     while (( $# )); do
         case $1 in
@@ -937,11 +982,15 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
     done
     gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || refuse "this is not inside a git clone"
     top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "this clone has no work tree"
+    # The list's pin and CI's record sit in the repository's shared git folder, which every worktree of it shares, as
+    # pre-push reads them, never in a linked worktree's own (queue 452; install test WK3, RP14, RP15).
+    common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        || refuse "this clone's shared git folder, where the list's pin and CI's record sit, can't be named"
     case $ctx in
         local)
             # The do-not-publish list, read as pre-push reads it, by the reader beside this script, at the place that
-            # reader names; its pin in .git, untracked.
-            pin="$gitdir/leak-pattern.pin"
+            # reader names; its pin in .git, untracked, in the shared git folder.
+            pin="$common/leak-pattern.pin"
             list_place "$KIT_DIR/leak-detection/read-leak-pattern.sh"; prc=$?
             if (( prc != 1 )) && [[ -r "$LS_FILE" ]]; then
                 list=$LS_FILE
@@ -962,8 +1011,8 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
                 "The project's owner: whether this project keeps a do-not-publish list."; fi ;;
         ci)
             # CI's list can't be read back from the forge, so its record, the secret's exact value, is kept untracked in
-            # .git/leak-pattern.ci; its pin is tracked, so a change to it is a reviewed commit.
-            pin="$top/.github/leak-pattern.pin"; list="$gitdir/leak-pattern.ci"; from=".git/leak-pattern.ci"
+            # .git/leak-pattern.ci, in the shared git folder; its pin is tracked, so a change to it is a reviewed commit.
+            pin="$top/.github/leak-pattern.pin"; list="$common/leak-pattern.ci"; from=".git/leak-pattern.ci"
             [[ -r "$list" ]] || refuse "there is no record of CI's list ($list)" \
                 "Keep the LEAK_PATTERN secret's exact value there, untracked, with no trailing newline."
             value=$(cat "$list") ;;
@@ -1125,6 +1174,17 @@ if [[ "${1:-}" != verify ]]; then
     if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
         refuse "git $gv is older than 2.31, the oldest kit-pin reads correctly: an older git can't name this clone's git folder as an absolute path" \
             "You can: install git 2.31 or later where you may, then run kit-pin again." "If IT manages this machine: ask IT for git 2.31 or later."
+    fi
+fi
+# A graft rewrites the history git shows for every reader, and no setting turns it off as replace refs are turned off
+# above, so a repository with grafts is refused before any mode reads or writes it, as pre-push, pre-commit and the tree
+# scan refuse one (the gates skill, procedure 13, item 3; install test GX1, GX1b). GIT_GRAFT_FILE went with the other
+# inherited GIT_ variables, so the repository's own info/grafts is the one git would read. verify and user read none.
+if [[ "${1:-}" != verify && "${1:-}" != user ]]; then
+    grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
+    if [[ -n "$grafts" && -s "$grafts" ]]; then
+        refuse "this repository has grafts, which change the history git shows, so what kit-pin reads from it can't be read as it is" \
+            "You can: remove them (info/grafts in the git folder); git replace --convert-graft-file turns them into replace refs, which kit-pin ignores."
     fi
 fi
 case "${1:-}" in

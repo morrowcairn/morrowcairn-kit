@@ -87,7 +87,8 @@ CASES=(MX1 VT1 HS1 HS2 IR0 IR1 IR1b IR1c IR1d IR1e IR2 IR3 IR4 IR5 IR6 IR7 IR8 I
        ST0 ST0b ST1 ST2 ST2b ST3 ST3b ST3c ST4 ST5 ST6 ST6b ST7 ST8 ST9 ST10 ST10b ST11 ST12
        CC7 CC1 CC2 CC3 CC4 CC5 CC6 CI1 CI2 CI3 CI4 GL1 CF1 CF2 CF3 CF4 CF5
        KV0 KV1 KV2 KV3 KV4 KC0 KC1 KC1b KC2 KC3 KC4 KC5 KP1
-       KL1 KL2 KL2b KL3 KL4 KL5 KL6 KL7 KL8 KL9 NV0 KL10 KL11 KL12 KL13 KL14 KL15 KL16 KB1 KB2 KB3
+       KL1 KL2 KL2b KL3 KL4 KL5 KL6 KL7 KL8 KL9 NV0 KL10 KL11 KL12 KL13 KL14 KL15 KL16 KL17 KL17b GD1 GD2 GD3 GD4
+       WK1 WK2 WK3 GX1 GX1b GX1c GX2 WK4 WK4b WK4c KB1 KB2 KB3 GR1
        KT1 KT2 KT3 KT4 KT5 KT6 KT6b KT7 KT0 KT0b KT8 KT9
        KM2 KM3 KM1 KM1b KM0 KM0b
        HO1 HO1b HO2 HO3 HO4 HO5 HO6 HG1 HG2 HG3 HP1 HP2 HP3 HP4 HN1 HN2 HX1 KX1 HX2 KX2 HX3 HX4
@@ -529,6 +530,87 @@ mv "$TMP/sp-kl2.pin" "$SP/.git/leak-pattern.pin"
 [[ $rc -eq 3 && "$out" == *"repin local --first"* ]] && ! writes_list "$out" && rc=0 || rc=1
                                                want_ok "KL16 check: a list with no pin yet: its first pin, no command that writes the list file" $rc "$out"
 tlist "$SP"                                                       # back to the list its pin names, for the cases below
+# A list its pin names that doesn't compile: pre-push refuses every push with it ("did not compile"), so check reports
+# it as failing closed, exit 3, naming the compile, and never as active; the list is never printed. Two forms git's
+# extended regex rejects, an unclosed group and an unclosed bracket, each pinned, so only a compile can tell.
+cp -p "$SP/.git/leak-pattern.pin" "$TMP/sp-kl17.pin"
+printf "LEAK_PATTERN='%s('\n" "$MARK" > "$LPF"; tpin "$SP/.git/leak-pattern.pin" "$MARK(" 1; out=$(kl); rc=$?
+fc $rc "$out" && [[ "$out" == *compile* && "$out" != *SYNTH-MARKER* ]] && rc=0 || rc=1
+                                               want_ok "KL17 check: a pinned list that doesn't compile (an unclosed group) reads as failing closed, exit 3, naming the compile, the list not printed" $rc "$out"
+printf "LEAK_PATTERN='%s['\n" "$MARK" > "$LPF"; tpin "$SP/.git/leak-pattern.pin" "$MARK[" 1; out=$(kl); rc=$?
+fc $rc "$out" && [[ "$out" == *compile* && "$out" != *SYNTH-MARKER* ]] && rc=0 || rc=1
+                                               want_ok "KL17b check: a pinned list that doesn't compile (an unclosed bracket) reads as failing closed, exit 3, naming the compile, the list not printed" $rc "$out"
+cp -p "$TMP/sp-kl17.pin" "$SP/.git/leak-pattern.pin"; tlist "$SP"
+# kit-pin runs outside any git hook, so it starts git with no inherited GIT_ setting (the gates skill, procedure 13,
+# item 3): a GIT_DIR left in its caller's environment, naming another clone, never makes check or repin read or write
+# that clone's pin in place of this one's. GDO is a clone of the spawn with the release's stubs; each case gives the
+# two clones pins that disagree, so a run that read the other clone's pin shows.
+GDO="$TMP/gd-other"; git clone -q "$SP" "$GDO" 2>/dev/null
+for h in pre-commit pre-push; do install -m 0755 "$I1/leak-detection/stub-hook" "$GDO/.git/hooks/$h" 2>/dev/null; done
+gd() { (cd "$SP" && env -u LEAK_PATTERN GIT_DIR="$GDO/.git" "$KP" "$@") 2>&1; }   # MODE...: kit-pin in the spawn, GIT_DIR the other clone's
+cp -p "$SP/.git/leak-pattern.pin" "$TMP/sp-gd.pin"
+tpin "$SP/.git/leak-pattern.pin" "zqotherterm" 1; tpin "$GDO/.git/leak-pattern.pin" "$MARK" 1
+out0=$(kl); rc0=$?; out=$(gd check); rc=$?
+fc $rc0 "$out0" && fc $rc "$out" && rc=0 || rc=1
+                                               want_ok "GD1 check: an inherited GIT_DIR naming another clone, whose pin names this clone's list, doesn't stand in for this clone's pin: failing closed, exit 3, as without it" $rc "$out"
+tpin "$SP/.git/leak-pattern.pin" "$MARK" 1; tlist "$SP" "zqchangedterm"; tpin "$GDO/.git/leak-pattern.pin" "zqchangedterm" 1
+a=$(sha "$SP/.git/leak-pattern.pin"); b=$(sha "$GDO/.git/leak-pattern.pin"); out=$(gd repin local); rc=$?
+[[ "$(sha "$SP/.git/leak-pattern.pin")" == "$a" && "$(sha "$GDO/.git/leak-pattern.pin")" == "$b" ]] || rc=0
+                                               refused_for "GD2 repin: an inherited GIT_DIR naming another clone, whose pin names this clone's changed list, doesn't stand in for this clone's pin: a change past an append refused, neither pin written" $rc "$out" "changed by more than an append"
+tlist "$SP"; rm -f "$SP/.git/leak-pattern.pin" "$GDO/.git/leak-pattern.pin"; out=$(gd repin local --first); rc=$?
+[[ $rc -eq 0 && -f "$SP/.git/leak-pattern.pin" && ! -e "$GDO/.git/leak-pattern.pin" ]] && rc=0 || rc=1
+                                               want_ok "GD3 repin --first: an inherited GIT_DIR naming another clone: this clone's list is pinned in this clone, and nothing is written in the other" $rc "$out"
+tpin "$SP/.git/leak-pattern.pin" "zqotherterm" 1; tpin "$GDO/.git/leak-pattern.pin" "$MARK" 1
+out=$( (cd "$SP" && env -u LEAK_PATTERN GIT_WORK_TREE="$GDO" "$KP" check) 2>&1 ); rc=$?; fc $rc "$out" && rc=0 || rc=1
+                                               want_ok "GD4 check: an inherited GIT_WORK_TREE naming another clone doesn't stand in for this clone: this clone's own pin, failing closed, exit 3" $rc "$out"
+cp -p "$TMP/sp-gd.pin" "$SP/.git/leak-pattern.pin"; tlist "$SP"   # the spawn's list and the pin that names it, for the cases below
+# In a linked worktree, check and repin read and write the list's pin in the repository's shared git folder, which every
+# worktree of it shares, as pre-push and the history audit read it, never in the worktree's own (queue 452). Each case
+# gives the two folders pins that disagree, so a run that read the worktree's own shows.
+SPW="$TMP/sp-wt"; git -C "$SP" worktree add -q --detach "$SPW" HEAD 2>/dev/null; SPWG=$(git -C "$SPW" rev-parse --absolute-git-dir)
+kw() { (cd "$SPW" && env -u LEAK_PATTERN PATH="$FBIN:$PATH" "$KP" "$@") 2>&1; }   # MODE...: kit-pin in the worktree
+out=$(kw check); rc=$?; [[ $rc -eq 0 && "$out" == *"matches its pin"* ]] && rc=0 || rc=1
+                                               want_ok "WK1 check in a linked worktree with no pin of its own: the shared pin names the list, exit 0" $rc "$out"
+tpin "$SP/.git/leak-pattern.pin" "zqotherterm" 1; tpin "$SPWG/leak-pattern.pin" "$MARK" 1
+out=$(kw check); rc=$?; fc $rc "$out" && rc=0 || rc=1
+                                               want_ok "WK2 check in a linked worktree: a shared pin that doesn't name the list fails closed, exit 3, a matching pin in the worktree's own folder never read" $rc "$out"
+rm -f "$SP/.git/leak-pattern.pin" "$SPWG/leak-pattern.pin"; out=$(kw repin local --first); rc=$?
+[[ $rc -eq 0 && -f "$SP/.git/leak-pattern.pin" && ! -e "$SPWG/leak-pattern.pin" ]] && rc=0 || rc=1
+                                               want_ok "WK3 repin --first in a linked worktree writes the shared pin, and nothing in the worktree's own folder" $rc "$out"
+rm -f "$SPWG/leak-pattern.pin"; git -C "$SP" worktree remove --force "$SPW" 2>/dev/null; git -C "$SP" worktree prune
+cp -p "$TMP/sp-gd.pin" "$SP/.git/leak-pattern.pin"; tlist "$SP"
+# A graft rewrites the history git shows for every reader, and no setting turns it off, so kit-pin refuses a repository
+# with grafts, as pre-push, pre-commit and the tree scan refuse one (the gates skill, procedure 13, item 3), changing
+# nothing; git replace --convert-graft-file is the way out it names.
+git -C "$SP" rev-parse HEAD > "$SP/.git/info/grafts"; a=$(sha "$SP/.git/leak-pattern.pin")
+out=$(kl); rc=$?;                              refused_for "GX1 check: a repository with grafts refuses, naming them" $rc "$out" "grafts"
+out=$(kp repin local); rc=$?; [[ "$(sha "$SP/.git/leak-pattern.pin")" == "$a" ]] || rc=0
+                                               refused_for "GX1b repin: a repository with grafts refuses before writing any pin" $rc "$out" "grafts"
+rm -f "$SP/.git/info/grafts"
+out=$(kl); rc=$?; [[ $rc -eq 0 ]] && rc=0 || rc=1
+                                               want_ok "GX1c check: the same repository without them checks as before, exit 0" $rc "$out"
+# From a linked worktree too: grafts sit in the shared git folder, and check finds them there (purple's §602, F1).
+SPW="$TMP/sp-wt2"; git -C "$SP" worktree add -q --detach "$SPW" HEAD 2>/dev/null
+git -C "$SP" rev-parse HEAD > "$SP/.git/info/grafts"
+out=$(kw check); rc=$?;                        refused_for "GX2 check in a linked worktree: grafts in the shared git folder refuse" $rc "$out" "grafts"
+rm -f "$SP/.git/info/grafts"
+# A release before v0.13.0 has pre-push read the list's pin from a linked worktree's own git folder, where check and
+# repin now use the shared one, so a check can pass where that pre-push refuses every push (purple's §602, F2): in a
+# worktree pinned to such a release, check says so and names the move; pinned to a later one, or in the main clone, it
+# says nothing of it.
+git -C "$K" tag -a v0.12.9 -m v0.12.9; git -C "$K" push -q --no-verify origin v0.12.9 2>/dev/null
+irun v0.12.9 >/dev/null; I09="$KIT_INSTALL_ROOT/v0.12.9"; H09=$(mhash "$I09")
+printf 'release=v0.12.9\nmanifest=%s\n' "$H09" > "$SPW/kit.pin"; stubs "$I09"
+out=$(kw check); rc=$?
+[[ "$out" == *"this worktree's own git folder"* && "$out" == *"kit-pin to v0.13.0 or later"* ]] && rc=0 || rc=1
+                                               want_ok "WK4 check in a linked worktree pinned before v0.13.0 says its pre-push reads the worktree's own pin, and names the move" $rc "$out"
+git -C "$SPW" checkout -q -- kit.pin; stubs "$I1"; out=$(kw check); rc=$?
+[[ $rc -eq 0 && "$out" != *"this worktree's own git folder"* ]] && rc=0 || rc=1
+                                               want_ok "WK4b the same worktree pinned to a later release says nothing of it" $rc "$out"
+pin v0.12.9 "$H09"; stubs "$I09"; out=$(kl); rc=$?; git -C "$SP" checkout -q -- kit.pin; stubs "$I1"
+[[ "$out" != *"this worktree's own git folder"* ]] && rc=0 || rc=1
+                                               want_ok "WK4c the main clone pinned before v0.13.0 says nothing of a worktree" $rc "$out"
+git -C "$SP" worktree remove --force "$SPW" 2>/dev/null; git -C "$SP" worktree prune
 # check says whether pre-push will scan binaries, reading the switch at HEAD as pre-push reads it at the pushed tip:
 # a tracked kit.binaries holding scan=on, or a tracked reviewed list, or off; a kit.binaries that isn't the one
 # line scan=on is named, since pre-push then refuses every push that carries a binary.
@@ -538,6 +620,15 @@ out=$(kp check); rc=$?;                        want_ok "KB2 check: a tracked kit
 printf 'scan=yes\n' > "$SP/kit.binaries"; git -C "$SP" commit -q --no-verify -am "a malformed switch"
 out=$(kp check); rc=$?;                        want_ok "KB3 check: a kit.binaries that isn't the one line scan=on is named, as pre-push refuses binaries then" $rc "$out" "isn't the one line scan=on"
 git -C "$SP" rm -q kit.binaries; git -C "$SP" commit -q --no-verify -m "switch gone"
+# Replace refs are off for kit-pin's git, as for pre-push's: a replace ref pointing HEAD at a commit whose tree turns the
+# binary scan on doesn't make check report a scan pre-push, reading the real tip, won't run.
+grh=$(git -C "$SP" rev-parse HEAD); grb=$(printf 'scan=on\n' | git -C "$SP" hash-object -w --stdin)
+GIT_INDEX_FILE="$TMP/gr1.idx" git -C "$SP" read-tree HEAD
+GIT_INDEX_FILE="$TMP/gr1.idx" git -C "$SP" update-index --add --cacheinfo "100644,$grb,kit.binaries"
+grt=$(GIT_INDEX_FILE="$TMP/gr1.idx" git -C "$SP" write-tree); grc=$(git -C "$SP" commit-tree "$grt" -m "a replacement")
+git -C "$SP" replace -f "$grh" "$grc"; out=$(kp check); rc=$?; git -C "$SP" replace -d "$grh" >/dev/null
+[[ $rc -eq 0 && "$out" == *"binary scan is off"* && "$out" != *"binary scan is on"* ]] && rc=0 || rc=1
+                                               want_ok "GR1 check: a replace ref pointing HEAD at a commit that turns the binary scan on doesn't make check report it on, as pre-push reads the tip" $rc "$out"
 out=$(kp to v9.9.9); rc=$?; same || rc=0;      refused_for "KT1 to refuses a release with no install" $rc "$out" "no install for v9.9.9"
 want_says "MI16 that refusal says what you can do" $rc "$out" "You can: build it from a clone of the kit"
 chmod -R u+w "$I2" 2>/dev/null; cp "$I2/leak-detection/pre-commit" "$TMP/i2-pre-commit"; echo "# edited" >> "$I2/leak-detection/pre-commit"
@@ -837,19 +928,72 @@ same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-02
                                                want_ok "RF2 each later report gets its own file, a direct or wake tag kept, the first file untouched" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
 r3=$(report Proj Blue '#3'); out=$(hstop "$r3"); rc=$?; same_file "$RFD/proj-blue-$ID8-03.md" "$r3" || rc=1
                                                want_ok "RF2b the file's name is lowercase" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+# A second report under one relay ends #N-part2 (R121, the decisions log §610), so it gets a file of its own.
+r2p=$(report proj blue '#2-part2' "$ID8" 'A second report under relay 2.'); out=$(hstop "$r2p"); rc=$?
+same_file "$RFD/proj-blue-$ID8-02-part2.md" "$r2p" && same_file "$RFD/proj-blue-$ID8-02.md" "$r2" || rc=1
+                                               want_ok "RF2c a second report under one relay, its end line #N-part2, gets its own file, -NN-part2" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+# A tag the rules don't name (the rules file's section 4 names direct, wake and part), such as an older draft's
+# #13-next1: the report is filed verbatim under its own tag, and the hook's one output is a JSON object holding only
+# systemMessage, which Claude Code's hooks page says is shown to the person; no decision, so the turn still ends.
+# smsg OUT WANT...: OUT is that object, its message holding each WANT.
+smsg() {
+    python3 -I - "$@" <<'PY'
+import json, sys
+try:
+    o = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+ok = isinstance(o, dict) and list(o) == ["systemMessage"] and isinstance(o["systemMessage"], str)
+sys.exit(0 if ok and all(w in o["systemMessage"] for w in sys.argv[2:]) else 1)
+PY
+}
+r13n=$(report proj blue '#13-next1' "$ID8" 'A report under a tag the rules do not name.'); out=$(hstop "$r13n"); rc=$?
+same_file "$RFD/proj-blue-$ID8-13-next1.md" "$r13n" && smsg "$out" "-next1" "proj-blue-$ID8-13-next1.md" || rc=1
+                                               want_ok "RF2d an end line under a tag the rules don't name (#13-next1) is filed verbatim as -13-next1, and the hook's only output is a systemMessage naming the tag and the file" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+before=$(hstate); out=$(hstop "$r13n"); rc=$?; [[ "$(hstate)" == "$before" && -z "$out" ]] || rc=1
+                                               want_ok "RF2e the same report again files nothing and says nothing" $rc "$out"
+r14d=$(report proj blue '#14-direct1' "$ID8" 'A direct answer.'); out=$(hstop "$r14d"); rc=$?
+same_file "$RFD/proj-blue-$ID8-14-direct1.md" "$r14d" && [[ -z "$out" ]] || rc=1
+                                               want_ok "RF2f a report under a tag the rules name prints nothing" $rc "$out"
+r15=$(report proj blue '#15-direct1-part2' "$ID8" 'A second report answering a direct message.'); out=$(hstop "$r15"); rc=$?
+same_file "$RFD/proj-blue-$ID8-15-direct1-part2.md" "$r15" && [[ -z "$out" ]] || rc=1
+                                               want_ok "RF2g tags run together, each one the rules name (#15-direct1-part2), are kept in the name, and nothing is printed" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+r16=$(report proj blue '#16-Next2' "$ID8" 'Another tag, in capitals.'); out=$(hstop "$r16"); rc=$?
+same_file "$RFD/proj-blue-$ID8-16-next2.md" "$r16" && smsg "$out" "-next2" "proj-blue-$ID8-16-next2.md" || rc=1
+                                               want_ok "RF2h an unnamed tag in capitals is filed lowercase, -16-next2, and the hook says so" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+# An end line the hook can't read is never passed over in silence: filed under a name built from what's there where one
+# can be built safely (a tag with no number; formatting marks around the line), else nothing filed and the same
+# systemMessage says so and why. Never exit 2.
+r13t=$(report proj blue '#13-next' "$ID8" 'A tag with no number.'); out=$(hstop "$r13t"); rc=$?
+same_file "$RFD/proj-blue-$ID8-13-next.md" "$r13t" && smsg "$out" "-next" "proj-blue-$ID8-13-next.md" || rc=1
+                                               want_ok "RF2i a tag with no number (#13-next) is filed verbatim as -13-next, and the hook says the tag isn't one the rules name" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+r17=$(printf 'Last relay received: proj blue #17 (session %s)\n\nA report.\n\n**End of report proj blue #17 (session %s)**' "$ID8" "$ID8")
+out=$(hstop "$r17"); rc=$?; same_file "$RFD/proj-blue-$ID8-17.md" "$r17" && smsg "$out" "proj-blue-$ID8-17.md" "marks" || rc=1
+                                               want_ok "RF2j an end line in bold is filed under its own name, verbatim, and the hook says it has formatting marks around it" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+before=$(hstate); out=$(hstop "$(report proj blue '#13.5')"); rc=$?
+[[ "$(hstate)" == "$before" ]] && smsg "$out" "filed nothing" "#13.5" "isn't a number" || rc=1
+                                               want_ok "RF2k an end line whose #N isn't a number (#13.5) files nothing, and the hook says so and why, quoting it" $rc "$out"
+before=$(hstate); out=$(hstop $'A report.\n\nEnd of report proj blue #18'); rc=$?
+[[ "$(hstate)" == "$before" ]] && smsg "$out" "filed nothing" "names no session" || rc=1
+                                               want_ok "RF2l an end line naming no session files nothing, and the hook says so and why" $rc "$out"
 before=$(hstate); out=$(hstop $'An ordinary reply, no end line.\n\nThe last line.'); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
                                                want_ok "RF3 a reply without an end line writes nothing" $rc "$out"
 before=$(hstate); out=$(hstop "$(report proj blue '#4' "$OTHER")"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
                                                want_ok "RF4 an end line naming another session's ID writes nothing" $rc "$out"
+before=$(hstate); out=$(hstop "$(report proj blue '#4' "$OTHER")"; hstop "$(report proj blue '#4.5' "$OTHER")"); rc=$?
+[[ "$(hstate)" == "$before" && -z "$out" ]] || rc=1
+                                               want_ok "RF4b an end line naming another session's ID, read or not, writes nothing and says nothing" $rc "$out"
 before=$(hstate); out=$(hstop "$(report proj blue '#4')"$'\n\nA line after the end line.'); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
                                                want_ok "RF5 an end line that isn't the reply's last line writes nothing" $rc "$out"
 before=$(hstate); out=$(hstop "$(report 'a/b' blue '#4')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
                                                want_ok "RF6 an end line whose project isn't one word (a /) writes nothing, there or anywhere" $rc "$out"
+smsg "$out" "filed nothing" "a/b" "project or label"
+                                               want_ok "RF6b and the hook says it filed nothing, and why" $? "$out"
 r1b=$(report proj blue '#1' "$ID8" 'The report, sent again changed.'); r1c=$(report proj blue '#1' "$ID8" 'And a third time.')
 out=$(hstop "$r1b"; hstop "$r1c"); rc=$?
-same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-01-resend2.md" "$r1b" \
-    && same_file "$RFD/proj-blue-$ID8-01-resend3.md" "$r1c" || rc=1
-                                               want_ok "RF7 a second report under the same number never overwrites: it goes to -resend2, then -resend3" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-01-new2.md" "$r1b" \
+    && same_file "$RFD/proj-blue-$ID8-01-new3.md" "$r1c" && [[ ! -e "$RFD/proj-blue-$ID8-01-resend2.md" ]] || rc=1
+                                               want_ok "RF7 a different report under a taken name never overwrites: it goes to -new2, then -new3, verbatim" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
 before=$(hstate); out=$(hstop "$r1"; hstop "$r1b"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
                                                want_ok "RF7b a report already filed byte for byte isn't filed again" $rc "$out"
 hlocal "" ""; before=$(hstate); out=$(hstop "$(report proj blue '#5')"); rc=$?; [[ "$(hstate)" == "$before" ]] || rc=1
@@ -913,6 +1057,23 @@ rm -rf "${RFD:?}"; ta=$'I quote an end line here:\nEnd of report proj blue #13 (
 htx "$HK/quote.jsonl"; out=$(hstopt "$tb" "$HK/quote.jsonl"); rc=$?
 same_file "$RFD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ "$(ls -A "$RFD")" == "proj-blue-$ID8-12.md" ]] || rc=1
                                                want_ok "RF11d an end line mid-text without its path line before it closes no report: the turn's one report holds the text from the turn's start" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+rm -rf "${RFD:?}"; tb=$(treport 12 'The second report.')
+ta=$(printf 'Last relay received: proj blue #11 (session %s)\n\n%s\n\nReply file: ~/replies/proj-blue-%s-11-next1.md\nEnd of report proj blue #11-next1 (session %s)' \
+    "$ID8" 'The first report, under a tag the rules do not name.' "$ID8" "$ID8")
+htx "$HK/tag.jsonl"; out=$(hstopt "$tb" "$HK/tag.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-11-next1.md" "$ta" && same_file "$RFD/proj-blue-$ID8-12.md" "$tb" \
+    && smsg "$out" "-next1" "proj-blue-$ID8-11-next1.md" || rc=1
+                                               want_ok "RF11e a report ended mid-turn under a tag the rules don't name is filed under its own name, not folded into the next report's file, and the hook says so" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+rm -rf "${RFD:?}"; ta=$(printf 'Last relay received: proj blue #11 (session %s)\n\n%s\n\nReply file: ~/replies/proj-blue-%s-11.md\nEnd of report proj blue #11.1 (session %s)' \
+    "$ID8" 'The first report, its end line unreadable.' "$ID8" "$ID8")
+htx "$HK/bad.jsonl"; out=$(hstopt "$tb" "$HK/bad.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ "$(ls -A "$RFD")" == "proj-blue-$ID8-12.md" ]] \
+    && smsg "$out" "filed nothing" "#11.1" "next report" || rc=1
+                                               want_ok "RF11f an unreadable end line mid-turn, its path line before it, closes no report: its text stays with the next report's, and the hook says so" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
+rm -rf "${RFD:?}"; ta=$'I quote one:\nEnd of report proj blue #13.5 (session '"$ID8"$')\nand carry on.'
+htx "$HK/quote2.jsonl"; out=$(hstopt "$tb" "$HK/quote2.jsonl"); rc=$?
+same_file "$RFD/proj-blue-$ID8-12.md" "$ta"$'\n\n'"$tb" && [[ -z "$out" ]] || rc=1
+                                               want_ok "RF11g an unreadable end line quoted mid-text, with no path line before it, says nothing" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
 # A reply folder whose path holds a space, as a Windows user folder under /mnt/c/Users does on WSL: the path line names
 # the report's own file by its whole path, so a report ended mid-turn matches it whole, written from ~/ or in full. A
 # line naming anything else ends no report: the part after the space alone, the same file in another folder, another
@@ -1728,6 +1889,7 @@ LG_MATCH_ALLOW=(
     "bin/kit-history-audit|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" grep -a -l -r -i -E -e \"\$LEAK_PATTERN\"|the field files, grep's engine, in the caller's locale"
     "bin/kit-history-audit|1|LC_ALL=C grep -a -n -i -E -e \"\$LEAK_PATTERN\"|a hit file's matching lines by number, byte-wise; the numbers, not printed lines, carry the verdict (HA24)"
     "bin/kit-history-audit|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" grep -a -n -i -E -e \"\$LEAK_PATTERN\"|the same lines, in the caller's locale"
+    "bin/kit-pin|1|LC_ALL=\"\$KIT_CALLER_LOCALE\" git grep --no-color -q -inE \"\$value\"|check's compile test of a list its pin names, in the caller's locale and with the pattern where pre-push's tree scan puts it, over the empty tree; no output (KL17, KL17b)"
 )
 LG_HANDOFF_ALLOW=(
     "leak-detection/pre-push|1|KIT_CALLER_LOCALE=\"\$KIT_CALLER_LOCALE\"|hands the saved locale to scan-binaries.py, which pre-push starts under LC_ALL=C"
@@ -2070,6 +2232,18 @@ want_ok "RP10 repin counts top-level rows: groups, bracket expressions and escap
 printf '%s' "zqcanary|zqpath" > "$RPC/.git/leak-pattern.ci"
 out=$(rp ci --first); rc=$?; allout+=$out; pinis "$RPC/.github/leak-pattern.pin" "zqcanary|zqpath" 2 || rc=1
 want_ok "RP11 repin ci --first pins CI's list, kept in .git/leak-pattern.ci, in the tracked .github/leak-pattern.pin" $rc "$out" "Commit .github/leak-pattern.pin"
+# In a linked worktree, repin ci reads CI's record from the repository's shared git folder, as the list's pin is read
+# and written there (WK1 to WK3), never from the worktree's own folder: a stale record left there is never read in the
+# shared one's place.
+RPW="$TMP/repin-wt"; git -C "$RPC" worktree add -q --detach "$RPW" HEAD 2>/dev/null; RPWG=$(git -C "$RPW" rev-parse --absolute-git-dir)
+rpw() { (cd "$RPW" && env -u LEAK_PATTERN "$KP" repin "$@") 2>&1; }
+mv "$RPC/.git/leak-pattern.ci" "$TMP/rp-ci.aside"; printf '%s' "zqstale|zqold|zqgone" > "$RPWG/leak-pattern.ci"
+out=$(rpw ci --first); rc=$?; allout+=$out; [[ ! -e "$RPW/.github/leak-pattern.pin" ]] || rc=0
+refused_for "RP14 repin ci in a linked worktree: with no record in the shared git folder it refuses, a stale record in the worktree's own folder never read, and writes no pin" $rc "$out" "no record of CI's list"
+mv "$TMP/rp-ci.aside" "$RPC/.git/leak-pattern.ci"; rm -f "$RPW/.github/leak-pattern.pin"
+out=$(rpw ci --first); rc=$?; allout+=$out; pinis "$RPW/.github/leak-pattern.pin" "zqcanary|zqpath" 2 || rc=1
+want_ok "RP15 repin ci in a linked worktree pins the shared record's list, not the stale one in the worktree's own folder" $rc "$out" "Commit .github/leak-pattern.pin"
+git -C "$RPC" worktree remove --force "$RPW" 2>/dev/null; git -C "$RPC" worktree prune
 [[ -n "$allout" && "$allout" != *SYNTH-MARKER* && "$allout" != *zqone* && "$allout" != *zqcanary* && ! "$allout" =~ [0-9a-f]{64} ]]
 want_ok "RP12 nothing repin printed holds a term or a hash" $? "$(printf '%s' "$allout" | tr '\n' ' ' | cut -c1-200)"
 # A row with a non-ASCII letter: kit-pin splits and hashes the list byte-wise, whatever its caller's

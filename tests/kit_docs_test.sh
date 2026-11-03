@@ -582,7 +582,9 @@ RULES_HEADS='## 1. Where instructions come from
 ## 11. Keep going, without padding
 ## 12. Where a project sets its own bar'
 n=$(awk 'END {print NR}' "$RF" 2>/dev/null)
-[[ -f "$RF" && -n "$n" && "$n" -le 200 ]];   want_ok "R1 rules/morrowcairn.md exists and is 200 lines or fewer" $? "lines=${n:-no file}"
+# The target is about 200 lines (the owner's §171), so every session reads the whole file; R120 (the decisions log
+# §600) lets it stand at 209 with this limit at 210: an addition past 210 needs a trim or a new ruling first.
+[[ -f "$RF" && -n "$n" && "$n" -le 210 ]];   want_ok "R1 rules/morrowcairn.md exists and is 210 lines or fewer" $? "lines=${n:-no file}"
 rc=$(grep -oE 'kc-[0-9a-f]{16}' "$RF" 2>/dev/null)
 others=$([[ -n "$rc" && $(printf '%s\n' "$rc" | grep -c .) -eq 1 ]] && git -C "$ROOT" grep -l -F -e "$rc" -- . ':!rules/morrowcairn.md' 2>/dev/null)
 [[ -n "$rc" && $(printf '%s\n' "$rc" | grep -c .) -eq 1 && -z "$others" ]] \
@@ -646,6 +648,76 @@ rapp='This section applies once a session has received a relay.'
    && "$(rsec 3)" == " $rapp"* && "$(rsec 4)" == " $rapp"* && "$(rsec 10)" == " $rapp"* ]] \
   && grep -qF 'received no relay' "$RX" 2>/dev/null
                                                want_ok "R16 a session that has received no relay skips the relay sections, each saying so, and the explainer says why" $? ""
+# R111 (the decisions log §593): the absence rule carries the user level's grep -v sentence, in short to fit the file's
+# 200 lines: through Claude Code's search wrapper, -v under -q or -l, or with its output discarded, exits 0 only if no
+# line matches, not if any line doesn't (as the system grep's does), so a -v test calls /usr/bin/grep by its path too.
+r7=$(rsec 7)
+# Its "its" names the wrapper, so the clause follows "not the system's" and the command grep clause comes last
+# (purple's §604, P1).
+[[ "$r7" == *'search wrapper, not the system'"'"'s: with `-q`, `-l` or output discarded, its `-v` exits 0 only if no line matches, not if any doesn'"'"'t'* \
+   && "$r7" == *'so `-v` goes by path too; and `command grep` takes whichever grep comes first on `PATH`'* \
+   && "$r7" == *'called by its path (`/usr/bin/grep`'* ]]
+                                               want_ok "R17 the absence rule says the session wrapper's grep -v answers differently, so a -v test calls /usr/bin/grep by path" $? "${r7:0:200}"
+# R112 (§593): beside §8's queue lines, an entry that turns out to be the drafter's call may be reassigned by the
+# drafter, with its reason, shown in its next Outbox, and the owner can pull it back.
+r8=$(rsec 8)
+[[ "$r8" == *"reassign an entry that turns out to be the drafter's call"* && "$r8" == *"with its reason"* \
+   && "$r8" == *"next Outbox"* && "$r8" == *"pull it back"* \
+   && "${r8%%turns out to be the drafter*}" == *"a larger one is the drafter's"* ]]
+                                               want_ok "R18 beside the queue lines, the drafter may reassign an entry that is its call, with its reason, in its next Outbox; the owner can pull it back" $? "${r8:0:200}"
+# R116 (§596, D12): a check run on a release candidate is internal until re-read on the published release; the
+# candidate no longer counts as the surface a measurement is read from.
+[[ "$r7" == *'"internal, unverified", and so is a check run on a release candidate until it is re-read on the published release'* \
+   && "$r7" != *"before release, the candidate itself, named as such"* ]]
+                                               want_ok "R19 a check on a release candidate is internal, unverified, until re-read on the published release" $? "${r7:0:200}"
+# R118 (§599, D16) with relay #10's reading: a small or low-risk reversible call the session makes itself and goes on,
+# naming each on a "Calls I made:" line of its report, never past a stop, a boundary or what goes to the owner; a larger
+# one is the drafter's.
+# Relay #13: the drafter's reading widens it to technical calls too; the calls are listed under a heading (§604, P3).
+# R125 (§624) and R126, purple's words (§625): the owner's reasons name a call on purpose, no longer on scope, and a
+# reversible call is the session's or the drafter's only with none of those reasons.
+[[ "$r8" == *"A reversible call, technical or on scope or sequence, that has none of these reasons isn't theirs"* \
+   && "$r8" == *"reputation), it is a call on purpose, it touches their ruling"* \
+   && "$r8" != *"a call on scope or purpose"* && "$r8" != *"that touches no ruling isn't theirs"* \
+   && "$r8" == *"the session makes a small or low-risk one itself and goes on"* \
+   && "$r8" == *'listing each in its report under the heading "Calls I made:"'* \
+   && "$r8" == *"so the drafter or the owner can undo it"* \
+   && "$r8" == *"never past a relay's stop condition, the size rule's stops, a relay's boundary or anything another rule sends to the owner"* \
+   && "$r8" == *"a larger one is the drafter's, a technical one included."* ]]
+                                               want_ok "R20 a small reversible call the session makes itself, on a Calls I made: line, never past a stop, a boundary or the owner's" $? "${r8:0:200}"
+# R119 (§599, D18) with relay #10's reading: a refusal that doesn't make clear which it is about counts as about what
+# would be read, which holds for every route; and D32 (R117, §596): keep the work's history.
+r9=$(rsec 9)
+# Relay #13, the drafter's reading on purple's Q1: as the sentence before it, read or changed.
+[[ "$r9" == *"A refusal over what would be read or changed holds for every route; one that doesn't make clear which it is about is taken as about what would be read or changed"* ]]
+                                               want_ok "R21 a refusal unclear about its reason is taken as about what would be read, which holds for every route" $? "${r9:0:200}"
+[[ "$r9" == *"**Keep the work's history:**"* && "$r9" == *"exact duplicate or kept elsewhere"* && "$r9" == *"never deleted"* \
+   && "$r9" == *"A secret's value is kept in no copy (what holds one is removed)"* && "$r9" == *"citing it"* \
+   && "$r9" == *"An archive takes the same scans as everything else, run before archiving"* ]]
+                                               want_ok "R22 keep the work's history: a delete only of an exact duplicate or a kept copy, else archive, a secret never kept" $? "${r9:0:200}"
+# R117 (§596, D33): a report that ends the turn says so in one line.
+[[ "$(rsec 11)" == *'A report that ends your turn says so in one line: "Stopped: waiting on", then who or what.'* ]]
+                                               want_ok "R23 a report that ends the turn says so in one Stopped: waiting on line" $? "$(rsec 11 | cut -c1-200)"
+# R121 (§610): a second report under one relay ends #N-part2, then -part3, so each has its own file, and the reply
+# file's name keeps the part tag as it keeps a direct or wake one.
+r4=$(rsec 4)
+[[ "$r4" == *"a second report under the same relay ends #N-part2, then -part3, so each has its own file"* \
+   && "$r4" == *"a direct, wake or part tag kept (-04-direct1, -04-part2)"* ]]
+                                               want_ok "R24 a second report under one relay ends #N-part2, its file keeping the part tag" $? "${r4:0:200}"
+# Purple's §613 wordings: §4 says a report sent in several messages carries the end line on its last message, so "part"
+# keeps one sense (#N-part2); the chat's document checks a report's ends with the part tag beside the direct and wake ones.
+dci=$(tr -s ' \n' '  ' < "$ROOT/docs/drafting-chat-instructions.md" 2>/dev/null)
+[[ "$r4" == *"A report sent in several messages carries the end line on its last message only."* \
+   && "$r4" != *"A report in parts"* \
+   && "$dci" == *"with a direct, wake or part tag after N (#N-directM, #N-wake1, #N-part2) for a direct message, a wake-up or a second report under one relay, the two matching."* \
+   && "$dci" != *"with a direct or wake tag after N"* ]]
+                                               want_ok "R25 a report in several messages ends on its last; the chat's document checks the part tag beside direct and wake" $? "${r4:0:200}"
+# The same in the chat's half (R126, purple's §625): a call on purpose goes to the owner, one on scope no longer does;
+# a reversible call on scope or sequence is the chat's only with none of the reasons above.
+[[ "$dci" == *"when it is a call on purpose, when it touches their ruling"* && "$dci" != *"a call on scope or purpose"* \
+   && "$dci" == *"- **A reversible call on scope or sequence with none of the reasons above is the chat's,** flagged as its own."* \
+   && "$dci" != *"that touches no ruling is the chat's"* ]]
+                                               want_ok "R26 the chat's document: a call on purpose is the owner's; a reversible call on scope or sequence with none of the reasons is the chat's" $? "${dci:0:200}"
 
 # ============================== record templates ================================================
 grep -q 'Contradicts if true' "$ROOT/records/decisions_log.md" 2>/dev/null
@@ -865,6 +937,31 @@ sp9=$(awk '/^9\. / {p=1} /^10\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  '
 # "show me" the person gets the command.
 [[ "$sp5" == *"Follow my answer at the start"* && "$sp5" == *"If I said show me, hand me the command"* ]]
                                                want_ok "SP29 step 5 follows the person's answer at the start: on show me, the session hands over kit-pin user's command" $? "${sp5:0:200}"
+# Step 9 set both name and email whenever either was missing, which could change one git already resolves (purple's
+# §588 note 2): only the missing one is asked for and set, at user scope, and one git resolves at any scope is left.
+[[ "$sp9" == *"For each of the two that is missing, and only for it"* && "$sp9" == *"Set only the missing one, at user scope"* \
+   && "$sp9" == *"already resolves, at any scope"* && "$sp9" != *"If either is missing, ask me what name and email"* ]]
+                                               want_ok "SP30 step 9 asks for and sets only the missing name or email, at user scope, never one git resolves at any scope" $? "${sp9:0:200}"
+# Step 7 added the kit's reply-file hook beside any Stop hook already filing reports, so each report could land twice,
+# one copy as -resend2 (purple's §589): it looks first, and with one there says so and skips the kit's, unless the
+# person asks for both; step 11's test checks that exactly one file appeared, with no -resend copy.
+# Hooks come from more places than the settings files (projects, plugins, skills, an admin console), so the session
+# asks the person for /hooks, which labels where each comes from, and asks about each Stop hook it lists (purple's
+# §602, F4).
+[[ "$sp7" == *"ask me to type /hooks"* && "$sp7" == *"labels where each comes from"* \
+   && "$sp7" == *"ask me about each Stop hook it lists"* && "$sp7" == *"skip the kit's reply-file hook"* \
+   && "$sp7" == *"unless I ask for both"* ]]
+                                               want_ok "SP31 step 7 asks for /hooks and about each Stop hook it lists, and skips the kit's beside one already filing reports unless asked for both" $? "${sp7:0:200}"
+# Step 11's test passes only with no second hook filing reports anywhere: /hooks again, and every file new in the
+# reply folder since the test relay counted by time, not by name (§602, F5).
+[[ "$sp11" == *"/hooks"* && "$sp11" == *"count every file that appeared in [reply folder] since the test relay, by its time, not its name"* \
+   && "$sp11" == *"exactly one"* && "$sp11" == *"no -new or -resend copy"* ]]
+                                               want_ok "SP32 step 11 checks /hooks and counts every new file in the reply folder by time: exactly one" $? "${sp11:0:200}"
+# An identity set for some folders by a conditional include, or by the environment, doesn't show in git config from the
+# home folder, so the step checks both, by name only, and sets nothing where either is found (§602, F3).
+[[ "$sp9" == *"git config --get-regexp '^includeif\.'"* && "$sp9" == *"GIT_AUTHOR_EMAIL"* && "$sp9" == *"GIT_COMMITTER_NAME"* \
+   && "$sp9" == *"by name only, never printing a value"* && "$sp9" == *"set nothing"* ]]
+                                               want_ok "SP33 step 9 checks git's conditional includes and the identity variables, by name only, and sets nothing where either is found" $? "${sp9:0:200}"
 # The documents agree with it: the README's setup paragraph, its CI secret lines, the IT document, the local example and
 # v0.12.1's CHANGELOG entry.
 rmi=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
@@ -878,6 +975,13 @@ FIT="$ROOT/docs/for-it.md"
 grep -qF 'the setup session writes it from the person' "$FIT" && ! grep -qF 'the kit never writes it' "$FIT" \
   && grep -qF 'only where the person asks' "$FIT" && ! grep -qF 'has every person copy it in' "$FIT"
                                                want_ok "FI1 the IT document says the setup writes the local settings, and Claude Code's settings only where the person asks" $? ""
+# The removal steps cover what the setup itself may set for the person, a user-scope git identity and gitleaks, how to
+# see each and that both are theirs to keep or remove; the identity line no longer says the kit sets none at all.
+fit6=$(tr -s ' \n' '  ' < "$FIT")
+[[ "$fit6" == *"What the setup may have set for the person"* && "$fit6" == *"is theirs to keep or remove"* \
+   && "$fit6" == *'git config --global --show-origin --get user.name'* && "$fit6" == *'git config --global --unset user.name'* \
+   && "$fit6" == *'command -v gitleaks'* && "$fit6" != *"The kit sets no commit identity"* ]]
+                                               want_ok "FI6 the IT document's removal steps show and remove the setup's user-scope identity and gitleaks, the person's to keep" $? ""
 grep -qF 'a missing gitleaks' "$FIT" && grep -qF 'against the sha256 the kit pins' "$FIT"
                                                want_ok "FI2 the IT document names the setup's one download, a missing gitleaks, checked against the sha256 the kit pins" $? ""
 grep -qF 'The setup prompt writes this file from your answers' "$ROOT/rules/morrowcairn-local.example.md"
@@ -922,12 +1026,15 @@ wsl121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md"
    && "$wsi" == *"uutils"* && "$wsi" == *"3 to 5 times slower"* && "$wsi" == *"Ubuntu 26.04"* && "$wsc" == *"Windows, inside WSL2"* \
    && "$wsc" == *"Ubuntu 26.04"* && "$wsl121" == *"WSL2"* && "$wsl121" == *"3 to 5 times slower"* ]]
                                                want_ok "WS1 README, the IT document, CLAUDE.md and v0.12.1's entry give WSL2 as measured on two machines, its costs, and what isn't measured" $? ""
-# Which setup ran where: v0.12.0's setup prompt on the 24.04 laptop, a draft of this release's on the 26.04 desktop, both
-# installing v0.12.0's code; "the setup ran end to end" alone read as this release's.
-[[ "$wsr" == *"v0.12.0's setup prompt on the 24.04 laptop"* && "$wsr" == *"a draft of this release's on the 26.04 desktop"* \
+# Which setup ran where: v0.12.0's setup prompt on the 24.04 laptop, a draft of v0.12.1's on the 26.04 desktop, both
+# installing v0.12.0's code; "the setup ran end to end" alone read as this release's. The README and the IT document
+# name v0.12.1, since from v0.13.0 on "this release's" would name the wrong one; v0.12.1's own entry keeps its words.
+[[ "$wsr" == *"v0.12.0's setup prompt on the 24.04 laptop"* && "$wsr" == *"a draft of v0.12.1's on the 26.04 desktop"* \
+   && "$wsr" != *"a draft of this release's"* \
    && "$wsr" == *"both installing v0.12.0's code"* && "$wsl121" == *"where v0.12.0's setup prompt ran"* \
    && "$wsl121" == *"where a draft of this release's setup prompt ran end to end"* && "$wsl121" == *"both installing v0.12.0's code"* \
-   && "$wsi" == *"where v0.12.0's setup prompt ran"* && "$wsi" == *"where a draft of this release's setup prompt ran end to end"* ]]
+   && "$wsi" == *"where v0.12.0's setup prompt ran"* && "$wsi" == *"where a draft of v0.12.1's setup prompt ran end to end"* \
+   && "$wsi" != *"a draft of this release's"* ]]
                                                want_ok "WS2 README, the IT document and v0.12.1's entry say which setup prompt ran on which machine, both installing v0.12.0's code" $? ""
 # What v0.12.1 changes beyond the documents, as the IT document says it: pre-push (a gate, in how it writes two counts),
 # the load check's stub, the reply-file hook, the three test suites an install carries, and the deploy pattern.
@@ -935,11 +1042,29 @@ wsl121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md"
    && "$wsi" == *"the load check's stub"* && "$wsi" == *"the reply-file hook"* \
    && "$wsi" == *"the three test suites an install carries"* && "$wsi" == *"the deploy pattern"* ]]
                                                want_ok "FI5 the IT document says what v0.12.1 changes: pre-push, the stub, the reply-file hook, three suites, the deploy pattern, the documents" $? ""
+# What v0.13.0 changes against v0.12.1, in a section of its own: pre-push and kit-pin, each a gate; the reply-file
+# hook's names; the session rules; the setup prompt; the three test suites an install carries; and the documents.
+fi7=$(awk '/^## What this release changes$/ {p=1; next} /^## / {p=0} p' "$FIT" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$fi7" == *"v0.13.0, against v0.12.1"* && "$fi7" == *"pre-push, a gate"* && "$fi7" == *"linked worktree"* \
+   && "$fi7" == *"kit-pin, a gate"* && "$fi7" == *"grafts"* && "$fi7" == *"doesn't compile"* && "$fi7" == *"-part2"* \
+   && "$fi7" == *"-new2"* && "$fi7" == *"The session rules"* && "$fi7" == *"The setup prompt"* \
+   && "$fi7" == *"the three test suites an install carries"* ]]
+                                               want_ok "FI7 the IT document lists what v0.13.0 changes: pre-push, kit-pin, the reply-file hook's names, the rules, the setup prompt, three suites" $? "${fi7:0:200}"
 # v0.12.1's entry names the two code changes this relay adds: the reply-file hook matching a path line whole when the
 # reply folder's path holds a space, and the deploy pattern's headroom line, which GNU df refused.
 [[ "$wsl121" == *"the reply-file hook"* && "$wsl121" == *"a space"* && "$wsl121" == *"options -P and --output are mutually exclusive"* \
    && "$wsl121" == *"df -Pk"* ]]
                                                want_ok "CL6 v0.12.1's entry names the reply-file hook's path match with a space and the deploy pattern's df line" $? "${wsl121:0:200}"
+# v0.13.0's entry, which was the Unreleased section: a minor, taken with kit-pin to, naming each change, kit-pin's
+# compile check of the list and its dropping of inherited git settings among them (built before v0.12.1 shipped).
+c130=$(awk '/^## v0\.13\.0$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$c130" == *"v0.13.0 is another, a minor"* && "$c130" == *"kit-pin to v0.13.0"* && "$c130" == *"A push from a linked worktree"* \
+   && "$c130" == *"kit-pin refuses a repository with grafts"* && "$c130" == *"a list that doesn't compile"* \
+   && "$c130" == *"inherited"* && "$c130" == *"Additions to the session rules"* && "$c130" == *"-part2"* \
+   && "$c130" != *"On the way to the next release"* \
+   && "$c130" == *"The file stands at 210 lines, its check's limit."* && "$c130" != *"209 lines"* \
+   && "$c130" == *"with the warning only where one isn't a tag the rules name."* ]]
+                                               want_ok "CL7 v0.13.0's entry is a minor taken with kit-pin to, naming the worktree push, grafts, the compile check, the rules and the hook's names" $? "${c130:0:200}"
 rmi2=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$rmi2" == *"If you say you'll run work through relays, it writes the kit's settings file"* ]]
                                                want_ok "RM13 the README's setup paragraph writes the settings file only for someone who says they'll run relays" $? "${rmi2:0:200}"

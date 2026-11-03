@@ -127,7 +127,10 @@ pushes with no note: move such a project onto this release before writing the li
 CI's scan refuses unless the `LEAK_PATTERN` secret is the one the tracked `.github/leak-pattern.pin` names. A pin
 holds the list's rows (its top-level alternatives) and the SHA-256 of its value, so a list cut, or changed in
 place, refuses where a count alone would pass. The local pin stays untracked in `.git`, as the list stays outside the
-repository: a hash of the whole list lets anyone holding a guess at it confirm the guess. CI's list holds no confidential term, so its
+repository: a hash of the whole list lets anyone holding a guess at it confirm the guess. In a linked worktree, pre-push
+and `kit-pin` read and write it in the repository's shared git folder, the main clone's `.git`, which every worktree
+shares, as the history check does; a pin left in a worktree's own git folder is never read. A repository with grafts
+is refused by pre-push and `kit-pin` alike. CI's list holds no confidential term, so its
 pin is tracked, and a change to it is a reviewed commit. CI's secret can't be read back, so its exact value is kept,
 untracked, in `.git/leak-pattern.ci`, with no trailing newline. A refusal gives rows, never a term or a hash.
 `bin/kit-pin check` finishes with exit 3 while pre-push would refuse every push: no usable list, or one its pin
