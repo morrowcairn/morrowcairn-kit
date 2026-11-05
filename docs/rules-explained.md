@@ -242,13 +242,12 @@ to reprint a report came right after an idle compaction had cut it off.
 
 ## 11. Keep going, without padding
 
-The owner's time and attention are the constraint: work should wait on the owner, never sit idle for no reason. So a
-session that is blocked says on what, and who unblocks it, and starts the reversible parts of the next item. This covers
-what a session does between relays when it is blocked, which is why the rule says it applies once a relay's work is
-done; it isn't the "keep going" prompt within a task that Claude Code's best-practices page now says to stop giving.
-Items were also being scheduled out for no reason except to schedule them; a delay now needs one: a technical
-dependency, a run it must ride, a ruling or a test it needs first, or the owner's own availability for an item that
-needs them.
+Time and attention are the constraint, so a session never leaves anyone guessing. When its relay's work is done, a
+session never reports just "nothing to do": it says what it is blocked on and who unblocks each item, lists any open
+items, and suggests work that could come next, starting none of it, so the next request is easy to choose. A report that
+ends its turn says so in one line, so what it waits on shows at a glance.
+Nothing is scheduled out without a reason either; a delay needs one: a technical dependency, a run it must ride, a
+ruling or a test it needs first, or the owner's own availability for an item that needs them.
 
 ## 12. Where a project sets its own bar
 

@@ -718,6 +718,15 @@ dci=$(tr -s ' \n' '  ' < "$ROOT/docs/drafting-chat-instructions.md" 2>/dev/null)
    && "$dci" == *"- **A reversible call on scope or sequence with none of the reasons above is the chat's,** flagged as its own."* \
    && "$dci" != *"that touches no ruling is the chat's"* ]]
                                                want_ok "R26 the chat's document: a call on purpose is the owner's; a reversible call on scope or sequence with none of the reasons is the chat's" $? "${dci:0:200}"
+# §11's "No idle" bullet, word for word: open items and work that could come next are reported as suggestions, none of
+# it started. The explainer's §11 opens with its paragraph, word for word, and holds nothing else before the sentence
+# on scheduling, which ends the section, word for word, in the present tense.
+r11=$(rsec 11); x11=$(awk 'index($0, "## 11. ") == 1 {s=1; next} s && /^## / {exit} s' "$RX" 2>/dev/null | tr -s '[:space:]' ' ')
+[[ "$r11" == *"- **No idle:** when a relay's work is done, never report \"nothing to do\". Report what you are blocked on and who or what unblocks each item, any open items, and work that could come next, as suggestions; start none of it. A report that ends your turn says so in one line: \"Stopped: waiting on\", then who or what. - **No artificial delays:**"* \
+   && "$r11" != *"next item"* && "$r11" != *"unblocked items run out"* \
+   && "$x11" == " Time and attention are the constraint, so a session never leaves anyone guessing. When its relay's work is done, a session never reports just \"nothing to do\": it says what it is blocked on and who unblocks each item, lists any open items, and suggests work that could come next, starting none of it, so the next request is easy to choose. A report that ends its turn says so in one line, so what it waits on shows at a glance. Nothing is scheduled out without a reason either; a delay needs one: a technical dependency, a run it must ride, a ruling or a test it needs first, or the owner's own availability for an item that needs them. " \
+   && "$x11" != *"best-practices"* && "$x11" != *"reversible parts"* ]]
+                                               want_ok "R27 No idle reports open items and next work as suggestions, starting none, word for word, and the explainer's §11 paragraph word for word" $? "${r11:0:200}"
 
 # ============================== record templates ================================================
 grep -q 'Contradicts if true' "$ROOT/records/decisions_log.md" 2>/dev/null
@@ -1050,6 +1059,10 @@ fi7=$(awk '/^## What this release changes$/ {p=1; next} /^## / {p=0} p' "$FIT" 2
    && "$fi7" == *"-new2"* && "$fi7" == *"The session rules"* && "$fi7" == *"The setup prompt"* \
    && "$fi7" == *"the three test suites an install carries"* ]]
                                                want_ok "FI7 the IT document lists what v0.13.0 changes: pre-push, kit-pin, the reply-file hook's names, the rules, the setup prompt, three suites" $? "${fi7:0:200}"
+# This release's line, ahead of v0.13.0's list in the same section: that one sentence and nothing else.
+fi131=$(awk '/^## What this release changes$/ {p=1; next} /^v0\.13\.0, against v0\.12\.1/ {p=0} p' "$FIT" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+[[ "$fi131" == "Wording only, in the session rules; no code changed." ]]
+                                               want_ok "FI8 the IT document's line for this release, ahead of v0.13.0's list, is that sentence alone" $? "${fi131:0:200}"
 # v0.12.1's entry names the two code changes this relay adds: the reply-file hook matching a path line whole when the
 # reply folder's path holds a space, and the deploy pattern's headroom line, which GNU df refused.
 [[ "$wsl121" == *"the reply-file hook"* && "$wsl121" == *"a space"* && "$wsl121" == *"options -P and --output are mutually exclusive"* \
@@ -1065,6 +1078,10 @@ c130=$(awk '/^## v0\.13\.0$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2
    && "$c130" == *"The file stands at 210 lines, its check's limit."* && "$c130" != *"209 lines"* \
    && "$c130" == *"with the warning only where one isn't a tag the rules name."* ]]
                                                want_ok "CL7 v0.13.0's entry is a minor taken with kit-pin to, naming the worktree push, grafts, the compile check, the rules and the hook's names" $? "${c130:0:200}"
+# v0.13.1's entry is one sentence and nothing else.
+c131=$(awk '/^## v0\.13\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+[[ "$c131" == "Wording only, in the session rules; no code changed." ]]
+                                               want_ok "CL8 v0.13.1's entry is that one sentence alone" $? "${c131:0:200}"
 rmi2=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$rmi2" == *"If you say you'll run work through relays, it writes the kit's settings file"* ]]
                                                want_ok "RM13 the README's setup paragraph writes the settings file only for someone who says they'll run relays" $? "${rmi2:0:200}"

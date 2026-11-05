@@ -16,6 +16,8 @@ removing the hook stubs that run it (below).
 
 ## What this release changes
 
+Wording only, in the session rules; no code changed.
+
 v0.13.0, against v0.12.1 (read from the change itself; each change has its cases in the test suites):
 - **pre-push, a gate,** reads the do-not-publish list's pin in the repository's shared git folder, so a push from a
   linked worktree is checked against the same pin as one from the main clone; before, such a push was refused unless

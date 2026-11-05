@@ -194,9 +194,9 @@ This section applies once a session has received a relay.
 
 ## 11. Keep going, without padding
 
-- **No idle:** when a relay's work is done, never report "nothing to do". Report what you are blocked on, and who or
-  what unblocks each item; when unblocked items run out, start the reversible parts of the next item in your lane, and
-  say so. A report that ends your turn says so in one line: "Stopped: waiting on", then who or what.
+- **No idle:** when a relay's work is done, never report "nothing to do". Report what you are blocked on and who or what
+  unblocks each item, any open items, and work that could come next, as suggestions; start none of it. A report that
+  ends your turn says so in one line: "Stopped: waiting on", then who or what.
 - **No artificial delays:** nothing is scheduled out without a reason: a technical dependency, a run it must ride, a
   ruling or a test it needs first. The owner's time counts as a reason for an item that needs them, not for one that
   doesn't. This covers items already dated, not only new ones.

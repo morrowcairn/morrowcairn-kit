@@ -14,6 +14,10 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v0.13.1
+
+Wording only, in the session rules; no code changed.
+
 ## v0.13.0
 
 v0.13.0 is another, a minor: what a hook or check refuses changed, so a project moves onto it on purpose, with
