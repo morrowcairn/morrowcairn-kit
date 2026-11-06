@@ -16,7 +16,7 @@ organization's managed settings. Under a lock the kit's git hooks still run, sin
 costs is said at the step it reaches.
 
 ```text
-Set up the Morrowcairn kit, release v0.14.0, on this machine, and lead me through it. Ask me one question at a time and
+Set up the Morrowcairn kit, release v0.15.0, on this machine, and lead me through it. Ask me one question at a time and
 wait for my answer: each question says in one plain sentence what it's for and what skipping it means, and gives a
 default in brackets; 'ok' takes it, 'skip' skips it. Drive the whole setup: after each step, go straight on to the
 next, through the last, without waiting for me to ask; I needn't read anything. Before anything else, check where this
@@ -65,7 +65,7 @@ steps below, the clone and the install among them, go ahead as written.
    kit's code, and ~/projects/<name> for each project (step 9). Ask me where to keep a clone of the kit
    [~/morrowcairn-kit], then clone it there and check out the release's tag:
    git clone https://github.com/morrowcairn/morrowcairn-kit <that folder>
-   git -C <that folder> checkout v0.14.0
+   git -C <that folder> checkout v0.15.0
 
 4. The install. If step 1 found gitleaks missing or too old, ask me, "May I download gitleaks 8.30.1 from its official
    releases on github.com and check it against the checksum the kit pins? If you say no, I'll tell you what to install
@@ -77,12 +77,12 @@ steps below, the clone and the install among them, go ahead as written.
    macOS adds no folder in the home), and if there is none, give me the one line to add. On a no: tell me what to
    install and where to get it (gitleaks 8.30.1, the version the kit is tested with, from
    https://github.com/gitleaks/gitleaks/releases), wait until I say it's there, then check it with gitleaks version.
-   Then, in the clone, run tools/install-release.sh v0.14.0, with ~/.local/bin at the front of PATH for that command
+   Then, in the clone, run tools/install-release.sh v0.15.0, with ~/.local/bin at the front of PATH for that command
    where you put gitleaks there, so the install's own hook suite finds it.
    It runs the release's own hook suite on the staged install first, then puts the read-only install in
-   ~/.local/share/morrowcairn/releases/v0.14.0. Report its last lines as it printed them, without explaining them.
+   ~/.local/share/morrowcairn/releases/v0.15.0. Report its last lines as it printed them, without explaining them.
 
-5. The session rules: ~/.local/share/morrowcairn/releases/v0.14.0/bin/kit-pin user v0.14.0. It writes into Claude
+5. The session rules: ~/.local/share/morrowcairn/releases/v0.15.0/bin/kit-pin user v0.15.0. It writes into Claude
    Code's own folder: it links the rules file, the kit's three skills and the two optional hooks' scripts there, and
    writes the kit's own pin for the user level; it changes no settings file, and replaces nothing that isn't its own
    link. Follow my answer at the start. If I said show me, hand me the command, saying that it writes into Claude
@@ -131,9 +131,9 @@ steps below, the clone and the install among them, go ahead as written.
    compaction to [compaction log]. Each runs only once my user settings name it. Before adding reply-file, ask me to
    type /hooks, which lists every hook Claude Code has loaded and labels where each comes from (my settings, a project,
    a plugin, a skill, my organization), and ask me about each Stop hook it lists that isn't plainly something else,
-   whether it already files session reports, with [no] as its default; step 11 checks again for a second one:
-   if one already files session reports, tell me so and skip the kit's reply-file hook, since both would file each
-   report, the second copy as a -new or -resend file, unless I ask for both. For each, follow my answer at the
+   whether it already files session reports, with [no] as its default: if one already files session reports, tell me
+   so and skip the kit's reply-file hook, since both would file each report, the second copy as a -new or -resend
+   file, unless I ask for both; step 11 checks again for a second one. For each, follow my answer at the
    start: if I said do it for me, add it to my user settings yourself; if I said show me, give me the lines to paste.
    Either way, show me the entry first, in the form Claude Code's hooks documentation gives, running the link kit-pin
    user printed for it. Edit the settings with Claude Code's own file tools, which ask me first, keeping everything

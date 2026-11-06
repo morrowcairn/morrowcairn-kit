@@ -12,6 +12,9 @@ name: cross-platform
 # - Linux's smoke job, on every push to main.
 # - macOS's suites and smoke, by dispatch and once a week, never on a push: a macOS minute is billed as ten, so the
 #   code pushes it once ran on cost too much. A release dispatches them on its final commit before the tag.
+# - The weekly ping, last, on the schedule alone: once the week's run ends with nothing failed or cancelled, it fetches
+#   the URL in the SCHEDULED_PING_URL secret once, so a Healthchecks check there alerts when a week passes without one;
+#   with no URL set it pings nothing (kit_docs PG0 to PG2). CI copies a project receives (ci/) carry no ping.
 # A dispatch runs one OS's jobs, named by its os input: macos (the default) or linux.
 
 on:
@@ -239,3 +242,19 @@ jobs:
             exec /bin/bash tests/smoke_test.sh
           fi
           exec bash tests/smoke_test.sh
+
+  # The weekly run's ping: after every other job, on the schedule alone, when none failed or was cancelled (a week whose
+  # macOS jobs the gate skipped still pings: the run did its work). The URL comes from the SCHEDULED_PING_URL secret and
+  # is never printed; with none set, the step skips.
+  ping:
+    name: weekly ping
+    needs: [mac-gate, suites, smoke]
+    if: ${{ github.event_name == 'schedule' && !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PING_URL: ${{ secrets.SCHEDULED_PING_URL }}
+    steps:
+      - name: Ping the weekly check
+        if: ${{ env.PING_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 -o /dev/null "$PING_URL"

@@ -21,8 +21,8 @@ set -uo pipefail
 
 ROOT=$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")/..}" && pwd) || exit 1
 command -v python3 >/dev/null 2>&1 || { echo "load_check_test: python3 is required" >&2; exit 1; }
-# Under Git Bash, python3 is a Windows program: it reads paths in Windows form and starts only Windows programs, and the
-# load check is python3. native prints a path the way that python3 reads it.
+# The load check is python3. native prints a path the way that python3 reads it: as it is, or in mixed form where
+# python3 reports os.name nt.
 PY_OS=$(python3 -I -c 'import os; print(os.name)' 2>/dev/null | tr -d '\r')
 native() { if [[ "$PY_OS" == nt ]]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 TMP=$(mktemp -d) || exit 1
@@ -537,8 +537,8 @@ bad=$(printf '%s\n' "$modes" | awk 'NF && $1 != "100755" {print $4}'); n=$(print
 # ============================== hashing without sha256sum =======================================
 # A stock Mac has shasum and no sha256sum. The stub verifies with either; with neither it refuses, names both and
 # reports the refusal (install_test HS1 holds its routine to the other scripts'). Each PATH here holds a link to every
-# command on PATH but the ones left out, each left out with its .exe, which Git Bash runs by the bare
-# name; one ln per folder of PATH (hooks_test).
+# command on PATH but the ones left out, each left out with any .exe of the same name; one ln for each 500 in a folder
+# of PATH (hooks_test).
 pathless() {   # DIR NAME...: links in DIR to the first command of each name on PATH, except each NAME and NAME.exe
     local dir=$1 d f n i; local -a dirs add; shift; mkdir -p "$dir"
     IFS=: read -ra dirs <<< "$PATH"

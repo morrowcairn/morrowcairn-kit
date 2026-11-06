@@ -17,12 +17,7 @@ appendix.
 The rules file loads always because it applies in nearly every session, and a load it missed would be silent.
 The triggered ones live where Claude Code finds skills, `.claude/skills/<name>/SKILL.md`, and load
 when a task matches the `description` in their front matter, which is written as trigger conditions
-rather than a topic label. Both mechanisms were checked in a throwaway spawn before these files were
-written: an always-on file reached the session's opening context with every tool
-off, and each triggered file was loaded, unprompted, by a task that matched it and by no other.
-`session-close` came later and was measured the same way before v0.9.0: it loaded first, unprompted,
-on the operator's wrap-up phrasings, in fresh sessions and late in a long, compacted one, and on none
-of three unrelated tasks.
+rather than a topic label.
 
 Where the user-level entries live: not in a project. A project holds no copy of these files, and its
 `CLAUDE.md` template (`templates/CLAUDE.md`) imports nothing, so nothing loads twice. `bin/kit-pin user vX.Y.Z`,

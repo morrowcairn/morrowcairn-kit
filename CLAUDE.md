@@ -96,7 +96,7 @@ What the kit's scripts and tests need, as measured. A version named is one that 
   `/usr/bin/git` and `/usr/bin/python3` only offer to install the tools (`xcode-select --install`): not
   measured here. gitleaks isn't part of macOS: CI installs its release archive, checked against the
   published sha256; Homebrew's `brew install gitleaks` is the other route, not measured. No kit
-  script uses bash 4's features or the GNU-only flags the kit once needed (`xargs -d`, `mv -T`,
+  script uses bash 4's features or GNU-only flags (`xargs -d`, `mv -T`,
   `sed -i`, `date -d`); two copy-paste patterns do (`dry_run_gated_runner.sh`, `mapfile`;
   `atomic_deploy.sh`, `stat -c`).
 - **Windows, inside WSL2:** passes on two machines, on v0.12.0's code. Ubuntu 26.04 (uutils coreutils 0.8.0 by default,

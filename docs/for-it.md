@@ -79,7 +79,7 @@ The rules file has each Claude Code session keep records of its work: a handoff 
 handoffs (asking the project's owner first if that is a tracked repository an organization owns), the project's
 decisions log (a new project's is `records/decisions_log.md`, in its repository), its label in Claude Code's own memory
 folder for the project, and, only where `morrowcairn-local.md` names them, one line per sized task in the
-`[relay log]` and each question for the owner in the `[owner's queue]`.
+`[relay log]` and each question for the user in the `[owner's queue]`.
 
 ## What it runs, and when
 

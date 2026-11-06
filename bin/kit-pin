@@ -362,14 +362,31 @@ move_report() {   # what the move did, after it is kept
     [[ -z "$MV_NOTE" ]] || echo "kit-pin: $MV_NOTE."
 }
 # A new project's defaults changed with the release that names the list's place: it starts with no do-not-publish list
-# (local-spawn writes the line saying so, pinned) and no identity guard. A move says so on every to and migrate onto
-# such a release, whatever the project holds, since a move changes neither for the project it moves; and it gives the
-# one setting for each. A note, never a refusal.
-defaults_note() {   # READER: the target release's list reader; after move_list, so LS_SHOW is this project's place
+# (local-spawn writes the line saying so, pinned) and no identity guard. A move says so where it crosses onto such a
+# release: every migrate, and a to from a release whose reader names no place, or whose install isn't here to read;
+# never a to from a release whose reader names it, since nothing changed for a new project between the two (install
+# test DN3, DN4). It says so whatever the project holds, since a move changes neither for the project it moves; and it
+# gives the one setting for each. A note, never a refusal.
+defaults_note() {   # READER [HELD]: the target release's list reader; the release kit.pin named before a to, if any;
+                    # after move_list, so LS_SHOW is this project's place
     bash -c '. "$1" && declare -F kit_list_file' _ "$1" >/dev/null 2>&1 || return 0
+    held_names_place "${2:-}" && return 0
     echo "kit-pin: a new project made from this release starts with two checks off; this project keeps its own list and its own identity."
     echo "  The do-not-publish list: a new project starts with the line saying it has none, LEAK_PATTERN='kit:no-identity-list', pinned. Its setting is the list's file, ${LS_SHOW:-~/.config/morrowcairn/lists/<id>} (patterns/local-spawn.md)."
     echo "  The identity guard: commit one goes under the identity git resolves. Its setting is the sentinel identity in the clone, user.name UNSET-SEE-REPO-GENESIS and user.email unset@invalid.local (patterns/repo-genesis.md, step 1a)."
+}
+# held_names_place RELEASE: 0 when RELEASE is a release's name, its install is here, and its list reader defines
+# kit_list_file, as every reader from the one that names the list's place does. The reader is read as text, never run:
+# kit.pin names the release, and only the target's install is verified before a move.
+held_names_place() {
+    local f line
+    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    f="$ROOT_DIR/$1/leak-detection/read-leak-pattern.sh"
+    [[ -f "$f" && -r "$f" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == "kit_list_file() {"* ]] && return 0
+    done < "$f"
+    return 1
 }
 
 closed_head() { echo "NEXT STEP -- the do-not-publish check is currently FAILING CLOSED (it will refuse pushes):"; }
@@ -471,8 +488,12 @@ list_report() {   # INSTALL: where pre-push will take the do-not-publish list fr
     echo "  Each line below that writes the list refuses if a file is already there (set -C), so it never replaces one that is only hidden."
     echo
     [[ -z "$mk" ]] || echo "$mk"
-    echo "  (umask 077 && set -C && echo \"LEAK_PATTERN='marker1|marker2'\" > $at)"
-    echo "  $KP_CMD repin local --first     # its pin, once the list is checked against the source it was made from"
+    # The step that reads the terms is the block's last line, the repin chained after the write, so a block pasted whole
+    # leaves nothing after the read for it to take as terms; an empty line or one starting # writes nothing (install
+    # test MI40 to MI43).
+    echo "  # The next line waits for the terms: type them on one line, | between them, checked against their source, then"
+    echo "  # press Enter. They go into the file, never into your shell's history, and the list then gets its first pin."
+    printf '%s\n' "  (umask 077 && set -C && read -r t && case \"\$t\" in ''|'#'*) exit 1;; esac && printf \"LEAK_PATTERN='%s'\\n\" \"\$t\" > $at) && $KP_CMD repin local --first"
     echo
     echo "If this project has no do-not-publish list, say so with one line instead, and pin it the same way:"
     echo
@@ -484,7 +505,7 @@ That file is outside the repository's tracked files and is therefore never commi
 the point: the pattern IS the marker list, so committing it would publish exactly what it exists
 to hide. Its pin sits in .git, untracked too: a hash of the whole list would let anyone holding a
 guess at it confirm the guess. A list changed later is repinned: an append by the session that
-makes it, any other change citing the owner's words (leak-detection/README.md, Changing the list).
+makes it, any other change citing the user's words (leak-detection/README.md, Changing the list).
 
 For CI, set a repository secret named LEAK_PATTERN holding a synthetic canary, machine-path patterns and an
 IP-address pattern; it never holds terms you've agreed or are required to keep confidential.
@@ -833,7 +854,7 @@ mode_to() {
     echo "kit-pin: kit.pin now names $rel ($INST_HASH), and both stubs are $rel's. Commit kit.pin$( (( MV_ID == 0 )) || printf ' and kit.list-id'); that commit runs through them."
     echo "kit-pin: kit-pin.tests ran on the work tree and the index, before any commit$( (( MV_ID == 0 )) || printf ', kit.list-id staged'), so a test that reads a clone of HEAD saw none of this move."
     move_report
-    defaults_note "$INST/leak-detection/read-leak-pattern.sh"
+    defaults_note "$INST/leak-detection/read-leak-pattern.sh" "$held_rel"
     for p in ${TAKEN[@]+"${TAKEN[@]}"}; do
         echo "kit-pin: $p was release $held_rel's copy for a project; it is now $rel's, staged. Commit it with kit.pin."
     done
@@ -1075,7 +1096,7 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
             kind="a change ruled in $ruling"
         else
             refuse "the $ctx list changed by more than an append (${old_rows:-?} row(s) to $new_rows)" \
-                "Any other change, a row retired with a placeholder included, takes the owner's words: repin with --ruling §N, the decisions-log § that holds them."
+                "Any other change, a row retired with a placeholder included, takes the user's words: repin with --ruling §N, the decisions-log § that holds them."
         fi
     fi
     tmp="$pin.tmp.$$"

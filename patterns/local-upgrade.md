@@ -239,6 +239,5 @@ Record the decision in the project's decisions log.
 A release needs a project to hold a file the kit owns, beyond a declared fork or a CI checked copy; or
 installs stop being read-only and hash-checked, so a pin no longer says exactly what runs.
 
-*Earlier, retired in v0.8.0:* the copy-based upgrade (a plan comparing a project's kit-owned files at
-its release and the next, then an apply that copied them). A project holds no kit-owned copies now, so
-there is nothing to compare or copy; its procedure is in this file's history.
+A project on an install holds no kit-owned copies, so a later release has nothing to compare or copy; a project that
+still holds them moves onto an install first (Moving a project made before v0.8.0 onto an install, above).

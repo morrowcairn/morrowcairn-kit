@@ -34,7 +34,7 @@ squash() { printf '%s' "$1" | tr '\n' ' ' | cut -c1-300; }
 summary() { echo; echo "upgrade_test: $PASS passed, $FAIL failed, $SKIP skipped"; }
 
 # Every release from v0.11.0 on, oldest first. A release made later is added here when it is tagged.
-RELEASES=(v0.11.0 v0.11.1 v0.12.0 v0.12.1 v0.13.0 v0.13.1)
+RELEASES=(v0.11.0 v0.11.1 v0.12.0 v0.12.1 v0.13.0 v0.13.1 v0.14.0)
 CAND=v0.99.0                                   # the candidate's tag in this run's scratch kit: ROOT's staged tree
 
 # ============================== the release tags, from this repository alone ======================

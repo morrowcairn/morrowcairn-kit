@@ -8,11 +8,11 @@
 #
 #   tests/smoke_test.sh [ROOT]    ROOT = a checkout of this kit (default: the one holding this file)
 #
-# CI runs it on Linux, on Windows under Git Bash, and on macOS with Homebrew's folders taken off PATH, which is what
-# a stock Mac has: /bin/bash 3.2, BSD tools, shasum and no sha256sum. So this file keeps to bash 3.2 and to what
-# BSD and GNU tools share. It uses the machine's own git settings (a default Git for Windows turns LF into CRLF on
-# checkout), but an empty global file in place of the user's, unless SMOKE_OWN_GLOBAL=1 keeps the user's own: the
-# stand-in machine's org conditions run it so, with an org's hooks path in it (tests/standin/entry.sh).
+# CI runs it on Linux, and on macOS with Homebrew's folders taken off PATH, which is what a stock Mac has: /bin/bash
+# 3.2, BSD tools, shasum and no sha256sum. So this file keeps to bash 3.2 and to what BSD and GNU tools share. It
+# uses the machine's own git settings, but an empty global file in place of the user's, unless SMOKE_OWN_GLOBAL=1
+# keeps the user's own: the stand-in machine's org conditions run it so, with an org's hooks path in it
+# (tests/standin/entry.sh).
 #
 # If the install fails and SMOKE_INSTALL_BASH names a newer bash, the install is built again with that bash, said
 # so on its own line, so the later steps still run with the machine's own tools; the run still fails.

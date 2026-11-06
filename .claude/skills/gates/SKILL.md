@@ -37,7 +37,7 @@ A content gate checks content against a list of terms or patterns: an identity, 
    needs. It always runs git with `GIT_NO_REPLACE_OBJECTS=1`, and refuses a repository that has
    grafts.
 4. It refuses when its terms can't load, saying what is missing and how to fix it.
-5. It is skipped (`--no-verify` or the like) only on the owner's ruling.
+5. It is skipped (`--no-verify` or the like) only on the user's ruling.
 
 A change any item calls for is a gate change, made test first (procedure 4).
 

@@ -5,7 +5,7 @@ Two layers, shipped differently by necessity.
 | Layer | Where the rules live | Ships |
 |---|---|---|
 | **Credential shapes** | `.gitleaks.toml`, committed | **Complete** — works with no configuration |
-| **Listed terms**: the do-not-publish list (called the identity list in v0.11.0's messages), and CI's generic patterns | an untracked local file (the list) / a repository secret (the generic patterns only) | **Mechanism only** — fails closed until configured |
+| **Listed terms**: the do-not-publish list, and CI's generic patterns | an untracked local file (the list) / a repository secret (the generic patterns only) | **Mechanism only** — fails closed until configured |
 
 **Why the do-not-publish list cannot ship complete:** the pattern *is* the list — the exact
 strings you are trying to keep out of a public repository. Committing it publishes them. So the
@@ -37,10 +37,12 @@ project's `CLAUDE.md`, and never let a green scan stand in for it.
 ```bash
 "$INST/bin/kit-pin" to vX.Y.Z                                      # a project: kit.pin, the stubs, kit.list-id
 git config core.hooksPath leak-detection                            # the kit itself: hooks from its working tree
-(umask 077 && set -C && echo "LEAK_PATTERN='marker1|marker2'" > ~/.config/morrowcairn/lists/"$(cat kit.list-id)")   # every term; never over a file there
-"$INST/bin/kit-pin" repin local --first                             # its pin, in .git (a first pin: below)
 gh secret set LEAK_PATTERN < "$(git rev-parse --git-dir)/leak-pattern.ci"   # CI: the non-confidential terms only
 "$INST/bin/kit-pin" repin ci --first                                # CI's pin: commit .github/leak-pattern.pin
+# The last line waits for every term: type them on one line, | between them, checked against their source, then press
+# Enter. They go into the list's file, never into your shell's history; it never writes over a file there, and then
+# gives the list its pin, in .git (a first pin: below). An empty line, or one starting #, writes nothing.
+(umask 077 && set -C && read -r t && case "$t" in ''|'#'*) exit 1;; esac && printf "LEAK_PATTERN='%s'\n" "$t" > ~/.config/morrowcairn/lists/"$(cat kit.list-id)") && "$INST/bin/kit-pin" repin local --first
 ```
 
 A project runs these hooks from a release's install (`$INST`), through two stubs in `.git/hooks` that check
@@ -52,15 +54,14 @@ the folder mode 700 and the file 600. The id is the one line of the project's tr
 digits that `kit-pin to` writes, so every clone of the project on a machine reads the same file, a renamed or moved
 folder keeps it, and the name says nothing about the project. `~` is the home folder the user database gives for the
 running user, never `HOME` or `XDG_CONFIG_HOME`: a gate finds its terms in a fixed place, never in its caller's
-environment. The list reader, `read-leak-pattern.sh`, is the one place that says this (`kit_list_file`). A list's
-old place, `.git/leak-pattern`, is no longer read: `"$INST/bin/kit-pin" move-list` copies it to the new place, byte
-for byte, never over a list that differs, and leaves the old file for you to delete once nothing reads it (`to` and
-`migrate` run the same step). The kit's own repository has its `kit.list-id` too, and ran `move-list` once.
+environment. The list reader, `read-leak-pattern.sh`, is the one place that says this (`kit_list_file`). The hooks
+never read `.git/leak-pattern`, where a release before v0.12.0 keeps the list: `"$INST/bin/kit-pin" move-list` copies
+a list there to its place, byte for byte, never over a list that differs, and leaves the old file for you to delete
+once nothing reads it (`to` and `migrate` run the same step). The kit's own repository has its `kit.list-id` too.
 
 **No list from the environment.** pre-push, `kit-pin`'s `check` and `repin`, and the history audit read the list
 only from its file at its place: a `LEAK_PATTERN` set in the environment is ignored, so no program can stand a list of
-its own, cut short or harmless, in for the project's. Earlier releases' pre-push took a list from
-`LEAK_PATTERN` ahead of the file; that route is gone. To try a list, write it at its place, then run
+its own, cut short or harmless, in for the project's. To try a list, write it at its place, then run
 `"$INST/bin/kit-pin" check`, and repin it if it changed (Changing the list, below). CI's tree scan is the one reader
 that takes `LEAK_PATTERN` from the environment, where it is the repository's own named secret, checked against the
 tracked `.github/leak-pattern.pin`.
@@ -119,7 +120,7 @@ scan; `kit-pin check` reports the do-not-publish check off. For CI, set the secr
 `kit:no-identity-list`, and pin it (`repin ci --first`); the tree scan then says the do-not-publish check is off. A list file that exists but
 can't be read refuses with a message of its own, never the missing list's. The pin guards the line:
 written over a real list, it doesn't match that list's pin, and changing a list's rows needs the
-owner's words (below). A project going public needs a real list: `bin/kit-history-audit` refuses the
+user's words (below). A project going public needs a real list: `bin/kit-history-audit` refuses the
 line. *A release older than this one* reads the line as a one-row list and, once it is pinned, passes
 pushes with no note: move such a project onto this release before writing the line.
 
@@ -148,7 +149,7 @@ only in the local list.
 anything else:
 - An append, new rows after the old ones with the old untouched, is taken as it is: the session that makes it
   repins and records it.
-- Any other change takes the owner's words: a row changed or removed, or retired by the never-matching placeholder
+- Any other change takes the user's words: a row changed or removed, or retired by the never-matching placeholder
   that keeps its place (a list is append-only, so its rows keep their positions), because fewer rows, or other
   ones, protect less. repin refuses it without `--ruling §N`, the decisions-log § that holds those words.
 - Every repin is recorded in the decisions log with the rows before and after, which repin prints, and why.

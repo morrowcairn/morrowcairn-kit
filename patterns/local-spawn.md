@@ -88,15 +88,18 @@ accept, so a new project starts with neither of these; the block says so as it e
   without naming any listed term: say how many terms the list holds and why, since pre-push refuses a push that carries
   a listed term, the decisions log's included. The write below refuses
   unless the file at the list's place holds that line alone, and only then replaces it, in one step, through a file
-  beside it:
+  beside it, then repins it citing that §:
   ```sh
+  # Put that § in place of §N. Pasted, this waits for the terms: type them on one line, | between them, then press
+  # Enter. They go into the file, never into your shell's history; an empty line, or one starting #, writes nothing.
   ( f=~/.config/morrowcairn/lists/"$(cat kit.list-id)"
     [ "$(cat "$f" 2>/dev/null)" = "LEAK_PATTERN='kit:no-identity-list'" ] \
       || { echo "refused: $f doesn't hold the no-list line alone; nothing written" >&2; exit 1; }
-    umask 077 && set -C && echo "LEAK_PATTERN='term1|term2'" > "$f.new" && mv "$f.new" "$f" )
+    umask 077 && set -C && read -r t && case "$t" in ''|'#'*) exit 1;; esac \
+      && printf "LEAK_PATTERN='%s'\n" "$t" > "$f.new" && mv "$f.new" "$f" ) && "$INST/bin/kit-pin" repin local --ruling §N
   ```
-  Then `"$INST/bin/kit-pin" repin local --ruling §N` (`leak-detection/README.md`, Setup and Changing the list). A
-  project going public needs a real list: `bin/kit-history-audit` refuses the line.
+  (`leak-detection/README.md`, Setup and Changing the list.) A project going public needs a real list:
+  `bin/kit-history-audit` refuses the line.
 - *The identity guard.* Commit one goes under the identity git resolves for this clone: the machine's, or the one its
   organization's IT sets. To turn the guard on, write `patterns/repo-genesis.md`'s sentinel identity in the clone
   before commit one (its step 1a): pre-commit then refuses every commit until a real identity is set and read back.
@@ -161,7 +164,5 @@ the manifest starts naming files one by one outside `tests/`. A hand-maintained 
 to update it that nobody keeps. The manifest is an inventory too, but one whose drift fails a test,
 and it names directories, so a new file usually needs no new line.
 
-*Earlier conditions, retired:* "the kit gains machine-readable manifests that make copying selective
-by declaration" was met by the manifest in v0.2.1. "`kit-manifest.txt` stops being a short list of
-exceptions" was met on purpose when every tracked path was given a class. In v0.8.0 the copy reads
-the install's `CLASSES`, which `tools/install-release.sh` writes from the manifest.
+Every tracked path has a class in the manifest, and the copy reads the install's `CLASSES`, which
+`tools/install-release.sh` writes from it.

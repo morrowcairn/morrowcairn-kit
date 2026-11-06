@@ -100,9 +100,9 @@ CASES=(MX1 VT1 HS1 HS2 IR0 IR1 IR1b IR1c IR1d IR1e IR2 IR3 IR4 IR5 IR6 IR7 IR8 I
        EG28 EG29 EG30 EG31 EG32 EG33 EG34 EG35 PN0 CP1 CP2 KR3 CP3 KM4
        RP1 RP2 RP3 RP4 RP5 RP6 RP7 RP8 RP9 RP10 RP11 RP12 RP13
        PC0 PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10 PC11 PC12 PC13 PC14 PC15 PC16 PC17 PC18 PC19 PC20 PC21 PC22 PC23 PC24 PC25
-       LM1 LM2 LM3 LM4 LM4b LM5 LM5b LM6 LM6b LM7 LM8 DN1 DN2 LE3 LE4 LE4b LM9 LM10 LM10b LM10c
+       LM1 LM2 LM3 LM4 LM4b LM5 LM5b LM6 LM6b LM7 LM8 DN1 DN2 DN3 LE3 LE4 LE4b LM9 LM10 LM10b LM10c DN4 RP5b
        MI1 MI2 MI3 ST11 MI4 MI5 MI6 MI7 MI8 MI9 MI10 MI11 MI12 MI13 MI14 MI15 MI16 MI17 MI18 MI19 MI20 MI21 MI22 MI23
-       MI24 MI25 MI26 MI27 MI28 MI29 MI30 MI31 MI32 MI34 MI35 MI36 MI37 MI38 MI39)
+       MI24 MI25 MI26 MI27 MI28 MI29 MI30 MI31 MI32 MI34 MI35 MI36 MI37 MI38 MI39 MI40 MI40b MI41 MI42 MI43 MI40z MI40bz MI42z)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     for c in "${CASES[@]}"; do skip "$c" "no commits yet in $ROOT: rerun after commit one"; done
     echo; echo "install_test: $PASS passed, $FAIL failed, $SKIP skipped"; exit 0
@@ -152,8 +152,8 @@ done
 K="$TMP/kit"; git init -q -b main "$K"; ident "$K"
 git -C "$ROOT" checkout-index -a --prefix="$K/"
 kc() { git -C "$K" add -A && git -C "$K" -c core.hooksPath=/dev/null commit -q --allow-empty -m "$1"; }
-# Git for Windows' git init sets core.fileMode false, and git add then records every new file 100644, so the execute
-# bits come from ROOT's index.
+# Where git init sets core.fileMode false, git add records every new file 100644, so the execute bits come from ROOT's
+# index.
 git -C "$K" add -A && git -C "$ROOT" ls-files -s | awk -F '\t' '$1 ~ /^100755 / {print $2}' | git -C "$K" update-index --chmod=+x --stdin
 kc "ROOT's staged tree"
 [[ "$(git -C "$K" ls-files -s)" == "$(git -C "$ROOT" ls-files -s)" ]]
@@ -328,8 +328,8 @@ chmod +x "$SP/hook-checks/pre-commit/a-seen"; git -C "$SP" add hook-checks; out=
 git -C "$SP" rm -q -r hook-checks; git -C "$SP" commit -q --no-verify -m "no checks"
 # The installer's I3, here: git skips a hook it can't execute with only a hint, so the stub refuses rather than hand
 # a commit to a release hook that can't run. The manifest holds contents, not modes, so this is its own check.
-# Git Bash reads a file's execute bit from its #! line, so there the release's hook stays executable whatever chmod says,
-# and the case can't be built.
+# Where a runtime infers a file's execute bit from its #! line, the release's hook stays executable whatever chmod
+# says, the case can't be built, and it skips.
 chmod u+w "$I1/leak-detection" "$I1/leak-detection/pre-commit" 2>/dev/null; chmod a-x "$I1/leak-detection/pre-commit" 2>/dev/null
 if [[ -x "$I1/leak-detection/pre-commit" ]]; then skip ST12 "chmod a-x left the release's pre-commit executable here"
 else note j; out=$(sc);                        refused_for "ST12 the stub refuses when the release's hook isn't executable" $? "$out" "release v1.0.0's pre-commit is not executable"; fi
@@ -500,16 +500,80 @@ want_says "MI30 that failing close names the do-not-publish check and list throu
 want_says "MI35 its note on CI keeps listed terms in the local file, naming the do-not-publish list" $klrc "$out" \
     "Every listed term stays in" "list in a secret ties those terms to that account" "CI does not check listed"
 # A printed step never writes over a list that is there: each of check's no-list lines that writes the list, run with
-# the suite's home against a stand-in list at its place, refuses and leaves it as it was.
+# the suite's home against a stand-in list at its place, a term on its input for the step that reads its terms there,
+# refuses and leaves it as it was. Each step is run from a file, so a step reading its input reads the term, not itself.
 (umask 077 && printf '%s\n' "LEAK_PATTERN='zqkeepterm'" > "$LPF"); lsum=$(sha "$LPF"); nw=0; nbad=""
 while IFS= read -r l; do
-    [[ "$l" == *"echo \"LEAK_PATTERN="*">"* ]] || continue
+    [[ "$l" == "  (umask 077 && set -C && "*"LEAK_PATTERN="*">"* ]] || continue
     nw=$((nw + 1))
-    printf '%s\n' "$l" | (cd "$SP" && HOME="$TH" bash) >/dev/null 2>&1 && nbad+=" a write exited 0"
+    printf '%s\n' "$l" > "$TMP/mi37-step.sh"
+    (cd "$SP" && HOME="$TH" bash "$TMP/mi37-step.sh" <<< "zqnewterm") >/dev/null 2>&1 && nbad+=" a write exited 0"
 done <<< "$out"
 [[ $nw -ge 2 && -z "$nbad" && "$(sha "$LPF")" == "$lsum" ]]
 want_ok "MI37 check's no-list steps each refuse a list already there, leaving it unchanged" $? "writes $nw;$nbad"
 rm -f "$LPF"
+# The step for a list with terms takes them as typed input, never on its own command line, so they stay out of the
+# shell's history. Pasted whole, the block for it (the lines after "Each line below that writes the list", to their
+# first empty line) is fed to bash as a paste reaches a shell, a typed line after it: the step that reads the terms is
+# the block's last line, with the repin chained after it, so no pasted line is read as terms. The typed line becomes the
+# list, at mode 600, and is pinned; with nothing typed, no list and no pin; a typed empty line, or one starting #, the
+# same. Each case starts with no list and no pin.
+pblk=$(printf '%s\n' "$out" | awk '/Each line below that writes the list/ {s=1; next} s && /^$/ {if (n) exit; next} s {print; n++}')
+cp -p "$SP/.git/leak-pattern.pin" "$TMP/sp-nolist.pin"
+paste_case() {   # TYPED...: the block, then each TYPED line, as one paste into bash in the project, the suite's home
+    rm -f "$LPF" "$SP/.git/leak-pattern.pin"
+    { printf '%s\n' "$pblk"; [[ $# -eq 0 ]] || printf '%s\n' "$@"; } > "$TMP/paste.txt"
+    (cd "$SP" && HOME="$TH" bash < "$TMP/paste.txt") >/dev/null 2>&1
+}
+pasted() { printf 'list [%s], pin %s' "$(cut -c1-90 "$LPF" 2>/dev/null)" "$([[ -e "$SP/.git/leak-pattern.pin" ]] && echo written || echo none)"; }
+paste_case "zqtyped|zqother"
+[[ -n "$pblk" && "$(cat "$LPF" 2>/dev/null)" == "LEAK_PATTERN='zqtyped|zqother'" \
+   && "$(ls -l "$LPF" 2>/dev/null | cut -c1-10)" == "-rw-------" && -f "$SP/.git/leak-pattern.pin" && "$pblk" != *marker* ]]
+want_ok "MI40 check's first-setup block pasted whole, then a typed line: that line becomes the list, at mode 600, and is pinned" $? "$(pasted)"
+paste_case
+[[ -n "$pblk" && ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]
+want_ok "MI40b pasted whole with nothing typed after it, it writes no list and pins nothing" $? "$(pasted)"
+paste_case ""; [[ ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]; e1=$?; w1=$(pasted)
+paste_case "# a comment"; [[ ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]; e2=$?
+[[ -n "$pblk" && $e1 -eq 0 && $e2 -eq 0 ]]
+want_ok "MI42 a typed empty line, or one starting #, writes no list and pins nothing" $? "empty: $w1; #: $(pasted)"
+pl=$(printf '%s\n' "$pblk" | tail -n 1)
+[[ "$pl" == "  (umask 077 && set -C && read -r t && "*"> "*") && "*"repin local --first" ]]
+want_ok "MI43 the step that reads the terms is the block's last line, the repin chained after the write" $? "last line: $pl"
+# The same three cases under zsh, a Mac's default shell, where zsh is on PATH. zsh is asked first whether a script fed
+# on its input hands the next line to read, as bash does: if so, the block is fed whole as a paste; if not, the step's
+# line runs from a file with the typed line as its input (paste or file, named in each result).
+ZSH_BIN=$(command -v zsh 2>/dev/null)
+if [[ -z "$ZSH_BIN" ]]; then
+    for c in MI40z MI40bz MI42z; do skip "$c" "no zsh on PATH"; done
+else
+    zform=file; [[ "$(printf 'read -r x\nzqprobe\nprintf "[%%s]\\n" "$x"\n' | "$ZSH_BIN" -f 2>/dev/null)" == "[zqprobe]" ]] && zform=paste
+    printf '%s\n' "$pl" > "$TMP/zstep.zsh"
+    zcase() {   # TYPED...: the block as a paste, or the step from a file, under zsh in the project, the suite's home
+        rm -f "$LPF" "$SP/.git/leak-pattern.pin"
+        if [[ $zform == paste ]]; then
+            { printf '%s\n' "$pblk"; [[ $# -eq 0 ]] || printf '%s\n' "$@"; } > "$TMP/zpaste.txt"
+            (cd "$SP" && HOME="$TH" "$ZSH_BIN" -f < "$TMP/zpaste.txt") >/dev/null 2>&1
+        else
+            { [[ $# -eq 0 ]] || printf '%s\n' "$@"; } | (cd "$SP" && HOME="$TH" "$ZSH_BIN" -f "$TMP/zstep.zsh") >/dev/null 2>&1
+        fi
+    }
+    zcase "zqtyped|zqother"
+    [[ -n "$pl" && "$(cat "$LPF" 2>/dev/null)" == "LEAK_PATTERN='zqtyped|zqother'" \
+       && "$(ls -l "$LPF" 2>/dev/null | cut -c1-10)" == "-rw-------" && -f "$SP/.git/leak-pattern.pin" ]]
+    want_ok "MI40z under zsh ($zform), a typed line after the step becomes the list, at mode 600, and is pinned" $? "$(pasted)"
+    zcase; [[ -n "$pl" && ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]
+    want_ok "MI40bz under zsh ($zform), nothing typed: no list, no pin" $? "$(pasted)"
+    zcase ""; [[ ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]; e1=$?; w1=$(pasted)
+    zcase "# a comment"; [[ ! -e "$LPF" && ! -e "$SP/.git/leak-pattern.pin" ]]; e2=$?
+    [[ -n "$pl" && $e1 -eq 0 && $e2 -eq 0 ]]
+    want_ok "MI42z under zsh ($zform), a typed empty line, or one starting #: no list, no pin" $? "empty: $w1; #: $(pasted)"
+fi
+rm -f "$LPF"; cp -p "$TMP/sp-nolist.pin" "$SP/.git/leak-pattern.pin"
+# A list changed later is repinned: an append by the session that makes it, any other change citing the user's words
+# ("user" where the text means the person; "owner" stays only where it names a role).
+[[ "$out" == *"any other change citing the user's words"* && "$out" != *"owner's words"* ]]
+want_ok "MI41 check's first-setup text: any other change to the list is repinned citing the user's words" $? "$(printf '%s\n' "$out" | sed -n '/words (/p' | tr '\n' ' ')"
 mv "$SP/kit.list-id" "$TMP/sp-id.aside"; out=$(kl); rc=$?; mv "$TMP/sp-id.aside" "$SP/kit.list-id"
 want_says "MI31 check with no place for the list names the do-not-publish list" $rc "$out" "the do-not-publish list's place can't be found"
 cp -p "$TMP/sp-kl.pin" "$SP/.git/leak-pattern.pin"
@@ -565,7 +629,7 @@ out=$( (cd "$SP" && env -u LEAK_PATTERN GIT_WORK_TREE="$GDO" "$KP" check) 2>&1 )
                                                want_ok "GD4 check: an inherited GIT_WORK_TREE naming another clone doesn't stand in for this clone: this clone's own pin, failing closed, exit 3" $rc "$out"
 cp -p "$TMP/sp-gd.pin" "$SP/.git/leak-pattern.pin"; tlist "$SP"   # the spawn's list and the pin that names it, for the cases below
 # In a linked worktree, check and repin read and write the list's pin in the repository's shared git folder, which every
-# worktree of it shares, as pre-push and the history audit read it, never in the worktree's own (queue 452). Each case
+# worktree of it shares, as pre-push and the history audit read it, never in the worktree's own. Each case
 # gives the two folders pins that disagree, so a run that read the worktree's own shows.
 SPW="$TMP/sp-wt"; git -C "$SP" worktree add -q --detach "$SPW" HEAD 2>/dev/null; SPWG=$(git -C "$SPW" rev-parse --absolute-git-dir)
 kw() { (cd "$SPW" && env -u LEAK_PATTERN PATH="$FBIN:$PATH" "$KP" "$@") 2>&1; }   # MODE...: kit-pin in the worktree
@@ -589,13 +653,13 @@ out=$(kp repin local); rc=$?; [[ "$(sha "$SP/.git/leak-pattern.pin")" == "$a" ]]
 rm -f "$SP/.git/info/grafts"
 out=$(kl); rc=$?; [[ $rc -eq 0 ]] && rc=0 || rc=1
                                                want_ok "GX1c check: the same repository without them checks as before, exit 0" $rc "$out"
-# From a linked worktree too: grafts sit in the shared git folder, and check finds them there (purple's §602, F1).
+# From a linked worktree too: grafts sit in the shared git folder, and check finds them there.
 SPW="$TMP/sp-wt2"; git -C "$SP" worktree add -q --detach "$SPW" HEAD 2>/dev/null
 git -C "$SP" rev-parse HEAD > "$SP/.git/info/grafts"
 out=$(kw check); rc=$?;                        refused_for "GX2 check in a linked worktree: grafts in the shared git folder refuse" $rc "$out" "grafts"
 rm -f "$SP/.git/info/grafts"
 # A release before v0.13.0 has pre-push read the list's pin from a linked worktree's own git folder, where check and
-# repin now use the shared one, so a check can pass where that pre-push refuses every push (purple's §602, F2): in a
+# repin now use the shared one, so a check can pass where that pre-push refuses every push: in a
 # worktree pinned to such a release, check says so and names the move; pinned to a later one, or in the main clone, it
 # says nothing of it.
 git -C "$K" tag -a v0.12.9 -m v0.12.9; git -C "$K" push -q --no-verify origin v0.12.9 2>/dev/null
@@ -928,7 +992,7 @@ same_file "$RFD/proj-blue-$ID8-01.md" "$r1" && same_file "$RFD/proj-blue-$ID8-02
                                                want_ok "RF2 each later report gets its own file, a direct or wake tag kept, the first file untouched" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
 r3=$(report Proj Blue '#3'); out=$(hstop "$r3"); rc=$?; same_file "$RFD/proj-blue-$ID8-03.md" "$r3" || rc=1
                                                want_ok "RF2b the file's name is lowercase" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
-# A second report under one relay ends #N-part2 (R121, the decisions log §610), so it gets a file of its own.
+# A second report under one relay ends #N-part2, so it gets a file of its own.
 r2p=$(report proj blue '#2-part2' "$ID8" 'A second report under relay 2.'); out=$(hstop "$r2p"); rc=$?
 same_file "$RFD/proj-blue-$ID8-02-part2.md" "$r2p" && same_file "$RFD/proj-blue-$ID8-02.md" "$r2" || rc=1
                                                want_ok "RF2c a second report under one relay, its end line #N-part2, gets its own file, -NN-part2" $rc "$out $(ls -A "$RFD" 2>&1 | tr '\n' ' ')"
@@ -1012,7 +1076,7 @@ same_file "$HK/elsewhere/proj-blue-$ID8-05.md" "$r5" && [[ ! -e "$RFD/proj-blue-
 # message alone (last_assistant_message) and the transcript's path, and its hooks page says the transcript may lag that
 # message; so the hook reads the turn from the transcript, adding the field when the transcript lacks it. A report ends
 # at this session's end line when it is the turn's last line, or mid-text when the line before it is its path line,
-# naming its own file in the reply folder. htx FILE [lag]: a turn, the owner's message, then $ta and a tool call, a tool
+# naming its own file in the reply folder. htx FILE [lag]: a turn, the user's message, then $ta and a tool call, a tool
 # result, then $tb; with lag, $tb isn't written yet. hstopt MESSAGE FILE: the Stop hook with that transcript path.
 htx() {
     python3 -I - "$1" "${2:-}" "$ta" "$tb" <<'PY'
@@ -1433,7 +1497,7 @@ out=$(kp restore "$K"); rc=$?
 # ============================== hashing without sha256sum =======================================
 # A stock Mac has shasum and no sha256sum. With neither, every script that hashes refuses and names both; with shasum
 # alone, each works. Each PATH here holds a link to every command on PATH but the ones left out,
-# each left out with its .exe, which Git Bash runs by the bare name; one ln per folder of PATH (hooks_test).
+# each left out with any .exe of the same name; one ln for each 500 in a folder of PATH (hooks_test).
 pathless() {   # DIR NAME...: links in DIR to the first command of each name on PATH, except each NAME and NAME.exe
     local dir=$1 d f n i; local -a dirs add; shift; mkdir -p "$dir"
     IFS=: read -ra dirs <<< "$PATH"
@@ -2029,7 +2093,7 @@ v3 V38 && { out=$(ird "$TMP/releases-b3" "$B3" "$IRK" v1.0.0); rc=$?
                                                want_ok "V38 under bash 3, install-release installs, its manifest byte for byte the system bash's" $rc "$out" "installed v1.0.0"; }
 
 # ============================== line endings =====================================================
-# Where core.autocrlf is true (Git for Windows' default), a checkout writes CRLF unless .gitattributes says
+# Where core.autocrlf is true, a checkout writes CRLF unless .gitattributes says
 # otherwise, and bash can't run a script whose lines end in CR. A script is a file whose first line starts #!, or
 # whose name ends .sh or .py: the hooks, bin/kit-pin and the stubs have no extension. An install is built by
 # git archive, so it is checked too.
@@ -2178,7 +2242,7 @@ else for c in EG28 EG29 EG30 EG31 EG32 EG33 EG34 EG35; do skip "$c (bash 3)" "$b
 # pin is a state of its own, exit 3: installed and pinned, but every push will be refused. migrate
 # keeps its switch on that state and says so; restore hands over to check and returns its 3. repin writes the pins:
 # a first one only with --first; an append is the session's to make; any other change, a row retired with a
-# placeholder included, cites the § that holds the owner's words; it gives rows before and after, never a term or a hash.
+# placeholder included, cites the § that holds the user's words; it gives rows before and after, never a term or a hash.
 sp_reset; cp -p "$SP/.git/leak-pattern.pin" "$TMP/sp.pin"
 tpin "$SP/.git/leak-pattern.pin" "$MARK|zqother" 2
 out=$(kp check); rc=$?
@@ -2215,6 +2279,8 @@ want_ok "RP4 repin: an append is taken without a ruling, giving the rows before 
 cp -p "$RPN" "$TMP/rp.pin"
 lput "zqone|zqTWO|$MARK|zqfour"; out=$(rp local); rc=$?; allout+=$out; cmp -s "$RPN" "$TMP/rp.pin" || rc=0
 refused_for "RP5 repin: a row changed in place, without --ruling, refuses and keeps the pin" $rc "$out" "changed by more than an append"
+[[ "$out" == *"takes the user's words: repin with --ruling"* && "$out" != *"owner's words"* ]]
+want_ok "RP5b and says any other change takes the user's words, repinned citing their §" $? "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
 lput "zqone|zqzqretired|$MARK|zqfour"; out=$(rp local); rc=$?; allout+=$out; cmp -s "$RPN" "$TMP/rp.pin" || rc=0
 refused_for "RP6 repin: a row retired with a placeholder, without --ruling, refuses" $rc "$out" "changed by more than an append"
 lput "zqone|zqtwo"; out=$(rp local); rc=$?; allout+=$out; cmp -s "$RPN" "$TMP/rp.pin" || rc=0
@@ -2445,6 +2511,13 @@ DN="$TMP/dn-to"; lmrepo "$DN"; out=$(lmkp "$DN" to v1.0.0); rc=$?
 DM="$TMP/dn-migrate"; lmrepo "$DM"; git -C "$DM" config core.hooksPath leak-detection; out=$(lmkp "$DM" migrate v1.0.0); rc=$?
 [[ $rc -eq 0 ]] && dn_says "$out" "$(lmid "$DM")"
                                                result "DN2 migrate says the same" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+# The note is for a move onto the first release whose reader names the list's place: a to from a release whose reader
+# names it already says nothing of a new project's defaults, since nothing changed for a new project between the two.
+DT="$TMP/dn-twice"; lmrepo "$DT"; lmkp "$DT" to v1.0.0 >/dev/null
+git -C "$DT" add kit.pin kit.list-id; git -C "$DT" commit -q --no-verify -m "onto v1.0.0"
+out=$(lmkp "$DT" to v1.0.1); rc=$?
+[[ $rc -eq 0 && "$(sed -n 's/^release=//p' "$DT/kit.pin")" == v1.0.1 && "$out" != *"two checks off"* && "$out" != *"UNSET-SEE-REPO-GENESIS"* ]]
+                                               result "DN3 to from a release whose reader names the list's place says nothing of a new project's defaults" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
 # No list from the caller's environment: check and repin read the list at its place, whatever LEAK_PATTERN holds.
 out=$( (cd "$LT" && env LEAK_PATTERN=zqother "$KP" check) 2>&1 ); rc=$?
 [[ $rc -eq 0 && "$out" == *"lists/$(lmid "$LT")"* && "$out" != *"in this environment"* && "$out" != *SYNTH-MARKER* ]]
@@ -2504,8 +2577,12 @@ if [[ $rc -eq 0 && -f "$LB/kit.list-id" ]]; then
     out=$(lmkp "$LB" to v0.9.9); rc=$?
     [[ $rc -eq 0 && "$(sed -n 's/^release=//p' "$LB/kit.pin")" == v0.9.9 ]]
     result "LM10c with .git/leak-pattern the list at its place byte for byte, the move goes ahead" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+    git -C "$LB" add kit.pin; git -C "$LB" commit -q --no-verify -m "back onto v0.9.9"
+    out=$(lmkp "$LB" to v1.0.0); rc=$?
+    [[ $rc -eq 0 && "$out" == *"starts with two checks off"* && "$out" == *"UNSET-SEE-REPO-GENESIS"* ]]
+    result "DN4 to from a release whose reader names no place says what a new project starts with" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
 else
-    for c in LM10 LM10b LM10c; do result "$c going back to a release whose hooks read .git/leak-pattern" 1 "its setup: v0.9.9 install exit $rc, or no move to v1.0.0: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"; done
+    for c in LM10 LM10b LM10c DN4; do result "$c going back to a release whose hooks read .git/leak-pattern" 1 "its setup: v0.9.9 install exit $rc, or no move to v1.0.0: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"; done
 fi
 
 echo

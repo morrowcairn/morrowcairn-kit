@@ -135,10 +135,8 @@ if [[ -f "$H/read-leak-pattern.sh" ]]; then
 fi
 
 # PATHs without git (symlinks to the few tools the hooks need before they look for git), and without gitleaks or
-# python3: a link to the first command of each name on PATH but the ones left out. Git Bash runs name.exe as name, so
-# a name is left out with its .exe; and on Windows git started from a folder of a few links exits 127 without a word,
-# so those two folders hold every command. One ln per folder of PATH: on Windows each process
-# start costs, and a link per command took about 3 minutes a folder.
+# python3: a link to the first command of each name on PATH but the ones left out, each left out with any .exe of the
+# same name too. Those two folders hold every other command, linked with one ln for each 500 in a folder of PATH.
 mkbin() { mkdir -p "$1"; shift; local t p; for t in "$@"; do p=$(command -v "$t") && ln -sf "$p" "$BIN/$t"; done; }
 pathless() {   # DIR NAME...: links in DIR to the first command of each name on PATH, except each NAME and NAME.exe
     local dir=$1 d f n i; local -a dirs add; shift; mkdir -p "$dir"
@@ -180,8 +178,8 @@ tlist() {  # DIR VALUE [ROWS]: DIR's list at its place set to VALUE, and its pin
 commit() { git -C "$1" add -A && git -C "$1" commit -q --no-verify -m "$2"; }
 chk() {  # DIR NAME EXIT [BODY]  -- write an executable check that runs BODY, then exits EXIT
     mkdir -p "$1"; printf '#!/usr/bin/env bash\n%s\nexit %s\n' "${4:-:}" "$3" > "$1/$2"; chmod +x "$1/$2"; }
-# FILE: an entry that would pass if run (exit 0), not executable: 0 when the file system says so. Git Bash reads a
-# file's execute bit from a #! first line, whatever chmod says, so the entry has none.
+# FILE: an entry that would pass if run (exit 0), not executable: 0 when the file system says so. It has no #! line,
+# so it stays non-executable where a runtime infers the execute bit from one, whatever chmod says.
 nonexec() { mkdir -p "${1%/*}"; printf 'exit 0\n' > "$1"; chmod a-x "$1"; [[ ! -x "$1" ]]; }
 
 # Synthetic images, written byte for byte at run time: nothing binary is committed to the kit.
@@ -648,7 +646,7 @@ out=$(push "xp1:refs/heads/xp1");              rc=$?; on_remote refs/heads/xp1 &
 rm -rf "$C/hook-checks"; from_base xp2; echo y > "$C/xp2.txt"; commit "$C" xp2; XSHA=$(git -C "$C" rev-parse HEAD)
 chk "$XP" 20-record 0 "{ echo \"args: \$1 \$2\"; cat; } > '$TMP/x8.out'"
 out=$(push "xp2:refs/heads/xp2");              rc=$?
-# The URL as git holds it: Git for Windows stores the remote's path in Windows form.
+# The URL as git holds it, which needn't be the path as it was given.
 printf 'args: r %s\nrefs/heads/xp2 %s refs/heads/xp2 %s\n' "$(git -C "$C" remote get-url r)" "$XSHA" "$Z" | cmp -s - "$TMP/x8.out" || rc=$((rc + 1))
                                                want_ok      "X8 pre-push: a project check gets the hook's arguments and ref lines, and the push goes through" $rc "$out"
 rm -rf "$C/hook-checks"; from_base xp3; echo z > "$C/xp3.txt"; commit "$C" xp3
@@ -1451,7 +1449,7 @@ rm -f "$SC/.git/info/grafts"
 out=$( (cd "$SC" && env LEAK_PATTERN="$MARK" "$BASH_BIN" "$SCAN" 2>&1) ); want_ok "RG6b tree scan: the same checkout without them is clean" $? "$out" "clean:"
 # A linked worktree: git sets GIT_DIR for its hooks, which names the worktree's own git folder; pre-push reads the
 # list's pin from the repository's shared git folder, which every worktree of it shares (as kit-history-audit reads
-# it), and never from the worktree's own, so a worktree needs no pin of its own (queue 452).
+# it), and never from the worktree's own, so a worktree needs no pin of its own.
 WT="$TMP/rcwt"; git -C "$X" worktree add -q -b wt "$WT" "$XB" 2>/dev/null; WTG=$(git -C "$WT" rev-parse --absolute-git-dir)
 echo "w" > "$WT/w.txt"; git -C "$WT" add w.txt
 out=$( (cd "$WT" && git commit -q -m w) 2>&1 ); want_ok "WT1 pre-commit in a linked worktree: a clean commit passes" $? "$out"
@@ -1469,7 +1467,7 @@ tpin "$X/.git/leak-pattern.pin" "$MARK" 1; tpin "$WTG/leak-pattern.pin" "zqstale
 out=$(wtpush wt5); want_ok "WT5 pre-push in a linked worktree: a stale pin left in the worktree's own folder is never read in the shared pin's place" $? "$out"
 rm -f "$WTG/leak-pattern.pin"
 # Grafts sit in the shared git folder (info/grafts), and each gate finds them from a linked worktree too, through
-# --git-path, never the worktree's own folder (purple's §602, F1): a commit and a push from the worktree both refuse.
+# --git-path, never the worktree's own folder: a commit and a push from the worktree both refuse.
 git -C "$X" rev-parse HEAD > "$X/.git/info/grafts"
 (cd "$WT" && git checkout -q -b wt6 "$XB" && echo wt6 > "$WT/wt6.txt" && git add wt6.txt) >/dev/null 2>&1
 out=$( (cd "$WT" && git commit -q -m wt6) 2>&1 ); want_refused "WT6 pre-commit in a linked worktree: grafts in the shared git folder refuse" $? "$out" "grafts"

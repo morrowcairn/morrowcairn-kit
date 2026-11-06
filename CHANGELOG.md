@@ -14,6 +14,54 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v0.15.0
+
+A minor: a project moves onto it with `kit-pin to v0.15.0` from the new release's install.
+- Lines changed in `kit-pin`'s output, word for word:
+  - `check`, with no list, the steps for a list with terms, which take the terms as typed input, not on a command
+    line: two lines, "# The next line waits for the terms: type them on one line, | between them, checked against
+    their source, then" and "# press Enter. They go into the file, never into your shell's history, and the list then
+    gets its first pin.", then, last, `(umask 077 && set -C && read -r t && case "$t" in ''|'#'*) exit 1;; esac &&
+    printf "LEAK_PATTERN='%s'\n" "$t" > <the list's place>) && "<kit-pin>" repin local --first`. They were: `(umask
+    077 && set -C && echo "LEAK_PATTERN='marker1|marker2'" > <the list's place>)` and `"<kit-pin>" repin local --first
+    # its pin, once the list is checked against the source it was made from`. Pasted whole, the block leaves nothing
+    after the read for it to take as terms; an empty line, or one starting #, writes no list and pins nothing.
+  - `check`, with no list, the text after those steps: "A list changed later is repinned: an append by the session
+    that makes it, any other change citing the user's words (leak-detection/README.md, Changing the list)." It was:
+    "... citing the owner's words ...".
+  - `repin`, refusing a change that is more than an append: "Any other change, a row retired with a placeholder
+    included, takes the user's words: repin with --ruling §N, the decisions-log § that holds them." It was: "... takes
+    the owner's words: ...".
+- `kit-pin to` prints its note on what a new project starts with ("kit-pin: a new project made from this release
+  starts with two checks off; ...", its three lines unchanged) only on a project's first move, its `kit.pin` naming no
+  release, or a move from a release whose list reader names no place for the list, one before v0.12.0, or whose install
+  isn't on the machine; a `to` from v0.12.0 or later, its install on the machine, no longer prints it. `migrate` prints
+  it as before.
+- `leak-detection/README.md`'s Setup and `patterns/local-spawn.md`'s step for adding a list take the terms the same
+  way: the line that reads them is the block's last, the repin chained after the write. The Setup's two CI lines now
+  come before it.
+- `docs/rules-explained.md`, `docs/for-it.md`, `leak-detection/README.md` and the `gates` skill say "the user" where
+  they meant the person running the kit. "Owner" stays where it names a role (a project's owner, a decision's owner),
+  and the settings `[owner phrase]` and `[owner's queue]` keep their names, so a `morrowcairn-local.md` already written
+  needs no change.
+- The session rules (`rules/morrowcairn.md`) and the chat's half (`docs/drafting-chat-instructions.md`) say "user" where
+  they meant the person; the rules' section 11 has the heading "Say what waits, and why" and the first label "Report,
+  don't start".
+- `leak-detection/README.md`, `patterns/local-spawn.md`, `patterns/local-upgrade.md`, `skills/README.md` and the kit's
+  `CLAUDE.md` say what the kit does, without what earlier releases did; `leak-detection/README.md` still tells a
+  project on a release before v0.12.0 how its list moves, and `patterns/local-upgrade.md` still points a project made
+  before v0.8.0 to its move onto an install.
+- The setup prompt's step 7 says what to do when a Stop hook already files session reports before saying that step 11
+  checks again for a second one.
+- `cross-platform.yml`'s weekly run ends with a ping job: on the schedule alone, when nothing failed or was cancelled,
+  it fetches the URL in the repository's `SCHEDULED_PING_URL` secret, and with none set it skips. No CI copy a project
+  receives carries it.
+- The suites: install's MI40 to MI43 feed `check`'s printed block to bash as a paste, then a typed line, and MI40z,
+  MI40bz and MI42z do the same under zsh, skipping with "no zsh on PATH" where zsh isn't installed; MI41, RP5b, DN3 and
+  DN4 cover the changed lines and the note's condition; kit_docs' NP6c and RS1 (the typed-input steps), a case for the
+  rules' section 1 sentence, PG0 to PG2 (the weekly ping) and UP3 (the upgrade test's release list); the upgrade test
+  carries a project from v0.14.0 too.
+
 ## v0.14.0
 
 A minor: a project moves onto it with `kit-pin to v0.14.0` from the new release's install.
