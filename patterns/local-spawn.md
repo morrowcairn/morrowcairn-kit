@@ -59,10 +59,8 @@ echo "to check that identity, and how to turn the guard on."
 
 **Run the block whole, in one shell.** An agent's shell calls often keep no variables, so a piece of
 the block run on its own starts with `REL` and `DST` empty. Every use is written `${VAR:?}` under
-`set -u`, so such a piece stops at its first use. Without the guards, `cd ""` succeeded and stayed
-put: a spawned instance found that an empty `DST` extracted the kit into whatever folder the shell
-was in, and gave that folder's repository the placeholder identity. In a terminal of your own,
-`set -u` stays on after the block; `set +u` turns it off.
+`set -u`, so such a piece stops at its first use. In a terminal of your own, `set -u` stays on after
+the block; `set +u` turns it off.
 
 **Pin before the first commit, not after.** A new repository has no hooks at all, and the first commit
 is the one the hooks most need to see: nothing earlier can be rewritten away. `kit-pin to` writes
@@ -73,14 +71,11 @@ home folder the user database gives): the list lives there, as `lists/<id>`, out
 the same file for every clone. Commit one carries `kit.list-id`. `to` prints where pre-push will read
 the do-not-publish list from, or the next step if no list is set.
 
-**Inventory a destination that is not empty.** The first spawned instance's destination already held
-a folder of sixteen files that was not part of the project and that the kit's `.gitignore` does not
-cover. Nothing in the procedure would have stopped `git add -A` from sweeping it into commit one. The
-`find` above is the step: every item it lists is decided, one way or another, before `git init`.
+**Inventory a destination that is not empty.** The `find` above is the step: every item it lists is
+decided, one way or another, before `git init`.
 
-**Name the branch at `git init`.** The default branch name is a per-machine git setting, and a spawn
-whose `git init` produced `master` had to rename an unborn branch to match the kit's `main`.
-`git init -b main` pins it.
+**Name the branch at `git init`.** The default branch name is a per-machine git setting;
+`git init -b main` pins it to the kit's `main`.
 
 **Two checks start off; below, how to turn on each.** The kit's default is the setup an organization's IT would
 accept, so a new project starts with neither of these; the block says so as it ends.
@@ -110,16 +105,12 @@ The project holds no hook suite: the kit's suites test the hooks before every re
 
 **Record where the kit lives.** Put the kit's location and the release you made the project from in
 `.local/operator-notes.md`, under a `Kit` heading. `kit.pin` records the release too, tracked; the
-notes say where the kit's repository is, which a restore needs (`bin/kit-pin restore`). A spawned
-instance that did not record this later had its own kit mistaken for "not a separate repository" by
-a session that could not find it.
+notes say where the kit's repository is, which a restore needs (`bin/kit-pin restore`).
 
 Copying by the install's `CLASSES` means only files the kit ships for a project to own can ride along:
 untracked scratch in the kit, its own front page and its own tests never reach the install, and its
-kit-owned files stay in the install, run from there. A spawn that carried the kit's README presented
-the kit as its front page at commit one, and one whose hook suite carried the kit's document tests
-was red by construction, two cases on every run. **Inheriting another project's untracked files is
-the same contamination class the kit warns about for inherited configs** — with the added problem
+kit-owned files stay in the install, run from there. **Inheriting another project's untracked files
+is the same contamination class the kit warns about for inherited configs** — with the added problem
 that untracked files are, by construction, the ones nobody reviewed.
 
 **A new project starts with no license.** The kit's `LICENSE` covers the kit only (`kit-manifest.txt`
@@ -131,7 +122,7 @@ the project's own license before it publishes anything.
 
 1. Fill in the `CLAUDE.md` TODO blocks, or delete them. **A stale TODO reads as a fact.**
 2. Write the project's `README.md`. The kit's stays in the kit (`kit-manifest.txt`): it describes
-   the kit, and the spawn that carried it presented the kit as its own front page at commit one.
+   the kit.
 3. List the project's own test commands in `kit-pin.tests`, or leave the comment line: an empty list
    is a choice, written down. `kit-pin to` runs them before it keeps a later pin move.
 4. Start `records/kit_feedback.md` the moment something is awkward — that file is how the kit
@@ -167,12 +158,10 @@ why — a future reader finding a machine-default identity cannot otherwise tell
 
 The manifest's completeness test (in `tests/kit_docs_test.sh`) stops running before a release, or
 the manifest starts naming files one by one outside `tests/`. A hand-maintained inventory is a promise
-to update it that nobody keeps: the kit's own README once listed every file by name and
-went stale in the same commit that added two of them. The manifest is an inventory too, but one whose
-drift fails a test, and it names directories, so a new file usually needs no new line.
+to update it that nobody keeps. The manifest is an inventory too, but one whose drift fails a test,
+and it names directories, so a new file usually needs no new line.
 
 *Earlier conditions, retired:* "the kit gains machine-readable manifests that make copying selective
 by declaration" was met by the manifest in v0.2.1. "`kit-manifest.txt` stops being a short list of
-exceptions" was met on purpose when every tracked path was given a class: a file added without one
-had been travelling to every spawn unreviewed. In v0.8.0 the copy reads the install's `CLASSES`,
-which `tools/install-release.sh` writes from the manifest.
+exceptions" was met on purpose when every tracked path was given a class. In v0.8.0 the copy reads
+the install's `CLASSES`, which `tools/install-release.sh` writes from the manifest.

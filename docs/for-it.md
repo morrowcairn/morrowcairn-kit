@@ -16,26 +16,7 @@ removing the hook stubs that run it (below).
 
 ## What this release changes
 
-Wording only, in the session rules; no code changed.
-
-v0.13.0, against v0.12.1 (read from the change itself; each change has its cases in the test suites):
-- **pre-push, a gate,** reads the do-not-publish list's pin in the repository's shared git folder, so a push from a
-  linked worktree is checked against the same pin as one from the main clone; before, such a push was refused unless
-  the worktree held a pin of its own. In a main clone, what it refuses is unchanged.
-- **kit-pin, a gate,** refuses a repository with grafts, as the hooks already did; its check fails a list that doesn't
-  compile, over which pre-push would refuse every push; it reads and writes the pin in the same shared folder; and it
-  drops the inherited git settings that choose a repository or a work tree, keeping those that choose which
-  configuration git reads, and turns replace refs off, as pre-push does.
-- **The reply-file hook** (off by default) names a second report under one relay `…-NN-part2.md`, and a different
-  report under a name already taken `…-new2.md`, where it wrote `…-resend2.md`. A report whose end line carries a tag
-  the session rules don't name, or formatting marks around it, which it didn't file before, it now files in the same
-  folder under the name that line gives; an end line it can't read it still doesn't file. Either way it shows the
-  person a warning through Claude Code, quoting a line it couldn't read; it never stops a turn from ending.
-- **The session rules**, in `rules/morrowcairn.md`, gain lines on how a session works; nothing in them runs.
-- **The setup prompt** sets only a missing git name or email, never one git already resolves, and looks first for
-  git's conditional includes, for an identity set in the environment, and for a hook already filing reports.
-- And the three test suites an install carries, and the documents. Nothing here writes, runs or sends anything v0.12.1
-  didn't (read from the change, not traced).
+The kit's [`CHANGELOG.md`](../CHANGELOG.md) lists what each release changes.
 
 ## What it needs
 
@@ -46,8 +27,8 @@ v0.13.0, against v0.12.1 (read from the change itself; each change has its cases
   home folder and their projects.
 - Claude Code, for the rules and skills; the hooks run without it.
 - Linux or macOS. On macOS, the kit's test suites and its install path passed on a GitHub-hosted macOS runner on this
-  release's code. **Native Windows is not supported**; Windows runs it inside WSL2 (below: measured on two machines,
-  not yet on one an organization manages).
+  release's code. On Windows, the kit runs inside WSL2 (below: measured on two machines, not yet on one an
+  organization manages); **native Windows is not supported**.
 
 ## What it writes
 
@@ -62,7 +43,7 @@ Outside a project, every file and folder, with its mode and what writes it:
 | `~/.config/morrowcairn/user.pin`, the release the user-level rules come from | the person's default (umask) | `kit-pin user` |
 | links in Claude Code's folder (`~/.claude/rules/morrowcairn.md`, `~/.claude/skills/gates`, `record-stamps`, `session-close`, `~/.claude/hooks/morrowcairn-reply-file`, `morrowcairn-compaction-log`) | links into the read-only install | `kit-pin user` |
 | `~/.local/state/morrowcairn/load-probe/` | the person's default | the daily load check, only if the person runs it |
-| the file `KIT_LOAD_CHECK_REPORT` names: the daily check's last report | the person's default | the daily load check, only where the person sets that variable |
+| the file `KIT_LOAD_CHECK_REPORT` names: the daily check's last report | the person's default. On WSL the setup offers `/mnt/c/Users/<the person's Windows user>/kit-load-check.txt`, on the Windows side, so it opens from Windows, where that folder's own permissions apply | the daily load check, only where the person sets that variable |
 | `~/.claude/rules/morrowcairn-local.md`, this machine's settings for the rules file and the two hooks | the person's default | the setup session writes it from the person's answers where the person's answer to the setup's first question lets it, approved at Claude Code's prompt and never over a file that is there; otherwise the person, from the file the setup shows or the kit's example. Someone who runs no relays has none |
 | the reply folder that file names (`[reply folder]`): one file per session report, `<project>-<label>-<session>-<NN>.md`, the report's text as the session wrote it, unmasked, so it can hold work content | files 600, never overwritten; the folder 700 where the hook makes it. On WSL the setup offers `/mnt/c/Users/<the person's Windows user>/claude-replies`, on the Windows side, where a browser attaches files from: WSL keeps no Linux file modes there by default, so that Windows folder's own permissions apply | the reply-file hook (a Claude Code Stop hook), only once the person names it in their own settings |
 | the compaction log that file names (`[compaction log]`): one line per compaction, the time, the session ID and what triggered it | 600; its folder 700 where the hook makes it | the compaction-log hook (a PostCompact hook), the same way |
@@ -189,8 +170,8 @@ IT hook the clone doesn't relay.
 - **One check:** each check turns off by removing from the project the hook stubs that run it (`pre-commit` runs the
   commit's checks, `pre-push` the push's). There is deliberately no quieter switch, no setting and no environment
   variable. `--no-verify` (below) skips the hooks openly, in the command itself, where a permission prompt, a reviewer
-  or a log can see it. The hooks no longer read a list from the environment: that route was removed because it let a
-  check run, and report a pass, against whatever list it was handed. The do-not-publish check alone also stays off
+  or a log can see it. The hooks don't read a list from the environment, since a list taken from there would let a check
+  run, and report a pass, against whatever list it was handed. The do-not-publish check alone also stays off
   under the one pinned line saying the project has none (above), and every push says so.
 - **The list:** delete `~/.config/morrowcairn/lists/<id>`; with it gone, that project's pushes refuse until it is back.
 - **CI:** where a project copied the kit's workflows, delete in a commit the files it copied for them
@@ -221,19 +202,19 @@ IT hook the clone doesn't relay.
 
 ## On Windows: WSL2
 
-**Measured on two Windows machines under WSL2**, on v0.12.0's code (v0.12.1 changes pre-push, a gate, in how it writes
-two counts, not in what it refuses; the load check's stub; the reply-file hook; the three test suites an install
-carries; the deploy pattern; and the documents; v0.13.0's changes are under What this release changes, above): a laptop
-with Ubuntu 24.04, where v0.12.0's setup prompt ran and the
-two Claude Code hooks passed a live test; and a fresh desktop with Ubuntu 26.04 (uutils coreutils by default, git 2.53,
-Python 3.14), where a draft of v0.12.1's setup prompt ran end to end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential, a
-listed term) refused as designed; on the Linux side file modes and LF line endings were kept. On the Windows side
+**Measured on two Windows machines under WSL2**, on v0.12.0's code and setup prompt (the desktop ran a later draft of
+the prompt): a laptop with Ubuntu 24.04, where the setup prompt ran and the two Claude Code hooks passed a live test;
+and a desktop with Ubuntu 26.04 (uutils coreutils by default, git 2.53, Python 3.14), where the setup prompt ran end to
+end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential,
+a listed term) refused as designed; on the Linux side file modes and LF line endings were kept. On the Windows side
 (`/mnt/c`), every file showed mode 777, `chmod` had no effect, and commits and pushes ran 3 to 5 times slower; line
 endings stayed LF. **Not yet measured:** a machine an organization manages, with IT's settings in force.
 - Install WSL2 (not WSL1) and a Linux distribution; inside it, the tools above and Claude Code.
 - Keep projects in WSL's own file system, under the Linux home, not under `/mnt/c`. The setup keeps code, projects,
-  the kit's clone and its install there; its one default on the Windows side, for someone who runs relays, is the
-  reply folder (`/mnt/c/Users/<the person's Windows user>/claude-replies`), so a browser can attach its files.
+  the kit's clone and its install there. Its defaults on the Windows side are the reply folder, for someone who runs
+  relays (`/mnt/c/Users/<the person's Windows user>/claude-replies`), so a browser can attach its files, and the daily
+  check's report file, where the person keeps one (`/mnt/c/Users/<the person's Windows user>/kit-load-check.txt`), so
+  it opens from Windows.
 - The daily load check runs only while WSL is running: a day WSL isn't started goes unchecked.
 - Use WSL's git on those projects, never Git for Windows on the same repository.
 - The list then lives in the Linux home's `~/.config/morrowcairn/lists/`, inside the distribution.

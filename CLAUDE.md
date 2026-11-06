@@ -86,6 +86,9 @@ What the kit's scripts and tests need, as measured. A version named is one that 
 
 - **Linux:** bash, git, python3, gitleaks, and `sha256sum` or `shasum`. CI's `ubuntu-latest` (bash 5.2,
   git 2.55) runs the four suites on pushes to `main` and on pull requests, and the user's path on pushes to `main`.
+  The upgrade test, `tests/upgrade_test.sh`, carries a project across the real releases from v0.11.0 on: it reads
+  their tags from the clone it runs in, so it needs a clone holding every tag, and no network. CI runs it on Linux
+  alone, on pushes to `main` and by hand (17 s on the kit's own machine).
 - **A stock Mac:** `/bin/bash` 3.2, BSD tools and `shasum`, git and python3 from Apple's developer
   tools, and gitleaks added: the user's path passes, from clone and install to the planted refusals, with
   PATH only `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` and gitleaks' folder (git 2.50 and python3 3.9, on a
@@ -101,8 +104,7 @@ What the kit's scripts and tests need, as measured. A version named is one that 
   123/0/0, load_check 60/0/3, smoke 9/0/0), commits, pushes and both refusals as designed, modes and LF kept in the
   Linux home. Ubuntu 24.04: the setup and the two Claude Code hooks' live tests. Under `/mnt/c` every file shows 777,
   `chmod` does nothing, and commits and pushes run 3 to 5 times slower. A machine an organization manages: not measured.
-- **Windows: not yet passing.** Under Git Bash, the suites fail 5 cases on kit causes, and an install
-  made with Git Bash's defaults is refused. Don't rely on it there.
+- **Native Windows:** not supported; on Windows the kit runs inside WSL2 (above). No CI job runs on a Windows runner.
 - git 2.31 or later: `bin/kit-pin` uses `git rev-parse --path-format` (git's release notes; the oldest
   git run here is 2.43).
 - python3: pre-push's binary scan (a push carrying a binary), install-release's one-step rename, checked

@@ -104,6 +104,30 @@ a=$(glstep "$ROOT/.github/workflows/gitleaks.yml"); b=$(glstep "$CG")
 [[ -n "$a" && "$a" == "$b" && "$a" == *'ver=8.'* && "$a" == *'if [ "$got" != "$want" ]'* ]] && ! grep -q '\./gitleaks' "$CG" 2>/dev/null
                                                want_ok "K26 ci/gitleaks.yml installs gitleaks with the kit's own pinned step, line for line, and scans with it" $? "$(diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") | grep -c '^[<>]') line(s) differ"
 
+# ============================== the upgrade test's workflow =====================================
+# tests/upgrade_test.sh carries a project across the real releases, read from the repository's own tags. Its job runs
+# on pushes to main and by hand, never on pull requests or a schedule (its minutes go where a release is about to be
+# made), on Linux alone, checked out with every tag, gitleaks installed by the kit's own pinned step line for line, and
+# neither file ships in an install. A checkout missing a tag fails the job, never skips it: the job's own step, run in
+# a scratch repository holding the test and no tag, exits non-zero at UT0 and skips nothing.
+UY="$ROOT/.github/workflows/upgrade.yml"
+uon=$(awk '/^on:/ {o=1; next} /^[^[:space:]#]/ {o=0} o' "$UY" 2>/dev/null)
+ujob=$(awk '/^jobs:/ {j=1; next} j' "$UY" 2>/dev/null)
+{ [[ -f "$UY" && "$uon" == *"push:"* && "$uon" == *"branches: [main]"* && "$uon" == *"workflow_dispatch:"* \
+     && "$uon" != *"pull_request"* && "$uon" != *"schedule"* && "$uon" != *"tags:"* \
+     && "$ujob" == *"runs-on: ubuntu-latest"* && "$ujob" != *"matrix"* && "$ujob" == *"fetch-depth: 0"* \
+     && "$ujob" == *"run: tests/upgrade_test.sh"* ]] \
+  && [[ -n "$(glstep "$UY")" && "$(glstep "$UY")" == "$(glstep "$ROOT/.github/workflows/gitleaks.yml")" ]] \
+  && grep -qE '^kit[[:space:]]+\.github/workflows/upgrade\.yml$' "$MANIFEST" && grep -qE '^kit[[:space:]]+tests/upgrade_test\.sh$' "$MANIFEST"; } 2>/dev/null
+                                               want_ok "UP1 upgrade.yml runs the upgrade test on pushes to main and by hand alone, on Linux, with every tag and the kit's gitleaks step, and neither file ships" $? "on: [$(printf '%s' "$uon" | tr '\n' ' ')]"
+ustep=$(awk '/- name: Upgrade test/ {f=1; next} f && /run:/ {sub(/^[[:space:]]*run:[[:space:]]*/, ""); print; exit}' "$UY" 2>/dev/null)
+U=$(mktemp -d); git init -q -b main "$U/r" && mkdir -p "$U/r/tests" && cp "$ROOT/tests/upgrade_test.sh" "$U/r/tests/" 2>/dev/null \
+    && git -C "$U/r" add -A && git -C "$U/r" -c user.name=t -c user.email=t@invalid.local -c core.hooksPath=/dev/null commit -q -m one
+printf '%s\n' "$ustep" > "$U/step.sh"     # a program reaches the shell through a file, never a -c string
+uout=$( cd "$U/r" && bash "$U/step.sh" 2>&1 ); urc=$?; rm -rf "${U:?}"
+[[ -n "$ustep" && $urc -ne 0 && "$uout" == *"FAIL  UT0"* && "$uout" != *"skip "* ]]
+                                               want_ok "UP2 the upgrade job's step, in a repository missing the release tags, fails at UT0 and skips nothing" $? "exit $urc: $(printf '%s' "$uout" | tr '\n' ' ' | cut -c1-200)"
+
 # ============================== the frame TODO: hook, template and test fixture agree ===========
 todo=$(sed -n "s/^FRAME_TODO=\"\(.*\)\"$/\1/p" "$H/pre-commit" 2>/dev/null)
 [[ -n "$todo" ]];                              want_ok "K9 pre-commit names its FRAME_TODO string" $? ""
@@ -773,7 +797,10 @@ n=$(awk 'tolower($0) ~ /identity list/ && tolower($0) !~ /called the identity li
 # The installer is retired (v0.8.0, stage 4): nothing tracked runs or names it, so no instruction sends a reader to it.
 out=$(git -C "$ROOT" grep -l 'install_hooks' -- . ':!tests/kit_docs_test.sh' 2>/dev/null)
 [[ ! -e "$H/install_hooks.sh" && -z "$out" ]]; want_ok "K22 the installer is gone, and no tracked file names it" $? "$(echo $out)"
-{ grep -q 'went stale in the same commit' "$ROOT/patterns/local-spawn.md" && ! grep -qi 'the README warns' "$ROOT/patterns/local-spawn.md"; } 2>/dev/null
+# The reason is the kind of inventory, said in the present tense (the account of the README that went stale went with
+# the no-history trim, NH1).
+{ tr -s ' \n' '  ' < "$ROOT/patterns/local-spawn.md" | grep -qF 'A hand-maintained inventory is a promise to update it that nobody keeps' \
+  && ! grep -qi 'the README warns' "$ROOT/patterns/local-spawn.md"; } 2>/dev/null
                                                want_ok "K17 local-spawn states the inventory reason inline; the kit README does not travel" $? ""
 # The setup prompt (docs/setup-prompt.md) installs the release the README installs, from the address the README clones:
 # its checkout, install and user steps name that release, and no other release appears in it. It edits no settings
@@ -971,6 +998,55 @@ sp9=$(awk '/^9\. / {p=1} /^10\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  '
 [[ "$sp9" == *"git config --get-regexp '^includeif\.'"* && "$sp9" == *"GIT_AUTHOR_EMAIL"* && "$sp9" == *"GIT_COMMITTER_NAME"* \
    && "$sp9" == *"by name only, never printing a value"* && "$sp9" == *"set nothing"* ]]
                                                want_ok "SP33 step 9 checks git's conditional includes and the identity variables, by name only, and sets nothing where either is found" $? "${sp9:0:200}"
+# The website takes the prompt from this file at the release's tag, as the file's one text block: exactly two fence
+# lines (a fence indented up to three spaces, of backticks or tildes, counts), the first opening a text block and the
+# second closing it, so no second block of any kind can be taken for the prompt or end it early.
+spfn=$(grep -nE '^ {0,3}(```|~~~)' "$SPF" 2>/dev/null)
+[[ $(printf '%s\n' "$spfn" | grep -c .) == 2 && "$(printf '%s\n' "$spfn" | sed -n '1s/^[0-9]*://p')" == '```text' \
+   && "$(printf '%s\n' "$spfn" | sed -n '2s/^[0-9]*://p')" == '```' ]]
+                                               want_ok "SP34 the setup prompt holds exactly one text block, the file's only fenced block" $? "fences: $(echo $spfn)"
+# Every question gives its default in brackets, as the prompt's opening asks: step 8's daily check [no], as the other
+# features off by default give theirs, and step 9's identity [skip]. Step 1 names the route on macOS, which has no
+# package manager by default: Apple's Command Line Tools, which bring git and python3, by xcode-select --install.
+sp1m=$(awk '/^1\. / {p=1} /^2\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+sp8d=$(awk '/^8\. / {p=1} /^9\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp8d" == *"Ask me whether I want it, with [no] as its default,"* && "$sp9" == *"what my commits should carry, with [skip] as its default"* \
+   && "$sp1m" == *"on macOS, git and python3 come with Apple's Command Line Tools, installed by xcode-select --install"* \
+   && "$sp1m" != *"that takes my system's package manager and my password, so it is mine to run"* ]]
+                                               want_ok "SP35 step 8's daily check defaults to [no], step 9's identity to [skip], and step 1 names macOS's route, xcode-select --install" $? "${sp1m:0:200}"
+# Every question the prompt asks gives its default in brackets, as its opening rule says. The block's questions take two
+# forms, and both are read: a quoted question (a quoted span holding "?") holds a bracket; and outside quotes, each
+# clause (ended by ". ", "; " or ": ") holding the word "ask" holds one, but for the wordings that aren't a question to
+# the person, each excluded by its exact words: a request ("ask me to" run or type something), the rule itself, a quoted
+# question's lead-in ("ask me once:", "ask me,", "ask these"), and asks that aren't the session's ("don't ask", "for me
+# to ask", "which ask me first", "will ask for it", "I ask for both"). A reworded exclusion turns this red until the list
+# follows it. A question phrased with neither "ask" nor a quoted "?" isn't seen: purple's check at each release covers it.
+spb=$(awk '/^```text$/ {p=1; next} /^```$/ {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+sp36=""; spq=$(printf '%s' "$spb" | tr -cd '"' | wc -c)
+(( spq % 2 == 0 )) || sp36+=" [an odd number of quotes: $spq]"
+while IFS= read -r q; do
+    [[ -z "$q" || "$q" == *"["* ]] || sp36+=" [quoted: ${q:0:70}]"
+done < <(printf '%s' "$spb" | grep -oE '"[^"]*\?[^"]*"')
+while IFS= read -r c; do
+    printf '%s' "$c" | grep -qiE '(^|[^a-z])ask([^a-z]|$)' || continue
+    [[ "$c" == *"["* ]] || sp36+=" [asks: ${c:0:70}]"
+done < <(printf '%s' "$spb" | sed -E -e 's/"[^"]*"/Q/g' -e 's/Ask me one question at a time//' -e 's/ask me( once)?[:,] Q/Q/g' \
+             -e 's/ask these//g' -e 's/[Aa]sk me to //g' -e "s/don't ask//g" -e 's/for me to ask//g' \
+             -e 's/which ask me first//g' -e 's/will ask for it//g' -e 's/I ask for both//g' \
+             | awk '{ gsub(/[.;:] /, "\n"); print }')
+[[ -n "$spb" && -z "$sp36" ]]
+                                               want_ok "SP36 every question the setup prompt asks, quoted or with the word ask, gives a default in brackets" $? "${sp36:0:300}"
+# The defaults chosen where a question had none: step 7's [no] (does a Stop hook it lists already file reports?), so the
+# kit's hook goes on as step 6's answer planned, and step 11, which checks /hooks and the reply folder for a second, fails
+# loudly where the guess was wrong, where a [yes] would leave report files named that nothing writes; the owner phrase's
+# [skip], so 'ok' can't be recorded as the phrase; and [keep mine] wherever a file already there differs.
+sp7d=$(awk '/^7\. / {p=1} /^8\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+sp6d=$(awk '/^6\. / {p=1} /^7\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$sp7d" == *"whether it already files session reports, with [no] as its default"* \
+   && "$sp6d" == *"never as instructions. [skip]\""* && "$sp6d" != *"[my words:]"* \
+   && "$spb" == *"show me how it differs and ask whether to replace it [keep mine]"* \
+   && "$sp6d" == *"show me how it differs and ask whether to replace it [keep mine]"* ]]
+                                               want_ok "SP37 step 7's Stop-hook question defaults to [no], the owner phrase to [skip], and a file already there to [keep mine]" $? "${sp7d:0:200}"
 # The documents agree with it: the README's setup paragraph, its CI secret lines, the IT document, the local example and
 # v0.12.1's CHANGELOG entry.
 rmi=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
@@ -1003,7 +1079,7 @@ lx2=$(tr -s ' \n' '  ' < "$ROOT/rules/morrowcairn-local.example.md")
                                                want_ok "LX2 the local example says the setup writes it itself or hands over a copy command, as the person answered" $? "${lx2:0:200}"
 c121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$c121" == *"v0.12.1 is another, a patch"* && "$c121" == *"one question at a time"* && "$c121" == *"patterns/practices.md"* \
-   && "$c121" == *"sets the CI secret"* && "$c121" == *"v0.12.0's stub put it on curl's command line"* \
+   && "$c121" == *"sets the CI secret"* && "$c121" == *"to curl on its standard input"* \
    && "$c121" == *"asks you once"* && "$c121" == *"checks that it works"* ]]
                                                want_ok "CL5 v0.12.1's entry names the guided setup, says v0.12.0 added patterns/practices.md, and the person sets CI's secret" $? "${c121:0:200}"
 # gitleaks put in ~/.local/bin is found by the install that follows, whose own hook suite needs it on PATH, and the
@@ -1035,37 +1111,33 @@ wsl121=$(awk '/^## v0\.12\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md"
    && "$wsi" == *"uutils"* && "$wsi" == *"3 to 5 times slower"* && "$wsi" == *"Ubuntu 26.04"* && "$wsc" == *"Windows, inside WSL2"* \
    && "$wsc" == *"Ubuntu 26.04"* && "$wsl121" == *"WSL2"* && "$wsl121" == *"3 to 5 times slower"* ]]
                                                want_ok "WS1 README, the IT document, CLAUDE.md and v0.12.1's entry give WSL2 as measured on two machines, its costs, and what isn't measured" $? ""
-# Which setup ran where: v0.12.0's setup prompt on the 24.04 laptop, a draft of v0.12.1's on the 26.04 desktop, both
-# installing v0.12.0's code; "the setup ran end to end" alone read as this release's. The README and the IT document
-# name v0.12.1, since from v0.13.0 on "this release's" would name the wrong one; v0.12.1's own entry keeps its words.
-[[ "$wsr" == *"v0.12.0's setup prompt on the 24.04 laptop"* && "$wsr" == *"a draft of v0.12.1's on the 26.04 desktop"* \
-   && "$wsr" != *"a draft of this release's"* \
-   && "$wsr" == *"both installing v0.12.0's code"* && "$wsl121" == *"where v0.12.0's setup prompt ran"* \
-   && "$wsl121" == *"where a draft of this release's setup prompt ran end to end"* && "$wsl121" == *"both installing v0.12.0's code"* \
-   && "$wsi" == *"where v0.12.0's setup prompt ran"* && "$wsi" == *"where a draft of v0.12.1's setup prompt ran end to end"* \
-   && "$wsi" != *"a draft of this release's"* ]]
-                                               want_ok "WS2 README, the IT document and v0.12.1's entry say which setup prompt ran on which machine, both installing v0.12.0's code" $? ""
-# What v0.12.1 changes beyond the documents, as the IT document says it: pre-push (a gate, in how it writes two counts),
-# the load check's stub, the reply-file hook, the three test suites an install carries, and the deploy pattern.
-[[ "$wsi" != *"changes only the load check's stub"* && "$wsi" == *"v0.12.1 changes pre-push, a gate"* \
-   && "$wsi" == *"the load check's stub"* && "$wsi" == *"the reply-file hook"* \
-   && "$wsi" == *"the three test suites an install carries"* && "$wsi" == *"the deploy pattern"* ]]
-                                               want_ok "FI5 the IT document says what v0.12.1 changes: pre-push, the stub, the reply-file hook, three suites, the deploy pattern, the documents" $? ""
-# What v0.13.0 changes against v0.12.1, in a section of its own: pre-push and kit-pin, each a gate; the reply-file
-# hook's names; the session rules; the setup prompt; the three test suites an install carries; and the documents.
-fi7=$(awk '/^## What this release changes$/ {p=1; next} /^## / {p=0} p' "$FIT" 2>/dev/null | tr -s ' \n' '  ')
-[[ "$fi7" == *"v0.13.0, against v0.12.1"* && "$fi7" == *"pre-push, a gate"* && "$fi7" == *"linked worktree"* \
-   && "$fi7" == *"kit-pin, a gate"* && "$fi7" == *"grafts"* && "$fi7" == *"doesn't compile"* && "$fi7" == *"-part2"* \
-   && "$fi7" == *"-new2"* && "$fi7" == *"The session rules"* && "$fi7" == *"The setup prompt"* \
-   && "$fi7" == *"the three test suites an install carries"* ]]
-                                               want_ok "FI7 the IT document lists what v0.13.0 changes: pre-push, kit-pin, the reply-file hook's names, the rules, the setup prompt, three suites" $? "${fi7:0:200}"
-# This release's line, ahead of v0.13.0's list in the same section: that one sentence and nothing else.
-fi131=$(awk '/^## What this release changes$/ {p=1; next} /^v0\.13\.0, against v0\.12\.1/ {p=0} p' "$FIT" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-[[ "$fi131" == "Wording only, in the session rules; no code changed." ]]
-                                               want_ok "FI8 the IT document's line for this release, ahead of v0.13.0's list, is that sentence alone" $? "${fi131:0:200}"
+# The README and the IT document say what the kit does today, no history of releases or changes (R140); what each release
+# changed is in CHANGELOG.md, whose entries keep their words. WSL2's measurement keeps its basis, the code it ran on, as
+# every measured claim names one; it tells no release's changes and no setup prompt's draft. (WS2, FI5, FI7 and FI8,
+# which pinned that history, are retired.)
+[[ "$wsr" == *"on v0.12.0's code"* && "$wsr" != *"v0.12.1"* && "$wsr" != *"a draft of"* \
+   && "$wsi" == *"on v0.12.0's code and setup prompt"* && "$wsi" != *"v0.12.1 changes"* && "$wsi" != *"v0.13.0's changes"* \
+   && "$wsi" != *"a draft of v0.12.1"* && "$wsl121" == *"where a draft of this release's setup prompt ran end to end"* ]]
+                                               want_ok "WS3 README and the IT document give WSL2's measurement on v0.12.0's code, telling no release's changes; v0.12.1's entry keeps its words" $? ""
+# The README says what each machine ran, as the kit's CLAUDE.md and the IT document record it: the setup end to end on
+# both, the five suites on 26.04 alone.
+[[ "$wsr" == *"Under WSL2 the setup runs end to end on Ubuntu 24.04 and 26.04, and the five test suites pass on 26.04 (measured on two machines, on v0.12.0's code)."* \
+   && "$wsr" != *"suites pass, on Ubuntu 24.04"* ]]
+                                               want_ok "WS4 the README's WSL2 sentence has the setup run on 24.04 and 26.04, and the suites pass on 26.04 alone" $? ""
+# The IT document's change section is one line pointing to the CHANGELOG, and nothing else.
+fi9=$(awk '/^## What this release changes$/ {p=1; next} /^## / {p=0} p' "$FIT" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+[[ "$fi9" == 'The kit'"'"'s [`CHANGELOG.md`](../CHANGELOG.md) lists what each release changes.' ]]
+                                               want_ok "FI9 the IT document's change section is one line pointing to CHANGELOG.md" $? "${fi9:0:200}"
+# Neither document tells what a past release did or how the text came to be: the phrases R140's pass took out stay out.
+fi10=""
+for p in "no longer read a list" "that route was removed" "earlier releases' messages" "the previous version" "fixed here" \
+         "waits until someone" "v0.12.1 changes" "v0.13.0, against" "Wording only"; do
+    [[ "$wsr" == *"$p"* || "$wsi" == *"$p"* ]] && fi10+=" [$p]"
+done
+[[ -z "$fi10" ]];                              want_ok "FI10 neither the README nor the IT document tells what a past release changed" $? "found:${fi10}"
 # v0.12.1's entry names the two code changes this relay adds: the reply-file hook matching a path line whole when the
-# reply folder's path holds a space, and the deploy pattern's headroom line, which GNU df refused.
-[[ "$wsl121" == *"the reply-file hook"* && "$wsl121" == *"a space"* && "$wsl121" == *"options -P and --output are mutually exclusive"* \
+# reply folder's path holds a space, and the deploy pattern's headroom line, in place of the form GNU df refuses.
+[[ "$wsl121" == *"the reply-file hook"* && "$wsl121" == *"a space"* && "$wsl121" == *"df -P --output=avail"* \
    && "$wsl121" == *"df -Pk"* ]]
                                                want_ok "CL6 v0.12.1's entry names the reply-file hook's path match with a space and the deploy pattern's df line" $? "${wsl121:0:200}"
 # v0.13.0's entry, which was the Unreleased section: a minor, taken with kit-pin to, naming each change, kit-pin's
@@ -1082,6 +1154,56 @@ c130=$(awk '/^## v0\.13\.0$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2
 c131=$(awk '/^## v0\.13\.1$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
 [[ "$c131" == "Wording only, in the session rules; no code changed." ]]
                                                want_ok "CL8 v0.13.1's entry is that one sentence alone" $? "${c131:0:200}"
+# The seven entries that told what went wrong say only what changed (the owner's ruling, v0.14.0): each account of what
+# failed and the harm that followed is gone, and each entry keeps the changed lines it records.
+clt=$(tr -s ' \n' '  ' < "$ROOT/CHANGELOG.md" 2>/dev/null); cl9=""
+for p in "so every push from a new worktree was refused until then" "Before, the hook said nothing in any of these cases" \
+         "and pre-push then refuses every push" "the hook took that line's last word as the path" \
+         "so a copy stopped before any transfer" "v0.12.0's stub put it on curl's command line" \
+         "Until now the only way past was" "the org's other hooks stopped running in the project" \
+         "And a lesson, the reason for the cut" "so one kept the check red" "a session a crash damaged mid-write kept the check red" \
+         "v0.9.0 dropped a line holding invalid UTF-8" "Under v0.9.0 such a module" "v0.9.0 matched these once" \
+         "v0.9.0 printed the path of every binary" "v0.6.0 ran the file" "used to stay put"; do
+    [[ "$clt" == *"$p"* ]] && cl9+=" [still: $p]"
+done
+for p in "shared git folder" "-new2" "df -Pk" "to curl on its standard input" "A merge is scanned, not refused" \
+         "Hooks beside an org's" "no model turn: N sessions skipped" "load-check-acknowledged.tsv" "python3 -I" \
+         "a match in either counts" "never as shell" 'empty or unset `SRC` or `DST`'; do
+    [[ "$clt" == *"$p"* ]] || cl9+=" [lost: $p]"
+done
+[[ -n "$clt" && -z "$cl9" ]];                  want_ok "CL9 the seven entries that told what went wrong say only what changed, each keeping its changed lines" $? "${cl9:0:300}"
+# The other shipped documents say what the kit does too (the owner's rulings, v0.14.0): the ten passages that told what
+# went wrong, eight in local-spawn, one in leak-detection's README and one in repo-genesis, are gone, each passage
+# keeping what it says the kit does. docs/rules-explained.md and skills/PROVENANCE.md, whose job is explaining why, keep
+# theirs.
+nh1=""; NLS="$ROOT/patterns/local-spawn.md"; NLD="$H/README.md"; NRG="$ROOT/patterns/repo-genesis.md"
+for fp in "$NLS|a spawned instance found that an empty" "$NLS|The first spawned instance's destination already held" \
+          "$NLS|A spawn that carried the kit's README presented" "$NLS|once listed every file by name" \
+          "$NLS|had been travelling to every spawn unreviewed" "$NLD|Until v0.11.0 pre-push refused every merge" \
+          "$NRG|This clause comes from a spawned instance" "$NLS|had to rename an unborn branch" \
+          "$NLS|had its own kit mistaken for" "$NLS|the spawn that carried it presented the kit"; do
+    tr -s ' \n' '  ' < "${fp%%|*}" 2>/dev/null | grep -qF -- "${fp#*|}" && nh1+=" [still: ${fp#*|}]"
+done
+for fp in "$NLS|so such a piece stops at its first use" "$NLS|The \`find\` above is the step" \
+          "$NLS|its kit-owned files stay in the install, run from there" \
+          "$NLS|A hand-maintained inventory is a promise to update it that nobody keeps" \
+          "$NLS|was met on purpose when every tracked path was given a class" \
+          "$NLD|its author, committer and message go through the metadata layer" \
+          "$NRG|then fails closed instead of writing a guessed author into line one" \
+          "$NLS|The default branch name is a per-machine git setting" "$NLS|which a restore needs" \
+          "$NLS|The kit's stays in the kit"; do
+    tr -s ' \n' '  ' < "${fp%%|*}" 2>/dev/null | grep -qF -- "${fp#*|}" || nh1+=" [lost: ${fp#*|}]"
+done
+[[ -f "$NLS" && -f "$NLD" && -f "$NRG" && -z "$nh1" ]]
+                                               want_ok "NH1 the ten passages in local-spawn, leak-detection's README and repo-genesis that told what went wrong say what the kit does" $? "${nh1:0:300}"
+# v0.14.0's entry: a minor taken with kit-pin to, naming the trims, the setup prompt's defaults and macOS route, and the
+# setup prompt's one text block.
+c140=$(awk '/^## v0\.14\.0$/ {p=1; next} /^## v/ {p=0} p' "$ROOT/CHANGELOG.md" 2>/dev/null | tr -s ' \n' '  ')
+[[ "$c140" == *"kit-pin to v0.14.0"* && "$c140" == *"v0.13.0, v0.12.1, v0.11.0, v0.10.2, v0.10.1, v0.10.0 and v0.7.0 say only what changed"* \
+   && "$c140" == *'`patterns/local-spawn.md`, `patterns/repo-genesis.md` and `leak-detection/README.md`'* \
+   && "$c140" == *"[no]"* && "$c140" == *"[skip]"* && "$c140" == *"xcode-select --install"* \
+   && "$c140" == *"exactly one text block"* ]]
+                                               want_ok "CL10 v0.14.0's entry is a minor taken with kit-pin to, naming the trims, the setup prompt's defaults and macOS route, and its one text block" $? "${c140:0:200}"
 rmi2=$(awk '/^The usual way is the setup prompt/ {p=1} /^1\. / {p=0} p' "$ROOT/README.md" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$rmi2" == *"If you say you'll run work through relays, it writes the kit's settings file"* ]]
                                                want_ok "RM13 the README's setup paragraph writes the settings file only for someone who says they'll run relays" $? "${rmi2:0:200}"
@@ -1159,15 +1281,15 @@ for f in "$ROOT/README.md" "$CL" "$MANIFEST"; do
     [[ $(grep -oE '\b[0-9a-f]{7,40}\b' "$f" | grep -c '[0-9]') == 0 ]] || r34=1
 done
 [[ $r34 == 0 ]];                               want_ok "RM6 the README, CHANGELOG.md and kit-manifest.txt (all three in the public repository) carry no § number, R-label, queue number, commit hash or CI run ID" $? ""
-# v0.12.0's entry names the setup prompt and the ping's fixed words, and what kit-pin user links; the v0.11.0 passage
-# amended since is marked as a note added in v0.12.0, since entries keep the words of their time.
+# v0.12.0's entry names the setup prompt and the ping's fixed words, and what kit-pin user links; v0.11.0's names the
+# hooks beside an org's (its later note, an account of what failed, went with the trim, CL9).
 c12=$(awk '/^## v0\.12\.0$/ {p=1; next} /^## / {p=0} p' "$CL" 2>/dev/null | tr -s ' \n' '  ')
 c110=$(awk '/^## v0\.11\.0$/ {p=1; next} /^## / {p=0} p' "$CL" 2>/dev/null | tr -s ' \n' '  ')
 [[ "$c12" == *'[`docs/setup-prompt.md`](docs/setup-prompt.md),** a prompt pasted into Claude Code'* \
    && "$c12" == *"ping carries the kit's fixed words alone"* \
    && "$c12" == *"the three skills and the two hooks' scripts into Claude Code's folder"* \
-   && "$c110" == *"(A note added in v0.12.0: the org's other hooks stopped running in the project"* ]]
-                                               want_ok "CL3 v0.12.0's entry names the setup prompt, the ping's fixed words and the hooks' links; the later note in v0.11.0's says so" $? "${c12:0:120}"
+   && "$c110" == *"Hooks beside an org's"* ]]
+                                               want_ok "CL3 v0.12.0's entry names the setup prompt, the ping's fixed words and the hooks' links; v0.11.0's the hooks beside an org's" $? "${c12:0:120}"
 # It says every push needs python3, which finds the list, that a push refuses too from an account the user database
 # gives no absolute home, and the two smaller changes that came with it.
 [[ "$c12" == *"- **Every push needs python3,** which finds the project's do-not-publish list; without it the push refuses and says why, and so does a push from an account the user database gives no absolute home (in a container, a user with no line in \`/etc/passwd\`). \`kit-pin user\` makes \`~/.config/morrowcairn\` at 700, and the daily load check's probe asks Claude Code not to save its session."* ]]
@@ -1203,6 +1325,16 @@ done
 [[ "$mg" == *"github.event_name == 'schedule'"* && "$mg" == *"actions: read"* && "$mg" != *"write"* ]] || mg_why+=" [the gate job's trigger or permissions]"
 [[ -z "${mg_why:-}" ]];                        want_ok "MS6 both macOS jobs run unless the gate says exactly false, and the gate runs on the schedule alone, reading only" $? "${mg_why:-}"
 rm -rf "${W:?}"
+# On Windows the kit runs inside WSL2, a Linux, and native Windows isn't supported, so the workflow has no Windows job:
+# its dispatch offers macos and linux alone, no job runs on a Windows runner, and no step is Windows' own. The gitleaks
+# step, the same text in every workflow (K26, UP1), keeps its archive table, which names every runner gitleaks ships for.
+wfw=""
+grep -qxE '[[:space:]]*options: \[macos, linux\]' "$WF" 2>/dev/null || wfw+=" [the dispatch's options]"
+grep -qiE 'windows-latest' "$WF" 2>/dev/null && wfw+=" [a windows-latest runner]"
+grep -qE "runner\.os == 'Windows'" "$WF" 2>/dev/null && wfw+=" [a Windows-only step]"
+grep -qE '^[[:space:]]*MSYS:' "$WF" 2>/dev/null && wfw+=" [an MSYS setting]"
+grep -qiE 'git bash' "$WF" 2>/dev/null && wfw+=" [Git Bash named]"
+[[ -f "$WF" && -z "$wfw" ]];                   want_ok "WF1 cross-platform.yml runs no native-Windows job: macos and linux alone, no Windows runner, step or setting" $? "${wfw:-no file}"
 
 # ============================== the forge's scanning exclusion ==================================
 # The public copy runs GitHub's secret scanning and push protection; the credential fixture's dummy keys would set them

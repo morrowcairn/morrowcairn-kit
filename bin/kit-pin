@@ -268,9 +268,9 @@ list_place() {   # READER
 # The move to the list's place: kit.list-id where the project has none (16 random bytes, in hex), the folders
 # ~/.config/morrowcairn and its lists/ made at mode 700 where they aren't there, and .git/leak-pattern copied there at
 # mode 600, byte for byte, where its place holds nothing yet. It never writes over a list, and leaves .git/leak-pattern
-# for the person to delete once nothing reads it. to, migrate and move-list run it: move_check READER first, which
-# refuses before anything is written, then move_list READER, which records what it made in MV_ID, MV_LIST, MV_DIR
-# and MV_BASE so move_undo can put it back. An older release's reader names no place: then the move does nothing, as
+# where it was, since a check of the project's own may still read it. to, migrate and move-list run it: move_check
+# READER first, which refuses before anything is written, then move_list READER, which records what it made in MV_ID,
+# MV_LIST, MV_DIR and MV_BASE so move_undo can put it back. An older release's reader names no place: then the move does nothing, as
 # that release's hooks read .git/leak-pattern.
 MV_ID=0; MV_LIST=""; MV_DIR=""; MV_BASE=""; MV_NOTE=""; MV_ERROR=""
 move_old() { printf '%s/leak-pattern' "$(git rev-parse --git-dir)"; }
@@ -334,7 +334,27 @@ move_list() {   # READER: the move; 0, or 1 with MV_ERROR after putting back wha
         rm -f "$tmp"; MV_ERROR="the list could not be copied to $LS_SHOW"; move_undo; return 1
     fi
     rm -f "$tmp"; MV_LIST=$LS_FILE
-    MV_NOTE="copied .git/leak-pattern to $LS_SHOW (mode 600), byte for byte; the old file stays: delete it once nothing reads it there"
+    MV_NOTE="copied .git/leak-pattern to $LS_SHOW (mode 600), byte for byte; the old file stays, since a check of the project's own may still read it: move each such check to the new place before you delete it"
+    return 0
+}
+# Going back to a release whose hooks read the list at .git/leak-pattern (one before v0.12.0, whose reader names no
+# place): a project that has moved its list (it holds kit.list-id) keeps its list at its place, so that file must be the
+# list there, byte for byte, or the older release's hooks would read another list, or none. Its place is found by the
+# reader beside this script, as repin finds it. Refuses before anything is written; returns 0 otherwise (upgrade test
+# U5b and U5c, install test LM10 to LM10c).
+back_check() {   # TARGET-READER TARGET-RELEASE
+    local old rc
+    bash -c '. "$1" && declare -F kit_list_file' _ "$1" >/dev/null 2>&1 && return 0     # the target reads the list at its place
+    [[ -e kit.list-id || -L kit.list-id ]] || return 0                                  # never moved: .git/leak-pattern is its list
+    list_place "$KIT_DIR/leak-detection/read-leak-pattern.sh"; rc=$?
+    (( rc == 0 )) || refuse "release $2's hooks read the list at .git/leak-pattern, and this project's list can't be found at its place to compare: ${LS_ERROR:-the reader beside this kit-pin names no place}" \
+        "Nothing was changed."
+    [[ -e "$LS_FILE" || -L "$LS_FILE" ]] || return 0                                    # no list at its place to differ from
+    old=$(move_old)
+    [[ -e "$old" ]] || refuse "release $2's hooks read the list at .git/leak-pattern, and this clone holds none there; the project's list is at $LS_SHOW" \
+        "You can: put a copy of $LS_SHOW at .git/leak-pattern first, byte for byte, at mode 600, then run this again. Nothing was changed."
+    cmp -s "$old" "$LS_FILE" || refuse "release $2's hooks read the list at .git/leak-pattern, which differs from the project's list at $LS_SHOW" \
+        "You can: put a copy of $LS_SHOW at .git/leak-pattern first, byte for byte, at mode 600, then run this again. Nothing was changed."
     return 0
 }
 move_report() {   # what the move did, after it is kept
@@ -415,8 +435,10 @@ list_report() {   # INSTALL: where pre-push will take the do-not-publish list fr
                    else
                        echo "kit-pin: LEAK_PATTERN is set in $LS_SHOW and matches its pin ($(kit_list_rows "$value") row(s)) -- pre-push reads it there; the do-not-publish check is active."
                    fi
+                   # This check can't see the project's own checks, and one may still read the old file, which goes
+                   # stale the first time the list changes at its place (upgrade test U1, install test LM5b).
                    if (( prc == 0 )) && [[ -e "$gitdir/leak-pattern" ]]; then
-                       echo "kit-pin: .git/leak-pattern, the list's old place, is still here; no hook of this release reads it. Delete it once nothing else does."
+                       echo "kit-pin: .git/leak-pattern, the list's old place, is still here. No hook of this release reads it, but a check of the project's own may: move each such check to the list at $LS_SHOW, read through this release's reader, before you delete it (patterns/local-upgrade.md, Taking a later release)."
                    fi
                    return 0
                fi
@@ -436,7 +458,7 @@ list_report() {   # INSTALL: where pre-push will take the do-not-publish list fr
         if (( prc == 0 )) && [[ -e "$gitdir/leak-pattern" ]]; then
             echo "kit-pin: no list at $LS_SHOW, but this clone still holds one at .git/leak-pattern, the list's old place, which no hook of this release reads."
             closed_head
-            echo "  Move it there: $KP_CMD move-list (a copy, byte for byte; the old file stays for you to delete)."
+            echo "  Move it there: $KP_CMD move-list (a copy, byte for byte; the old file stays until no check of the project's own reads it)."
             return 3
         fi
     }
@@ -704,6 +726,7 @@ mode_to() {
     # The list's place, where the target release's hooks read it: refused here, before anything is written, when a list
     # there differs from the one this clone holds.
     move_check "$INST/leak-detection/read-leak-pattern.sh"
+    back_check "$INST/leak-detection/read-leak-pattern.sh" "$rel"
 
     # The release kit.pin holds now, read as its two lines, for the CI copies (take_ci_copies); a kit.pin in another
     # shape leaves every copy to the checked-copies layer.
@@ -722,6 +745,9 @@ mode_to() {
     [[ -e "$HOOKS/$CHAIN_FILE" ]] && cp -p "$HOOKS/$CHAIN_FILE" "$SAVE/$CHAIN_FILE"
     rollback() {
         local h
+        # A kit.list-id the move made was staged for the tests (below): out of the index first, then move_undo
+        # deletes it.
+        (( MV_ID == 0 )) || git rm -q --cached --ignore-unmatch -- kit.list-id >/dev/null 2>&1
         move_undo
         KIT_UNDO=""
         if [[ -e "$SAVE/kit.pin" ]]; then cp -p "$SAVE/kit.pin" kit.pin; else rm -f kit.pin; fi
@@ -745,6 +771,12 @@ mode_to() {
     printf 'release=%s\nmanifest=%s\n' "$rel" "$INST_HASH" > kit.pin
     if ! move_list "$INST/leak-detection/read-leak-pattern.sh"; then
         rollback; refuse "$MV_ERROR" "kit.pin and both stubs are back as they were."
+    fi
+    # kit-pin.tests run before anything is committed, on the work tree and the index, so a kit.list-id the move made is
+    # staged, as a CI copy it takes is: a test reading the index sees what the commit will hold (upgrade test U3,
+    # install test LM4b). kit.pin is left for the person to commit.
+    if (( MV_ID )) && ! git add -- kit.list-id; then
+        rollback; refuse "could not stage kit.list-id" "kit.pin and both stubs are back as they were."
     fi
     mkdir -p "$HOOKS"
     for h in ${kept[@]+"${kept[@]}"}; do
@@ -799,6 +831,7 @@ mode_to() {
     KIT_UNDO=""                                   # the move is kept: nothing to put back from here on
     rm -rf "${SAVE:?}"
     echo "kit-pin: kit.pin now names $rel ($INST_HASH), and both stubs are $rel's. Commit kit.pin$( (( MV_ID == 0 )) || printf ' and kit.list-id'); that commit runs through them."
+    echo "kit-pin: kit-pin.tests ran on the work tree and the index, before any commit$( (( MV_ID == 0 )) || printf ', kit.list-id staged'), so a test that reads a clone of HEAD saw none of this move."
     move_report
     defaults_note "$INST/leak-detection/read-leak-pattern.sh"
     for p in ${TAKEN[@]+"${TAKEN[@]}"}; do

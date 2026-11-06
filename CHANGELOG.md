@@ -14,6 +14,54 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v0.14.0
+
+A minor: a project moves onto it with `kit-pin to v0.14.0` from the new release's install.
+- `kit-pin to` stages the `kit.list-id` it makes, beside any CI copy it takes, so `kit-pin.tests` see the move in the
+  work tree and the index; a test that reads a clone of HEAD sees none of it, and `to` says so. A red test leaves
+  `kit.list-id` in neither the work tree nor the index.
+- `kit-pin to` a release before v0.12.0, for a project whose list is at its place, refuses unless `.git/leak-pattern`
+  is that list byte for byte. New refusals, each after "kit-pin: REFUSING -- ":
+  - "release vX.Y.Z's hooks read the list at .git/leak-pattern, which differs from the project's list at
+    ~/.config/morrowcairn/lists/<id>."
+  - "release vX.Y.Z's hooks read the list at .git/leak-pattern, and this clone holds none there; the project's list is
+    at ~/.config/morrowcairn/lists/<id>."
+  - "release vX.Y.Z's hooks read the list at .git/leak-pattern, and this project's list can't be found at its place to
+    compare: <why>."
+  - "could not stage kit.list-id."
+- Lines changed in `kit-pin`'s output, word for word:
+  - `check`, with `.git/leak-pattern` still there: "kit-pin: .git/leak-pattern, the list's old place, is still here.
+    No hook of this release reads it, but a check of the project's own may: move each such check to the list at
+    ~/.config/morrowcairn/lists/<id>, read through this release's reader, before you delete it
+    (patterns/local-upgrade.md, Taking a later release)." It was: "kit-pin: .git/leak-pattern, the list's old place,
+    is still here; no hook of this release reads it. Delete it once nothing else does."
+  - `to`, `migrate` and `move-list`, after copying the list: "...; the old file stays, since a check of the project's
+    own may still read it: move each such check to the new place before you delete it." It was: "...; the old file
+    stays: delete it once nothing reads it there."
+  - `check`, with no list at its place: "(a copy, byte for byte; the old file stays until no check of the project's
+    own reads it)." It was: "(a copy, byte for byte; the old file stays for you to delete)."
+  - `to`, new: "kit-pin: kit-pin.tests ran on the work tree and the index, before any commit, kit.list-id staged, so a
+    test that reads a clone of HEAD saw none of this move." (", kit.list-id staged" only where the move made it.)
+- `patterns/local-upgrade.md`: a project's own checks move to the list at its place before `.git/leak-pattern` is
+  deleted; a project on v0.11.0 or later moves straight to the release it takes, in one `to`; a v0.11.0 install that
+  the public repository's tag can't rebuild moves forward with `to` instead of `restore`.
+- On Windows, the kit runs inside WSL2; native Windows isn't supported. The README and the IT document say so; on WSL
+  the setup prompt offers the daily check's report file on the Windows side; the cross-platform workflow has no
+  Windows job.
+- `tests/upgrade_test.sh`, new: a project carried across the real releases from v0.11.0 on, read from the clone's own
+  tags, with a list check of its own. CI runs it on pushes to `main` and by hand (`.github/workflows/upgrade.yml`).
+- The README and the IT document say what the kit does today; the IT document's change section points here.
+  `patterns/local-spawn.md`, `patterns/repo-genesis.md` and `leak-detection/README.md` say what the kit does, without
+  accounts of what went wrong; `docs/rules-explained.md` and `skills/PROVENANCE.md` keep the reasons behind each rule.
+  This file's entries for v0.13.0, v0.12.1, v0.11.0, v0.10.2, v0.10.1, v0.10.0 and v0.7.0 say only what changed, each
+  changed line kept.
+- The setup prompt: every question gives a default in brackets: step 7's, whether a Stop hook already files session
+  reports, [no]; step 8's daily check [no]; step 9's git identity [skip]; the owner phrase [skip]; and replacing a file
+  already there [keep mine]. Step 1 names Apple's Command Line Tools (`xcode-select --install`) as the route on macOS
+  when git or python3 is missing.
+- `tests/kit_docs_test.sh` fails unless `docs/setup-prompt.md` holds exactly one text block, the prompt, and unless each
+  question it asks, quoted or with the word "ask", gives a default in brackets.
+
 ## v0.13.1
 
 Wording only, in the session rules; no code changed.
@@ -24,19 +72,17 @@ v0.13.0 is another, a minor: what a hook or check refuses changed, so a project 
 `kit-pin to v0.13.0` from the new release's install. pre-push takes a push from a linked worktree that it refused
 before, and kit-pin refuses a repository with grafts and fails a list that doesn't compile; the reply-file hook's
 names, the setup prompt, the session rules and the documents that describe them changed too. What changed:
-- **A push from a linked worktree.** pre-push read the do-not-publish list's pin from the worktree's own git folder,
-  where none sits unless `kit-pin repin` was run there, so every push from a new worktree was refused until then.
-  pre-push, `kit-pin check` and `kit-pin repin` now read and write the pin in the repository's shared git folder, which
-  every worktree of it shares, as `bin/kit-history-audit` already did; a pin left in a worktree's own folder is never
-  read. `kit-pin repin ci` reads CI's record, `.git/leak-pattern.ci`, from the same shared folder. In a linked worktree
-  of a project still pinned to an earlier release, whose pre-push reads the worktree's own pin, `kit-pin check` says so
-  and that `kit-pin to v0.13.0` or later moves it.
+- **A push from a linked worktree.** pre-push, `kit-pin check` and `kit-pin repin` read and write the pin in the
+  repository's shared git folder, which every worktree of it shares, as `bin/kit-history-audit` already did; a pin left
+  in a worktree's own folder is never read. `kit-pin repin ci` reads CI's record, `.git/leak-pattern.ci`, from the same
+  shared folder. In a linked worktree of a project still pinned to an earlier release, whose pre-push reads the
+  worktree's own pin, `kit-pin check` says so and that `kit-pin to v0.13.0` or later moves it.
 - **kit-pin refuses a repository with grafts,** as pre-push, pre-commit and the tree scan already do: a graft changes
   the history git shows, and no setting turns it off. `git replace --convert-graft-file` turns grafts into replace
   refs, which kit-pin ignores.
-- **kit-pin check fails a list that doesn't compile.** A list that matches its pin can still fail to compile as an
-  extended regex, and pre-push then refuses every push; `kit-pin check` now compiles it as pre-push's tree scan does,
-  in the caller's locale, and reports the list as failing (exit 3), naming no term. kit-pin also drops every inherited
+- **kit-pin check fails a list that doesn't compile.** `kit-pin check` compiles a list that matches its pin as an
+  extended regex, as pre-push's tree scan does, in the caller's locale, and reports the list as failing (exit 3),
+  naming no term. kit-pin also drops every inherited
   git setting that chooses a repository, a work tree, an index or an object store, keeping only those that choose which
   configuration git reads and one that only narrows where git looks for a repository, and it turns replace refs off,
   as pre-push does.
@@ -75,8 +121,6 @@ names, the setup prompt, the session rules and the documents that describe them 
   (`#4-direct1-part2`) are filed the same way, with the warning only where one isn't a tag the rules name. A line that
   starts like the session's own end line but can't be read (no number after `#`, a project with a `/`, no session ID)
   still files nothing, its text going with the next report where one follows, and the warning quotes it and says why.
-  Before, the hook said nothing in any of these cases and filed none of them, and a report ended mid-turn under such a
-  line went into the next report's file.
 - **The IT document** says the setup sets only a missing name or email at user scope, and its removal steps say how to
   see the git identity and the gitleaks the setup may have set for the person, and how to remove each; both are the
   person's to keep or remove.
@@ -102,18 +146,15 @@ session rules' reach and the documents that describe them changed. What changed:
   identity's `git config --global` or the daily check's test run, the session retries it outside the sandbox at Claude
   Code's prompt, as it does for `kit-pin user`, or hands it over, by that answer.
 - **The reply-file hook with a space in the reply folder's path.** A report that ends mid-turn is filed when the line
-  before its end line names its file; the hook took that line's last word as the path, so a folder such as a Windows
-  user's `/mnt/c/Users/First Last/claude-replies` on WSL never matched, and the report ran on into the next one's file.
-  It now matches a line that ends with the report's own file by its whole path, a space in it included; for a path
-  without a space, the match is the same as before, and a line naming any other path still files nothing.
-- **The deploy pattern runs on GNU.** `patterns/atomic_deploy.sh` read its headroom with `df -P --output=avail`, which
-  GNU coreutils' `df` refuses ("options -P and --output are mutually exclusive"), so a copy stopped before any transfer,
-  leaving the live file untouched. It reads the space available from `df -Pk`'s fourth column with awk, the same value
-  `--output=avail` gives, and a check in the kit's own tests runs it through to its smoke gate.
+  before its end line names its file: the hook matches a line that ends with the report's own file by its whole path,
+  a space in it included, as in a Windows user's `/mnt/c/Users/First Last/claude-replies` on WSL; for a path without a
+  space, the match is the same as before, and a line naming any other path still files nothing.
+- **The deploy pattern runs on GNU.** `patterns/atomic_deploy.sh` reads the space available from `df -Pk`'s fourth
+  column with awk, the same value `df -P --output=avail` gives, in place of that form, which GNU coreutils' `df`
+  refuses; a check in the kit's own tests runs it through to its smoke gate.
 - **The daily check's ping link stays private.** The setup has you put `KIT_LOAD_CHECK_PING` on a crontab line of its
   own, above the check's line, where it reaches the job's environment, which only you can read; and the stub hands
-  the link to curl on its standard input. v0.12.0's stub put it on curl's command line, which other users on the
-  machine could read for up to ten seconds while a failure ping was sent.
+  the link to curl on its standard input, not on its command line.
 - **The relay settings only for people who run relays.** The settings file's five entries, and the two optional hooks,
   belong to working through relays; the setup asks about them only after you say you'll do that, writes
   `morrowcairn-local.md` itself, never over a file already there, and, for each hook, adds it to your Claude Code
@@ -197,7 +238,8 @@ do-not-publish list, for terms you've agreed or are required to keep confidentia
 anyone's identity. The hooks' and `kit-pin`'s messages still call it the identity list, and so do the names the
 leak-detection README's later sections share with the code, until a later release renames them together. This README's
 leak section also says that neither layer recognizes personal records. And the public repository's address is now
-`github.com/morrowcairn/morrowcairn-kit`; the old address redirects there, so a clone made from it keeps working.
+`github.com/morrowcairn/morrowcairn-kit`; the old address doesn't redirect there, so a clone made from it needs its
+remote set to the new one (`git remote set-url origin https://github.com/morrowcairn/morrowcairn-kit`).
 
 ## v0.11.0
 
@@ -206,8 +248,7 @@ practices for what it builds. What a spawn sees:
 - **git 2.31 or later.** Both hooks and `bin/kit-pin` refuse an older git, naming the version they need: an older one
   can colour the diff gitleaks reads, and can't read merges. A project on hand copies of the hooks should move onto an
   install.
-- **A merge is scanned, not refused**: its own changes are read against its first parent. Until now the only way past
-  was `--no-verify`, which skips every layer.
+- **A merge is scanned, not refused**: its own changes are read against its first parent.
 - **The binary scan is off unless a project turns it on**: a tracked `kit.binaries` holding `scan=on`, or a tracked
   `records/reviewed_binaries.txt`, so a project relying on the scan keeps it. Off, a push carrying a binary says so on
   one line and goes through unscanned. **What that leaves unchecked:** nothing checks a binary for credentials, at
@@ -228,9 +269,8 @@ practices for what it builds. What a spawn sees:
   `patterns/going-public.md`, new, is the checklist before a repository goes public.
 - **Hooks beside an org's**: where IT sets `core.hooksPath` for the machine, `kit-pin to` gives the clone its own hooks
   path, on the stubs, which run the org's pre-commit and pre-push first, then a project hook it kept (`<hook>.project`),
-  then the kit's checks. It never overwrites a hook, and `kit-pin check` fails a kept hook that isn't executable. (A
-  note added in v0.12.0: the org's other hooks stopped running in the project, and v0.12.0 runs them through relays,
-  `leak-detection/README.md`.)
+  then the kit's checks. It never overwrites a hook, and `kit-pin check` fails a kept hook that isn't executable. From
+  v0.12.0 the org's other hooks run through relays (`leak-detection/README.md`).
 - **The hooks name their gitleaks config** and refuse with none; pre-commit refuses a scan that read nothing of the text
   a commit adds; under a sandbox that hides gitleaks or the install, the refusals say it may be hidden and what to let
   sandboxed commands read.
@@ -248,46 +288,36 @@ Not in v0.11.0, though v0.10.0's note planned them: hardening the gates against 
 (dropped), Windows (after this release), and `kit-pin check`'s report of a pinned list that won't compile and of an
 inherited `GIT_DIR` (a later minor).
 
-And a lesson, the reason for the cut: the kit had grown a work-machine guard around Claude Code, toward a security
-layer it isn't. The instinct to build is itself something to watch for: before building a check, say whose lane it's
-in, Claude Code's, an org's or the project's.
-
 ## v0.10.2
 
-v0.10.2 is another. The daily load check failed every session that recorded no instructions as
-"can't tell", and a session that ran only local commands, such as an abandoned `/color` or
-`/rename`, never records any, so one kept the check red. A session with no model turn and no
-instructions record is now skipped and counted, since whether the rules loaded shaped nothing, and
-every report says how many ("no model turn: N sessions skipped"). A model turn is any assistant
+v0.10.2 is another. The daily load check skips and counts a session with no model turn and no
+instructions record, such as one that ran only local commands (an abandoned `/color` or `/rename`),
+since whether the rules loaded shaped nothing, and every report says how many ("no model turn: N
+sessions skipped"). A model turn is any assistant
 record but Claude Code's own API-error record, so one turn with no instructions record still fails,
 and an instructions record that exists is still checked. Tests hold it, four of them red against v0.10.1.
 
 ## v0.10.1
 
-v0.10.1 is another. The daily load check counts a transcript it can't read as "can't tell", a fail,
-on every run while its session still writes, so a session a crash damaged mid-write kept the check
-red, and a real miss would land on a check already red. Such a transcript can now be acknowledged
-once, with its owner's OK: a row in `~/.config/morrowcairn/load-check-acknowledged.tsv` pins its
-bytes through its last damaged line by sha256, with the § that records the OK (the load check's
-header says how to write one). The check reads it without the unreadable lines inside those bytes,
-and the rest as usual. A change to those bytes, damage after them, a transcript gone or a malformed
-row fails, and every report lists the rows by count and fingerprint. With no such file the check
-runs as before, its report adding "acknowledged: none". Tests hold it, each red against v0.10.0.
+v0.10.1 is another. The daily load check counts a transcript it can't read as "can't tell", a fail;
+such a transcript can now be acknowledged once, with its owner's OK: a row in
+`~/.config/morrowcairn/load-check-acknowledged.tsv` pins its bytes through its last damaged line by
+sha256, with the § that records the OK (the load check's header says how to write one). The check
+reads it without the unreadable lines inside those bytes, and the rest as usual. A change to those
+bytes, damage after them, a transcript gone or a malformed row fails, and every report lists the
+rows by count and fingerprint. With no such file the check runs as before, its report adding
+"acknowledged: none". Tests hold it, each red against v0.10.0.
 
 ## v0.10.0
 
 v0.10.0 is another. pre-push now refuses pushes v0.9.0 let through, and the CI scan no longer
 reports one of them clean. What a spawn sees:
-- pre-push and the CI scan read every line as text, whatever bytes it holds. In a UTF-8 locale,
-  v0.9.0 dropped a line holding invalid UTF-8 before deciding, so an identity term on such a line was
-  pushed, and the CI scan reported the tree clean. Each now decides by the count of matching lines
-  the allowlist leaves, and names those lines only to report them, so a hit it can't name still
-  refuses;
+- pre-push and the CI scan read every line as text, whatever bytes it holds, a line holding invalid
+  UTF-8 in a UTF-8 locale included. Each decides by the count of matching lines the allowlist leaves,
+  and names those lines only to report them, so a hit it can't name still refuses;
 - pre-push's binary scan, the load check's stub and `tools/install-release.sh` start python3
   isolated (`python3 -I`), so a module planted on `PYTHONPATH` or in the user site no longer runs
-  inside them. Under v0.9.0 such a module let pre-push clear an unreviewed binary, made a failing
-  load check pass without a report, and changed an install while it was being built, leaving it off
-  its own manifest;
+  inside them;
 - pre-push reads each commit's recorded author and committer identity (`git log --no-use-mailmap`),
   so a git mailmap -- a file that maps one identity to another name -- can no longer map an identity
   holding an identity term to a clean name and hide it from the metadata scan;
@@ -301,14 +331,11 @@ reports one of them clean. What a spawn sees:
   UTF-8 locale, BSD's `cut` stops on a line holding invalid UTF-8 and its `grep` doesn't match one;
 - pre-push matches the list against the names of the refs pushed, the tag objects a push adds and
   the file names a block reports twice, under `LC_ALL=C` and in the caller's locale, and a match in
-  either counts. v0.9.0 matched these once, in the caller's locale, so on a Mac a branch name or a tag
-  message holding such a line beside a term would be pushed, and a block could print a file name
-  holding a term (with `core.quotePath` off), as a stand-in grep that copies BSD's miss showed. On a
-  Mac v0.10.0 refuses the branch name and the tag message and withholds the file name (measured, on
-  GitHub's macOS runner);
-- the binary scan withholds a path the list matches; v0.9.0 printed the path of every binary it
-  refused or cleared, a term in it included. pre-commit's refusal of anything staged under `.local/`
-  does the same, reading the list from `.git/leak-pattern`, and with no list there it lists no name;
+  either counts. On a Mac v0.10.0 refuses a branch name and a tag message holding a line of invalid
+  UTF-8 beside a term, and withholds such a file name (measured, on GitHub's macOS runner);
+- the binary scan withholds a path the list matches. pre-commit's refusal of anything staged under
+  `.local/` does the same, reading the list from `.git/leak-pattern`, and with no list there it lists no
+  name;
 - an install runs the hook suite; its case PY2 can exercise its user-site plant only where the python3
   first on `PATH` has its user site on. Where it is off (a virtual environment's python3),
   `tools/install-release.sh` reports the unmet precondition and installs anyway -- the isolation
@@ -458,10 +485,8 @@ v0.8.0 is another, and the largest: delivery by install and pin. What a spawn se
 v0.7.0 is another, with two changes a spawn sees:
 - pre-push and the installer read `.git/leak-pattern` as data, never as shell: blank lines,
   full-line comments and one `LEAK_PATTERN='...'` line, or its `export` form. A list in any other
-  shape refuses every push. v0.6.0 ran the file, so an apostrophe in a term could run the rest as a
-  command or quietly change the list, and a second assignment dropped every term of the first;
-- `patterns/local-spawn.md` stops at the first use of an empty or unset `SRC` or `DST`, where
-  `cd ""` used to stay put and the copy landed in whatever folder the shell was in.
+  shape refuses every push;
+- `patterns/local-spawn.md` stops at the first use of an empty or unset `SRC` or `DST`.
 
 ## v0.6.0
 

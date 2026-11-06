@@ -100,7 +100,7 @@ CASES=(MX1 VT1 HS1 HS2 IR0 IR1 IR1b IR1c IR1d IR1e IR2 IR3 IR4 IR5 IR6 IR7 IR8 I
        EG28 EG29 EG30 EG31 EG32 EG33 EG34 EG35 PN0 CP1 CP2 KR3 CP3 KM4
        RP1 RP2 RP3 RP4 RP5 RP6 RP7 RP8 RP9 RP10 RP11 RP12 RP13
        PC0 PC1 PC2 PC3 PC4 PC5 PC6 PC7 PC8 PC9 PC10 PC11 PC12 PC13 PC14 PC15 PC16 PC17 PC18 PC19 PC20 PC21 PC22 PC23 PC24 PC25
-       LM1 LM2 LM3 LM4 LM5 LM6 LM7 LM8 DN1 DN2 LE3 LE4 LE4b LM9
+       LM1 LM2 LM3 LM4 LM4b LM5 LM5b LM6 LM6b LM7 LM8 DN1 DN2 LE3 LE4 LE4b LM9 LM10 LM10b LM10c
        MI1 MI2 MI3 ST11 MI4 MI5 MI6 MI7 MI8 MI9 MI10 MI11 MI12 MI13 MI14 MI15 MI16 MI17 MI18 MI19 MI20 MI21 MI22 MI23
        MI24 MI25 MI26 MI27 MI28 MI29 MI30 MI31 MI32 MI34 MI35 MI36 MI37 MI38 MI39)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -1629,9 +1629,6 @@ log=$(cat "$TMP/plant.log" 2>/dev/null); IP="$TMP/releases-plant/v1.0.0"
 # that matches no launch fails too, so the list can't outlive its lines. The files are those the manifest of the v2.0.0
 # install lists, ROOT's staged tree (IR9).
 PL_ALLOW=(
-    ".github/workflows/cross-platform.yml|-c 'print(\"x\")'|Windows' facts step, informational: it never fails the job"
-    ".github/workflows/cross-platform.yml|-c 'import sys'|the same step: how python3 starts from a folder of links"
-    ".github/workflows/cross-platform.yml|\"\$@\"|a shim to Windows' python, which hands on its caller's arguments, -I among them"
     "tests/hooks_test.sh|-c 'import site, sys;|PY2's precondition: asks the hook's python3, run as v0.9.0's hook ran it, whether its user site is on"
     "bin/kit-load-check|#!|nothing starts it by its path: the stub hands it to an isolated python3"
     "leak-detection/scan-binaries.py|#!|nothing starts it by its path: pre-push hands it to an isolated python3"
@@ -1712,7 +1709,6 @@ fi
 # hide a copy. The files are those the manifest of the v2.0.0 install lists (IR9), as PL1 reads them, but the gates LG1
 # holds to the locale rule (below), whose every grep call LG_MATCH_ALLOW names instead, with the locale it runs in.
 GP_ALLOW=(
-    ".github/workflows/cross-platform.yml|1|grep -E ' on /(tmp)? '|a fact line for the CI log, over mount's output; it decides nothing"
     "tests/hooks_test.sh|1|grep -qE \"\$own\"|LP0, over the kit's own scripts, which hold no term and no invalid UTF-8"
     "tests/hooks_test.sh|2|grep -q 'read-leak-pattern\\.sh'|LP0, over the kit's own scripts"
     "tests/hooks_test.sh|1|grep -c 'REFUSING'|an ASCII word over the hooks' own messages, each on a line of its own"
@@ -1741,6 +1737,7 @@ GP_ALLOW=(
     "tests/install_test.sh|3|grep -q 'project pre-commit ran'|the stand-in project hook's marker file (HP2, HX2, HB5)"
     "tests/install_test.sh|1|grep -q -E \"\$PC_REL\"|PC's look for a bin/kit-pin named by a relative path, over the kit's own messages, which are ASCII"
     "tests/install_test.sh|1|grep -m1 -E \"\$PC_REL\"|the same, for its failure message"
+    "tests/install_test.sh|1|grep -F '.git/leak-pattern'|LM5b's failure message: check's own lines naming the old place"
     "tests/load_check_test.sh|1|grep -oE 'kc-[0-9a-f]{16}'|load canaries, ASCII by their format, in the install's own skill files"
     "tests/load_check_test.sh|1|grep -ohE 'kc-[0-9a-f]{16}'|load canaries in the stand-in probe's answer files"
     "tests/load_check_test.sh|1|grep '^fail: '|the load check's own report"
@@ -2411,13 +2408,23 @@ out=$(lmkp "$LT" to v1.0.0); rc=$?
 [[ $rc -eq 0 && -f "$LT/kit.pin" && "$(lmid "$LT")" =~ ^[0-9a-f]{32}$ ]] && cmp -s "$(lmf "$LT")" "$LT.old-list" \
     && cmp -s "$LT.old-list" "$LT/.git/leak-pattern" && [[ "$(mode_of "$(lmf "$LT")")" == 600 ]]
                                                result "LM4 to: the move makes kit.list-id, copies .git/leak-pattern to its place at mode 600 and leaves the old file" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+# kit-pin.tests run before anything is committed, so to stages the kit.list-id it made, beside any CI copy it took, and
+# says the tests ran on the work tree and the index: a test that reads a clone of HEAD sees none of the move.
+[[ $rc -eq 0 && "$(git -C "$LT" diff --cached --name-only)" == kit.list-id && "$out" == *"ran on the work tree and the index"* ]]
+                                               result "LM4b to stages the kit.list-id it made and says its tests ran on the work tree and the index" $? "staged: $(git -C "$LT" diff --cached --name-only | tr '\n' ' '); $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
 out=$(lmkp "$LT" check); rc=$?
 [[ $rc -eq 0 && "$out" == *"lists/$(lmid "$LT")"* && "$out" != *SYNTH-MARKER* ]]
                                                result "LM5 check names the list it read by the project's id, and never prints the list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+# The old file can still be read by a check of the project's own, which check can't see: its note says so, and tells the
+# project to move such a check to the list's place before deleting the file, never just to delete it.
+[[ $rc -eq 0 && "$out" == *"a check of the project's own"* && "$out" != *"Delete it once nothing else does"* ]]
+                                               result "LM5b check's note on .git/leak-pattern says a check of the project's own may still read it, not to delete it" $? "$(printf '%s\n' "$out" | grep -F '.git/leak-pattern' | tr '\n' ' ' | cut -c1-200)"
 LR="$TMP/lm-red"; lmrepo "$LR" "exit 1"; n1=$(lmcount)
 out=$(lmkp "$LR" to v1.0.0); rc=$?
 [[ $rc -ne 0 && ! -e "$LR/kit.list-id" && ! -e "$LR/kit.pin" && "$(lmcount)" == "$n1" ]] && cmp -s "$LR.old-list" "$LR/.git/leak-pattern"
                                                result "LM6 a to that goes red puts back the id and the list it made; the old file stays" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+[[ $rc -ne 0 && -z "$(git -C "$LR" status --porcelain)" ]] && ! git -C "$LR" ls-files --error-unmatch kit.list-id >/dev/null 2>&1
+                                               result "LM6b and leaves kit.list-id out of the index too, nothing staged" $? "$(git -C "$LR" status --porcelain | tr '\n' ' ')"
 LX="$TMP/lm-differ"; lmrepo "$LX"; printf '%s\n' "$(lid)" > "$LX/kit.list-id"; git -C "$LX" add kit.list-id; git -C "$LX" commit -q --no-verify -m id
 mkdir -p "$LML"; printf "LEAK_PATTERN='%s'\n" zqother > "$(lmf "$LX")"; cp -p "$(lmf "$LX")" "$TMP/lx-other"
 out=$(lmkp "$LX" to v1.0.0); rc=$?
@@ -2469,6 +2476,37 @@ b=$(git -C "$K" show v1.0.0:leak-detection/read-leak-pattern.sh 2>/dev/null)
 [[ -n "$b" && "$(printf '%s\n' "$b" | lmstrip)" == "$a" && "$b" != "$(cat "$ROOT/leak-detection/read-leak-pattern.sh")" ]] || bad+=" v1.0.0's"
 [[ "$a" == *"kit_list_home() {"* && -z "$bad" ]]
                                                result "LM9 the suite's reader copies (kit-pin's, and every release's from v1.0.0) differ from the shipped reader in kit_list_home's body alone" $? "differing elsewhere, or not swapped:${bad:- none}"
+# Going back to a release whose hooks read the list at .git/leak-pattern (before v0.12.0): that file must be the list at
+# its place, byte for byte, or to refuses before it changes anything. v0.9.9 here is v1.0.0 with a reader that names no
+# place, kit_list_file and kit_list_home taken out, as such a release's reader has neither; built in a scratch index, so
+# the kit's work tree is untouched (the upgrade suite runs the same moves against the real v0.11.0).
+OI="$TMP/oldreader.index"; ent=$(git -C "$K" ls-tree v1.0.0 leak-detection/read-leak-pattern.sh)
+git -C "$K" show v1.0.0:leak-detection/read-leak-pattern.sh \
+    | awk '/^kit_list_(file|home)\(\) \{/ {s=1; next} s && /^\}/ {s=0; next} !s {print}' > "$TMP/oldreader.sh"
+ob=$(git -C "$K" hash-object -w "$TMP/oldreader.sh")
+GIT_INDEX_FILE="$OI" git -C "$K" read-tree v1.0.0 \
+    && GIT_INDEX_FILE="$OI" git -C "$K" update-index --cacheinfo "${ent%% *},$ob,leak-detection/read-leak-pattern.sh" \
+    && oc=$(git -C "$K" commit-tree "$(GIT_INDEX_FILE="$OI" git -C "$K" write-tree)" -p "$(git -C "$K" rev-parse 'v1.0.0^{commit}')" -m "a reader that names no place") \
+    && git -C "$K" tag -a v0.9.9 -m v0.9.9 "$oc" && git -C "$K" push -q --no-verify origin v0.9.9 2>/dev/null
+out=$(irun v0.9.9); rc=$?
+LB="$TMP/lm-back"; lmrepo "$LB"; lmkp "$LB" to v1.0.0 >/dev/null; git -C "$LB" add kit.pin kit.list-id; git -C "$LB" commit -q --no-verify -m "onto v1.0.0"
+bsnap() { (cd "$LB" && cat kit.pin .git/hooks/pre-commit .git/hooks/pre-push 2>/dev/null | sha256sum; git status --porcelain); }
+stubs_in() { local h; for h in pre-commit pre-push; do install -m 0755 "$2/leak-detection/stub-hook" "$1/.git/hooks/$h" 2>/dev/null; done; }   # DIR INSTALL
+if [[ $rc -eq 0 && -f "$LB/kit.list-id" ]]; then
+    (umask 077 && printf "LEAK_PATTERN='%s|zqappended'\n" "$MARK" > "$(lmf "$LB")"); b=$(bsnap)
+    out=$(lmkp "$LB" to v0.9.9); rc=$?; [[ "$(bsnap)" == "$b" ]] || rc=0
+    refused_for "LM10 to a release whose hooks read .git/leak-pattern refuses while that file differs from the list at its place, changing nothing" $rc "$out" "hooks read the list at .git/leak-pattern"
+    lbreset() { git -C "$LB" checkout -q -- kit.pin; stubs_in "$LB" "$KIT_INSTALL_ROOT/v1.0.0"; }   # a move a case let through, undone
+    lbreset; rm -f "$LB/.git/leak-pattern"; b=$(bsnap)
+    out=$(lmkp "$LB" to v0.9.9); rc=$?; [[ "$(bsnap)" == "$b" ]] || rc=0
+    refused_for "LM10b and with no .git/leak-pattern at all, changing nothing" $rc "$out" "hooks read the list at .git/leak-pattern"
+    lbreset; cp -p "$(lmf "$LB")" "$LB/.git/leak-pattern"
+    out=$(lmkp "$LB" to v0.9.9); rc=$?
+    [[ $rc -eq 0 && "$(sed -n 's/^release=//p' "$LB/kit.pin")" == v0.9.9 ]]
+    result "LM10c with .git/leak-pattern the list at its place byte for byte, the move goes ahead" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+else
+    for c in LM10 LM10b LM10c; do result "$c going back to a release whose hooks read .git/leak-pattern" 1 "its setup: v0.9.9 install exit $rc, or no move to v1.0.0: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"; done
+fi
 
 echo
 echo "install_test: $PASS passed, $FAIL failed, $SKIP skipped"

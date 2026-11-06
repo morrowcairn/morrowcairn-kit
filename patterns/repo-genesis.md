@@ -53,10 +53,9 @@ into unrelated work on the same machine, and unrelated work cannot leak into thi
 any documentation has been read, which is as much an argument against *documenting* the fix as for the
 fix. So with the guard on, the placeholder identity goes in at `git init`, and `leak-detection/pre-commit`
 refuses any commit whose author or committer is still `UNSET-SEE-REPO-GENESIS`. A reflexive `git commit`
-before step 2 then fails closed instead of writing a guessed author into line one. This clause comes from
-a spawned instance, which invented it after finding the machine's ambient identity was wrong for it.
-**It is off by default:** the kit's default setup is the one an organization's IT would accept, and IT may
-own the machine's identity and its signing, so a new project commits under the identity git resolves.
+before step 2 then fails closed instead of writing a guessed author into line one. **It is off by
+default:** the kit's default setup is the one an organization's IT would accept, and IT may own the
+machine's identity and its signing, so a new project commits under the identity git resolves.
 Turn it on where that identity could be wrong for the project; steps 2 and 3 stand either way.
 
 ## Verify after the first commit, too

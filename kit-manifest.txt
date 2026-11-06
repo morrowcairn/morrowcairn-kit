@@ -33,11 +33,13 @@ kit    README.md
 kit    CHANGELOG.md
 kit    tests/kit_docs_test.sh
 kit    tests/smoke_test.sh
+kit    tests/upgrade_test.sh
 kit    tests/standin/
 kit    CLAUDE.md
 kit    LICENSE
 kit    .github/leak-pattern.pin
 kit    .github/secret_scanning.yml
+kit    .github/workflows/upgrade.yml
 kit    kit.binaries
 kit    kit.list-id
 

@@ -15,6 +15,10 @@ project's own session does both; the kit's session writes nothing in a project.
 "$INST/bin/kit-pin" to vX.Y.Z      # $INST: the install of the release you take, or of the one you hold
 ```
 
+A project on v0.11.0 or later moves straight to the release it takes, in one `to`; it needn't step through the releases
+between. The kit's upgrade test, `tests/upgrade_test.sh`, moves a project from v0.11.0 to the current release in one
+step, as well as release by release.
+
 `kit-pin to` refuses a release with no install or one that fails its own manifest, a work tree with
 uncommitted changes, a hooks path set in the clone itself, and a project with no `kit-pin.tests`. Under
 an org's hooks path, set at the system or global level, it sets the clone's own path to the stubs, which
@@ -27,17 +31,26 @@ holds, and that is still the held release's file byte for byte, becomes the rele
 declared in `kit.forks` stays the project's own, and the held release counts only once its install
 passes its own manifest. Then it runs the checked-copies layer (every kit-owned file the project still
 holds must equal the release's, or be declared in `kit.forks`, so a CI copy equal to neither release's is
-refused by name) and each command in `kit-pin.tests`. On any red it puts `kit.pin`, the stubs and any
-copy it took back byte for byte. On green it leaves `kit.pin`, with any copy it took, for you to commit
-together, and that commit runs through the new stubs.
+refused by name) and each command in `kit-pin.tests`. The tests run before anything is committed, on the work tree
+and the index: `kit.list-id`, when the move makes it, and any copy it takes are staged, and `kit.pin` is not, so a test
+that reads a clone of HEAD sees none of the move. On any red it puts `kit.pin`, the stubs, any copy it took and the
+`kit.list-id` it made back byte for byte, staged nowhere. On green it leaves `kit.pin`, with any copy it took, for you
+to commit together, and that commit runs through the new stubs.
 
 **The list's place (from v0.12.0).** A project's do-not-publish list is one file outside every repository,
 `~/.config/morrowcairn/lists/<id>` (the folder mode 700, the file 600; `~` the home folder the user database gives),
 named by the one line of the project's tracked `kit.list-id`, a random id, the same for every clone. `to` onto a
 release that reads it there gives the project its place first: `kit.list-id` where it has none, and a copy of
 `.git/leak-pattern` at the new place, byte for byte. It never writes over a list there that differs, refusing before
-it changes anything, and it leaves `.git/leak-pattern` for you to delete once nothing reads it. Commit `kit.list-id`
-with `kit.pin`. The list's pin stays `.git/leak-pattern.pin`. `kit-pin move-list` runs the same step on its own.
+it changes anything, and it leaves `.git/leak-pattern` where it was. Commit `kit.list-id` with `kit.pin`. The list's
+pin stays `.git/leak-pattern.pin`. `kit-pin move-list` runs the same step on its own.
+
+**The project's own checks move first.** A check of the project's own that reads the list at `.git/leak-pattern`
+still reads that copy after the move, and it goes stale the first time the list changes at its place, without a word:
+the kit's hooks no longer read it, and `kit-pin check` can't see the project's checks. Move each such check onto the
+list at its place, read through the pinned install's own reader (`leak-detection/read-leak-pattern.sh`: its
+`kit_list_file` names the place, `read_leak_pattern` reads it), then delete `.git/leak-pattern`. Until it is gone,
+`kit-pin check` says it is still there.
 
 **What a new project starts with (from v0.12.0).** A project made from such a release starts with two checks off: no
 do-not-publish list (local-spawn writes the line saying so, `kit:no-identity-list`, and pins it) and no identity guard
@@ -54,8 +67,13 @@ in three commits: (1) a temporary `kit.forks` line declaring the project's copy 
 the hash of the project's copy, and a § of the project's decisions log), committed through the stubs the
 project holds; (2) `kit-pin to` the other release; (3) that release's copy in and the fork line out,
 committed with `kit.pin` through the new stubs. From v0.12.0, `to` says so as it finishes wherever `kit.forks` declares
-the held release's own copy. A release's install is the only way back to it: an install removed is rebuilt only from a
-clone of the kit that holds its tag.
+the held release's own copy. A release before v0.12.0 reads the list at `.git/leak-pattern`, so from v0.14.0, for a
+project whose list is at its place, `to` such a release refuses, changing nothing, unless that file is the list at its
+place byte for byte: put a copy there first, at mode 600. A release's install is the only way back to it: an install
+removed is rebuilt only from a clone of the kit that holds its tag. `kit-pin restore` keeps a rebuild only if it matches
+the pin, and the public repository's v0.11.0 tag can name a commit other than the one a v0.11.0 install records, so
+such an install can't be rebuilt from it ("the rebuilt install doesn't match the pin"): move that project forward with
+`kit-pin to` instead.
 
 **Undoing a move partway**, before anything is pushed (one of those three commits made, or `to` run and its commit not
 made): put back what git tracks, `kit.pin`, any copy `to` staged and any of those commits (`git reset --hard` to the

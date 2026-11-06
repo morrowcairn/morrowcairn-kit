@@ -398,9 +398,8 @@ on, over the strings of every binary file they add. A merge commit counts as a n
 changes are read as its diff against its first parent, which holds a conflict resolution and anything
 else the merge adds that neither parent has (and the merged branch's lines again), and that diff goes
 through gitleaks and the binary scan; its author, committer and message go through the metadata layer.
-Until v0.11.0 pre-push refused every merge instead, and the only way past was `--no-verify`, which
-skips every layer. CI's gitleaks directory scan reads no image: measured with
-gitleaks 8.30.1, it skipped a `.png` by its extension, and caught the same bytes renamed `.txt`.
+CI's gitleaks directory scan reads no image: measured with gitleaks 8.30.1, it skipped a `.png` by its
+extension, and caught the same bytes renamed `.txt`.
 
 **The locale: text handling byte-wise, matching in the caller's.** pre-push, the CI scan, pre-commit,
 `bin/kit-pin` and the binary scan save the locale they were started in and set `LC_ALL=C`, so their

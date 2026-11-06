@@ -1,20 +1,18 @@
 name: cross-platform
 
-# The kit's four suites on macOS and Windows; Linux runs them in gitleaks.yml. macOS gets the GNU tools a
-# maintainer installs there (Homebrew's bash, coreutils, gnu-sed, findutils), and its /bin/bash, which is 3.2, runs
-# the install suite's V3 cases (KIT_TEST_BASH3). Windows runs everything under Git Bash.
+# The kit's four suites on macOS; Linux runs them in gitleaks.yml. macOS gets the GNU tools a maintainer installs there
+# (Homebrew's bash, coreutils, gnu-sed, findutils), and its /bin/bash, which is 3.2, runs the install suite's V3 cases
+# (KIT_TEST_BASH3). On Windows the kit runs inside WSL2, a Linux, so no job here runs on a Windows runner.
 #
-# And the user's path, end to end (tests/smoke_test.sh), on all three: on macOS with Homebrew's folders taken off
-# PATH, which is what a stock Mac has.
+# And the user's path, end to end (tests/smoke_test.sh), on both: on macOS with Homebrew's folders taken off PATH,
+# which is what a stock Mac has.
 #
 # These jobs alert, so they are gates: they were shown to go red on a planted failing case, on a scratch branch,
 # before they were relied on. When each runs:
 # - Linux's smoke job, on every push to main.
 # - macOS's suites and smoke, by dispatch and once a week, never on a push: a macOS minute is billed as ten, so the
 #   code pushes it once ran on cost too much. A release dispatches them on its final commit before the tag.
-# - Windows', by hand only, until its suites are green.
-# A dispatch runs one OS's jobs, named by its os input: macos (the default), windows or linux. A Windows suites job
-# takes about 30 to 45 minutes, so checking macOS never starts it.
+# A dispatch runs one OS's jobs, named by its os input: macos (the default) or linux.
 
 on:
   push:
@@ -24,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       os:
-        description: "Whose jobs run: macos (suites and smoke), windows (suites and smoke, about 45 minutes) or linux (smoke)"
+        description: "Whose jobs run: macos (suites and smoke) or linux (smoke)"
         type: choice
-        options: [macos, windows, linux]
+        options: [macos, linux]
         default: macos
 
 permissions:
@@ -86,9 +84,8 @@ jobs:
           printf '%s\n' "$out"
           printf '%s\n' "$out" | sed -n '/^run=/p' >> "${GITHUB_OUTPUT:?}"
 
-  # macOS weekly and by dispatch; Windows by dispatch only: a push once ran about 110 billed minutes here, almost all of
-  # it Windows' suites, and macOS, weighted ten to one, was nearly half of October's billed
-  # weight to 10-18. Linux runs the suites on every push, in gitleaks.yml.
+  # macOS weekly and by dispatch, never on a push: a macOS minute is billed as ten. Linux runs the suites on every
+  # push, in gitleaks.yml.
   suites:
     name: suites (${{ matrix.os }})
     needs: [mac-gate]
@@ -97,23 +94,16 @@ jobs:
       (github.event_name == 'schedule' && needs.mac-gate.outputs.run != 'false')) }}
     # macOS 50: about 1.5 times its longest run, rounded up: 19 min 54 s on 10-26, on code whose Linux suites have
     # grown 1.6 times since (an estimate), and a run cut off spends its minutes and answers nothing.
-    # Windows keeps its 90: its suites have never passed, and their limit waits on the owner.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 50 }}
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'workflow_dispatch' && inputs.os == 'windows' && fromJSON('["windows-latest"]') || fromJSON('["macos-latest"]') }}
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
-      # A Windows checkout turns LF into CRLF by default, and bash can't run a script with CRLF lines. The kit has
-      # no .gitattributes, so a default Git for Windows clone of it has the same problem.
-      - name: Keep LF line endings (Windows)
-        if: runner.os == 'Windows'
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@v4
 
       - name: GNU tools (macOS)
@@ -124,17 +114,6 @@ jobs:
           p=$(brew --prefix)
           for t in coreutils gnu-sed findutils; do echo "$p/opt/$t/libexec/gnubin" >> "${GITHUB_PATH:?}"; done
           echo "$p/bin" >> "${GITHUB_PATH:?}"
-
-      # Windows' Python answers to python, not python3, which the load check and its tests call.
-      - name: python3 on PATH (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          set -euo pipefail
-          if python3 --version >/dev/null 2>&1; then echo "python3: $(command -v python3)"; exit 0; fi
-          d=$(cygpath -u "${RUNNER_TEMP:?}/py3"); mkdir -p "$d"
-          printf '#!/bin/sh\nexec python "$@"\n' > "$d/python3"; chmod +x "$d/python3"
-          cygpath -w "$d" >> "${GITHUB_PATH:?}"
-          echo "python3: a shim to $(command -v python)"
 
       # One gitleaks version on every runner, each archive checked against the sha256 written here, which is the one
       # the release publishes (gitleaks_8.30.1_checksums.txt, matching GitHub's own asset digests on 2026-10-17).
@@ -170,37 +149,10 @@ jobs:
           "$dir/gitleaks" version
           if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
 
-      # What the suites' Windows fixes rest on, printed for the record: Git Bash's execute and write
-      # bits, git init's fileMode, a Windows Python's line endings, and git and python3 started from a folder of a few
-      # links. Informational: it never fails the job.
-      - name: Facts the suites rely on (Windows)
-        if: runner.os == 'Windows'
-        env:
-          MSYS: winsymlinks:nativestrict
-        run: |
-          set +e
-          d=$(mktemp -d)
-          printf '#!/bin/sh\nexit 0\n' > "$d/bang"; printf 'exit 0\n' > "$d/plain"; chmod a-x "$d/bang" "$d/plain"
-          for f in bang plain; do if [ -x "$d/$f" ]; then echo "fact: after chmod a-x, $f is executable"; else echo "fact: after chmod a-x, $f is not executable"; fi; done
-          mkdir "$d/ro"; echo x > "$d/ro/f"; chmod -R a-w "$d/ro"; echo "fact: modes after chmod -R a-w: $(stat -c '%A %n' "$d/ro" "$d/ro/f" | sed "s|$d/||" | tr '\n' ' ')"
-          if touch "$d/ro/added" 2>/dev/null; then echo "fact: a file can be added to that folder"; else echo "fact: no file can be added to that folder"; fi
-          if echo y 2>/dev/null >> "$d/ro/f"; then echo "fact: that file can be appended to"; else echo "fact: that file can't be appended to"; fi
-          git init -q "$d/repo"; echo "fact: git init sets core.fileMode=$(git -C "$d/repo" config core.fileMode)"
-          echo "fact: python3 prints $(python3 -c 'print("x")' | od -An -c | tr -s ' ')"
-          mkdir "$d/few"; ln -s "$(command -v git)" "$d/few/git"; ln -s "$(command -v python3)" "$d/few/python3"
-          out=$(PATH="$d/few" git --version 2>&1); echo "fact: git from a few-link folder: exit $?, said [$out]"
-          out=$(PATH="$d/few:$PATH" python3 -c 'import sys' 2>&1); echo "fact: python3 from a link: exit $?, said [$(echo $out | cut -c1-120)]"
-          echo "fact: mounts: $(mount | grep -E ' on /(tmp)? ' | tr '\n' ' ')"
-          chmod -R u+w "$d"; rm -rf "${d:?}"
-          true
-
-      # All four run, whichever fails, so each one's count is in the log; the job fails if any did. On Windows, MSYS
-      # makes ln -s a real symlink (the runner may create them) instead of a copy: the suites' stand-in PATH folders
-      # link every command on PATH, and as copies they took most of an hour.
+      # All four run, whichever fails, so each one's count is in the log; the job fails if any did.
       - name: The four suites
         env:
           KIT_TEST_BASH3: ${{ runner.os == 'macOS' && '/bin/bash' || '' }}
-          MSYS: winsymlinks:nativestrict
         run: |
           set +e
           echo "bash: $(bash --version | head -n 1)"
@@ -215,22 +167,20 @@ jobs:
           done
           exit "$fail"
 
-  # Linux on every push; macOS as the suites job (weekly, dispatch); Windows on dispatch only. A dispatch runs the OS
-  # its input names.
+  # Linux on every push; macOS as the suites job (weekly, dispatch). A dispatch runs the OS its input names.
   smoke:
     name: smoke (${{ matrix.os }})
     needs: [mac-gate]
     if: >-
       ${{ !cancelled() && (github.event_name != 'schedule' || needs.mac-gate.outputs.run != 'false') }}
     # About 1.5 times the longest run measured, rounded up: Linux 2.9 minutes on 10-31, macOS 3.8 on 10-26 on older
-    # code (about 4.2 now, an estimate), so 10. Windows keeps its 30.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 10 }}
+    # code (about 4.2 now, an estimate), so 10.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: >-
           ${{ github.event_name == 'workflow_dispatch' && (
-          inputs.os == 'windows' && fromJSON('["windows-latest"]') ||
           inputs.os == 'linux' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest"]')) ||
           github.event_name == 'schedule' && fromJSON('["macos-latest"]') ||
           fromJSON('["ubuntu-latest"]') }}
@@ -239,12 +189,6 @@ jobs:
       run:
         shell: bash
     steps:
-      # The harness needs LF to run at all; inside, the smoke test uses the machine's own git settings, so on Windows
-      # its scratch kit gets Git for Windows' default line endings, as a user's clone would.
-      - name: Keep LF line endings (Windows)
-        if: runner.os == 'Windows'
-        run: git config --global core.autocrlf false
-
       - uses: actions/checkout@v4
 
       # The same step as the suites job's: one version, each archive checked against the sha256 written here.
