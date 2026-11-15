@@ -14,6 +14,34 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v1.0.0
+
+The first major release: a project moves onto it with `kit-pin to v1.0.0` from the new release's install.
+- The README calls the kit version 1, and the beta label ends. Its Versioning section opens with what only a 2.0 can
+  change: the commands and options of `tools/install-release.sh`, `bin/kit-pin to` and `bin/kit-pin user`, where each
+  writes, and `bin/kit-pin`'s exit statuses. That promises stability, not support; the license's disclaimers of
+  warranty and liability stand.
+- The setup prompt, the README and the IT document no longer promise a permission prompt before each write: they say
+  Claude Code asks where its permission mode shows a prompt, and the setup prompt's opening question and the README
+  say auto mode doesn't routinely ask.
+- The README, the IT document and the setup prompt's step 1 name the python3 versions the kit has been tested with,
+  3.9.6 (Apple's), 3.9.25 and 3.12.3, and say that the setup doesn't check its version.
+- The README and `leak-detection/README.md` say what a fresh clone of a project runs: the install's `bin/kit-pin to`
+  with the release its `kit.pin` names, which writes the two stubs; `bin/kit-pin restore` rebuilds a missing or damaged
+  install and writes no stub. pre-push's header comment says the same.
+- The IT document's network section gains a bullet on CI's leak scan: its `LEAK_PATTERN` secret, what the kit checks
+  of it, and where confidential terms stay. Its closing lines say that the install also holds the kit's own CI
+  workflows, which run only on GitHub, and that the kit's repository holds a test container whose images are built
+  from the network.
+- The IT document's account of a push says the do-not-publish list is matched against the files at the pushed tip,
+  not each commit's, so a term added and removed within one push isn't caught.
+- The IT document says which credential shapes the kit refuses: those that gitleaks' built-in rules or the kit's own
+  match.
+- The kit's `CLAUDE.md`: its stakes frame says what the Versioning section's promise means for a 1.x change, and its
+  notes name the python3 versions measured and v1.0.0's code for the stock-Mac run.
+- No hook or command changes what it does (pre-push changes in two comment lines), and the session rules don't change.
+  The upgrade test carries a project from v0.15.0 too.
+
 ## v0.15.0
 
 A minor: a project moves onto it with `kit-pin to v0.15.0` from the new release's install.

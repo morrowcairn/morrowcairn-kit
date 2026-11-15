@@ -215,11 +215,11 @@ A project that needs one more check at commit or push time does not fork a hook 
 - **pre-push checks get the hook's arguments** (remote name, URL) and, on stdin, the ref lines git
   sent.
 
-The folder belongs to the project. The kit ships nothing in it, so an upgrade never touches it, and
-an absent folder runs nothing. A fresh clone of a project needs only its stubs (`bin/kit-pin restore`
-or `to`): the checks are tracked and run from wherever the release's hooks run, with `KIT_INSTALL`
-naming the install. A project that points `core.hooksPath` at a wrapper folder moves the wrapper's
-checks here, then runs `bin/kit-pin migrate`.
+The folder belongs to the project. The kit ships nothing in it, so an upgrade never touches it, and an
+absent folder runs nothing. A fresh clone of a project needs only its stubs, which `bin/kit-pin to`
+writes with the release `kit.pin` names (`restore` writes none): the checks are tracked and run from
+wherever the release's hooks run, with `KIT_INSTALL` naming the install. A project that points
+`core.hooksPath` at a wrapper folder moves the wrapper's checks here, then runs `bin/kit-pin migrate`.
 
 ### Binary files: the reviewed list
 

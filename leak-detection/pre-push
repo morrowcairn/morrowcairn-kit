@@ -61,8 +61,8 @@
 # exactly this reason; none may be silenced with `2>/dev/null` or `|| true`.
 #
 # Bypass (deliberate escape hatch):  git push --no-verify   -- it skips BOTH layers and every project check.
-# A fresh `git clone` runs no hook. A pinned project gets its stubs from bin/kit-pin (to, migrate or restore);
-# the kit itself points core.hooksPath at leak-detection (leak-detection/README.md, Setup).
+# A fresh `git clone` runs no hook. A pinned project gets its stubs from bin/kit-pin (to or migrate; restore rebuilds
+# only the install); the kit itself points core.hooksPath at leak-detection (leak-detection/README.md, Setup).
 #
 set -uo pipefail
 # Text handling runs byte-wise, matching in the caller's locale. In a UTF-8 locale BSD's

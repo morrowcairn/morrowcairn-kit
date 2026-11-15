@@ -17,20 +17,23 @@ to other people as well, so its tracked text must carry nothing specific to its 
 
 ## Stakes frame
 
-The kit's releases go to a public beta repository, and anyone may install one: on their own
-machine, or on an organization's, under its IT's settings. Each install's hooks decide what that
-person's projects may commit and push, and its doctrine shapes how every session on that machine
-works. The operator sees none of those machines, so a failure there surfaces only if someone
-reports it. The costly failure is a silent fail-open: a term someone agreed or is required to keep confidential,
-or a credential, let through to a remote, which can't be reliably withdrawn once pushed and may surface only at a
-later audit;
-or a doctrine error, which re-aims every session of everyone who imports that release at once. A
-gate that fails closed stalls every project pinned to that release until it's fixed, but it is
-noticed at once, and it says why. So every tracked line is written for a reader the operator
-doesn't know: nothing specific to the operator, no claim the kit can't back, and Claude Code and an
-org's own settings leading. Rewrite this frame when the kit leaves beta, when someone other than the
-operator maintains it or makes its releases, or when a release is offered with any promise of
-support.
+The kit's releases go to a public repository, and anyone may install one: on their own machine, or
+on an organization's, under its IT's settings. From v1.0.0 the README's Versioning section says what
+won't change without a 2.0. That promises stability, not support, and the license's disclaimers of
+warranty and liability stand. Each install's hooks decide what that person's projects may commit and
+push, and its doctrine shapes how every session on that machine works. The operator sees none of
+those machines, so a failure there surfaces only if someone reports it. The costly failure is a
+silent fail-open: a term someone agreed or is required to keep confidential, or a credential, let
+through to a remote, which can't be reliably withdrawn once pushed and may surface only at a later
+audit; or a doctrine error, which re-aims every session of everyone who imports that release at
+once. A gate that fails closed stalls every project pinned to that release until it's fixed, but it
+is noticed at once, and it says why. A 1.x release that changes anything the Versioning section says
+won't change breaks the promise for everyone who relies on it, so such a change is made only in a
+2.0, and a fix for a fail-open that needs one ships as a 2.0 at once rather than waiting. So every
+tracked line is written for a reader the operator doesn't know: nothing specific to the operator, no
+claim the kit can't back, and Claude Code and an org's own settings leading. Rewrite this frame at a
+2.0, when someone other than the operator maintains the kit or makes its releases, or when a release
+is offered with any promise of support.
 
 This frame calibrates every judgment below.
 
@@ -92,7 +95,7 @@ What the kit's scripts and tests need, as measured. A version named is one that 
 - **A stock Mac:** `/bin/bash` 3.2, BSD tools and `shasum`, git and python3 from Apple's developer
   tools, and gitleaks added: the user's path passes, from clone and install to the planted refusals, with
   PATH only `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` and gitleaks' folder (git 2.50 and python3 3.9, on a
-  runner with Xcode, last on v0.12.0's code). On a Mac with neither Xcode nor the Command Line Tools,
+  runner with Xcode, last on v1.0.0's code). On a Mac with neither Xcode nor the Command Line Tools,
   `/usr/bin/git` and `/usr/bin/python3` only offer to install the tools (`xcode-select --install`): not
   measured here. gitleaks isn't part of macOS: CI installs its release archive, checked against the
   published sha256; Homebrew's `brew install gitleaks` is the other route, not measured. No kit
@@ -107,10 +110,14 @@ What the kit's scripts and tests need, as measured. A version named is one that 
 - **Native Windows:** not supported; on Windows the kit runs inside WSL2 (above). No CI job runs on a Windows runner.
 - git 2.31 or later: `bin/kit-pin` uses `git rev-parse --path-format` (git's release notes; the oldest
   git run here is 2.43).
-- python3: pre-push's binary scan (a push carrying a binary), install-release's one-step rename, checked
-  before anything is built, and the load check; and the home folder a project's list lives under, read from
-  the user database (pre-push and the history audit; kit-pin; pre-commit's
-  withholding of `.local/` names). Run here: 3.12.
+- python3: pre-push's binary scan (a push carrying a binary), install-release's one-step rename, checked before
+  anything is built, and the load check; and the home folder a project's list lives under, read from the user database
+  (pre-push and the history audit; kit-pin; pre-commit's withholding of `.local/` names). Run here: 3.12. Measured
+  passing: 3.9.6 (Apple's, in the stock-Mac smoke; the same version in the hooks suite in a tester's install on a Mac),
+  3.9.25 (the install, load-check and kit-docs suites, on Linux) and 3.12.3 (Linux CI, `ubuntu-24.04` 20261101.360.1).
+  Likely 3.15.2 in the macOS suites job: it is the default python3 its image's published software list names
+  (actions/runner-images, `macos-26-arm64` 20261102.0473.1), and the job's log doesn't print which python3 ran. Nothing
+  in the setup or the kit checks the version.
 - `sha256sum` or `shasum -a 256`: every script that hashes takes either, and with neither refuses,
   naming both.
 - gitleaks: both hooks and CI's tree scan. Both the kit's CI and a project's (`ci/gitleaks.yml`)

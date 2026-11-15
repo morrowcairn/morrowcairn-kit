@@ -20,8 +20,10 @@ The kit's [`CHANGELOG.md`](../CHANGELOG.md) lists what each release changes.
 
 ## What it needs
 
-- bash, git 2.31 or later, python3, gitleaks 8.30.1, and `sha256sum` or `shasum -a 256`; curl too where the person
-  runs the daily load check (its stub's ping).
+- bash, git 2.31 or later, python3, gitleaks 8.30.1, and `sha256sum` or `shasum -a 256`; curl too where the person runs
+  the daily load check (its stub's ping). python3 has been tested at 3.9.6 (Apple's, in the stock-Mac smoke test; the
+  same version in a tester's install on a Mac), 3.9.25 (the install, load-check and kit-docs suites) and 3.12.3 (Linux
+  CI); nothing in the setup or the kit checks its version.
 - No administrator rights. Nothing in it calls `sudo`. Beyond short-lived files in the system's temporary folder,
   which the hooks and tools remove as each run ends (read from the code, not traced), it writes only in the person's
   home folder and their projects.
@@ -44,20 +46,20 @@ Outside a project, every file and folder, with its mode and what writes it:
 | links in Claude Code's folder (`~/.claude/rules/morrowcairn.md`, `~/.claude/skills/gates`, `record-stamps`, `session-close`, `~/.claude/hooks/morrowcairn-reply-file`, `morrowcairn-compaction-log`) | links into the read-only install | `kit-pin user` |
 | `~/.local/state/morrowcairn/load-probe/` | the person's default | the daily load check, only if the person runs it |
 | the file `KIT_LOAD_CHECK_REPORT` names: the daily check's last report | the person's default. On WSL the setup offers `/mnt/c/Users/<the person's Windows user>/kit-load-check.txt`, on the Windows side, so it opens from Windows, where that folder's own permissions apply | the daily load check, only where the person sets that variable |
-| `~/.claude/rules/morrowcairn-local.md`, this machine's settings for the rules file and the two hooks | the person's default | the setup session writes it from the person's answers where the person's answer to the setup's first question lets it, approved at Claude Code's prompt and never over a file that is there; otherwise the person, from the file the setup shows or the kit's example. Someone who runs no relays has none |
+| `~/.claude/rules/morrowcairn-local.md`, this machine's settings for the rules file and the two hooks | the person's default | the setup session writes it from the person's answers where the person's answer to the setup's first question lets it, approved at Claude Code's prompt where its permission mode shows one, and never over a file that is there; otherwise the person, from the file the setup shows or the kit's example. Someone who runs no relays has none |
 | the reply folder that file names (`[reply folder]`): one file per session report, `<project>-<label>-<session>-<NN>.md`, the report's text as the session wrote it, unmasked, so it can hold work content | files 600, never overwritten; the folder 700 where the hook makes it. On WSL the setup offers `/mnt/c/Users/<the person's Windows user>/claude-replies`, on the Windows side, where a browser attaches files from: WSL keeps no Linux file modes there by default, so that Windows folder's own permissions apply | the reply-file hook (a Claude Code Stop hook), only once the person names it in their own settings |
 | the compaction log that file names (`[compaction log]`): one line per compaction, the time, the session ID and what triggered it | 600; its folder 700 where the hook makes it | the compaction-log hook (a PostCompact hook), the same way |
-| `~/.claude/settings.json`, the person's own Claude Code settings: an entry for each optional hook the person turns on | the file's own | the setup session, only for a hook the person turns on and only where the person's answer to the setup's first question lets it, each edit approved at Claude Code's prompt, keeping what is there; otherwise the person, from the lines the setup gives |
-| `~/.local/bin/gitleaks`, gitleaks' program | executable, as unpacked from its archive | the setup session, only where gitleaks is missing and the person says yes to its download, checked against the sha256 the kit pins, at Claude Code's prompt |
-| `~/.local/share/morrowcairn/load-check/kit-load-check-stub`, a copy of the daily load check's stub, outside the install | as copied | the setup session, only where the person wants the daily load check and the person's answer to the setup's first question lets it, at Claude Code's prompt, never over a file that is there; otherwise the person |
+| `~/.claude/settings.json`, the person's own Claude Code settings: an entry for each optional hook the person turns on | the file's own | the setup session, only for a hook the person turns on and only where the person's answer to the setup's first question lets it, each edit approved at Claude Code's prompt where its permission mode shows one, keeping what is there; otherwise the person, from the lines the setup gives |
+| `~/.local/bin/gitleaks`, gitleaks' program | executable, as unpacked from its archive | the setup session, only where gitleaks is missing and the person says yes to its download, checked against the sha256 the kit pins, at Claude Code's prompt where its permission mode shows one |
+| `~/.local/share/morrowcairn/load-check/kit-load-check-stub`, a copy of the daily load check's stub, outside the install | as copied | the setup session, only where the person wants the daily load check and the person's answer to the setup's first question lets it, at Claude Code's prompt where its permission mode shows one, never over a file that is there; otherwise the person |
 | the person's crontab: one daily line that runs that copy, with a PATH that finds `claude` | the system's: readable only by the person and root | the setup session, as for the copy; or the person. A ping URL, where the person wants one, goes on a line of its own above that line, as `KIT_LOAD_CHECK_PING=<URL>`, added by the person and never through the session: crontab passes it into the job's environment, which only its owner can read, never onto a command line, which every local user can; it reaches the person's later jobs in that crontab too. The stub hands it to `curl` on its standard input |
 
 For the list's folder, `~` is the home folder the system's user database gives for the person, never the `HOME`
 variable. The user pin and Claude Code's folder follow the usual variables (`XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`)
 where they are set. An install builds in a staging folder beside it, then renames it into place. `kit-pin user`
 changes no Claude Code settings file; the two hooks it links run only once the person's own settings name them. The
-setup prompt adds them to those settings only where the person asks, each edit approved at Claude Code's own prompt,
-and otherwise gives the person the lines; it never edits a managed settings file.
+setup prompt adds them to those settings only where the person asks, each edit approved at Claude Code's own prompt
+where its permission mode shows one, and otherwise gives the person the lines; it never edits a managed settings file.
 
 Inside each project: `kit.pin` and `kit.list-id` (tracked: the release, and a random id that names the project's list,
 which says nothing about the project); two stubs, `.git/hooks/pre-commit` and `pre-push` (755); the list's pin,
@@ -89,7 +91,8 @@ folder for the project, and, only where `morrowcairn-local.md` names them, one l
   first where IT sets a hooks path, then gitleaks over the staged text.
 - **At push** (the pre-push stub): the same install check and IT's hook first, then gitleaks over the commits pushed,
   the do-not-publish list over the pushed tree and metadata, and, where a project turns it on, a check of the binary
-  files pushed.
+  files pushed. The list is matched against the files at the pushed tip, not each commit's, so a term added and
+  removed within one push isn't caught.
 - **`kit-pin`**, only when the person runs it: it pins a project to a release, moves the pin, or checks it.
 
 ## What reaches the network
@@ -107,11 +110,19 @@ folder for the project, and, only where `morrowcairn-local.md` names them, one l
   doesn't list, it says only how many. The report on the machine keeps the details.
 - CI, if a project copies the kit's workflow files: GitHub-hosted runners, and a gitleaks download from github.com
   checked against its sha256.
+- CI's leak scan (`ci/leak-scan.yml`), if the project turns it on: it reads its patterns from the repository secret
+  `LEAK_PATTERN`, which the person sets on GitHub. By the kit's design the secret holds only patterns that aren't
+  confidential themselves, such as an IP-address pattern, or the line saying the project keeps no list. The kit checks
+  only that the secret is set and matches the row count and SHA-256 in the project's tracked `.github/leak-pattern.pin`,
+  never whether a pattern in it is confidential. Confidential terms stay in the local list on the machine: pre-commit,
+  pre-push, the history audit and kit-pin read it there.
 - The setup prompt, only where the person accepts its offer to fetch a missing gitleaks: one download of the release
   archive from github.com, checked against the sha256 the kit pins in `ci/gitleaks.yml` before it is unpacked. The
   person decides; on a no, the setup says what to install and where to get it, and waits.
-Nothing else in the kit's code opens a network connection. gitleaks scans locally (**not yet tested** here: it is
-gitleaks' own behaviour).
+Nothing else in the code a project runs opens a network connection. The install also holds the kit's own CI workflows
+(`.github/workflows/`); they run only on GitHub, in the kit's own repository, never on the machine. The kit's
+repository, not the install, also holds a test container (`tests/standin/`), whose images are built from the network.
+gitleaks scans locally (**not yet tested** here: it is gitleaks' own behaviour).
 
 ## Beside IT's own controls
 
@@ -136,10 +147,10 @@ gitleaks' own behaviour).
 - **Where enforcement belongs.** The hooks are a safety net on the person's machine: the person can skip them or remove
   them (below). Enforcement belongs on the server, such as the hosting service's own push protection, where IT has it.
 
-What it refuses: a commit or push carrying a credential shape; a push carrying a listed term, or one whose list is
-missing or doesn't match its pin; anything staged under a project's `.local/` folder; a project's first commit before
-its instructions file is written; a git older than 2.31; a missing gitleaks; an install that doesn't match its pin; an
-IT hook the clone doesn't relay.
+What it refuses: a commit or push carrying a credential shape that gitleaks' built-in rules or the kit's own match; a
+push carrying a listed term, or one whose list is missing or doesn't match its pin; anything staged under a project's
+`.local/` folder; a project's first commit before its instructions file is written; a git older than 2.31; a missing
+gitleaks; an install that doesn't match its pin; an IT hook the clone doesn't relay.
 
 ## Off by default, and how each is turned on
 

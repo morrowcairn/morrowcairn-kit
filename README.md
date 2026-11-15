@@ -2,8 +2,10 @@
 
 A cairn is a waymarker built for the next traveler.
 
-**Beta.** It runs daily on one operator's Linux machine and projects. Elsewhere it may meet something it hasn't seen,
-and a release may change more than a stable kit's would.
+**Version 1.** From v1.0.0, the Versioning section below says what won't change without a 2.0. That is a promise of
+stability, not of support: no one is bound to answer a question or fix a problem, and the kit comes as is, under its
+license, which disclaims warranty and liability. It runs daily on one operator's Linux machine and projects; elsewhere
+it may meet something it hasn't seen.
 
 **What it is, and isn't.** Morrowcairn is a project-genesis kit: a way of working with Claude Code, and best practices
 for what Claude Code builds. It gives a project, from its first commit, records, session rules, and leak checks for its
@@ -14,32 +16,34 @@ works. Anthropic leads on Claude Code; on a work machine, your org's settings le
 [`docs/for-it.md`](docs/for-it.md) says what the kit writes, runs and sends, what is off by default, and how to turn
 each part off or remove it.
 
-**Install.** You need git 2.31 or later, gitleaks on `PATH`, python3, and `sha256sum` or `shasum`. *Where it runs:*
-Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, the kit runs inside WSL2; native
-Windows isn't supported. Under WSL2 the setup runs end to end on Ubuntu 24.04 and 26.04, and the five test suites pass
-on 26.04 (measured on two machines, on v0.12.0's code). Keep your projects in the Linux home: on the Windows side files
-lose their modes, and commits and pushes run 3 to 5 times slower. It hasn't been tried on a machine an organization
-manages.
+**Install.** You need git 2.31 or later, gitleaks on `PATH`, python3, and `sha256sum` or `shasum`. The kit has been
+tested with python3 3.9.6 (Apple's, on a stock Mac), 3.9.25 and 3.12.3; nothing in the setup or the install checks its
+version. *Where it runs:* Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, the kit
+runs inside WSL2; native Windows isn't supported. Under WSL2 the setup runs end to end on Ubuntu 24.04 and 26.04, and
+the five test suites pass on 26.04 (measured on two machines, on v0.12.0's code). Keep your projects in the Linux
+home: on the Windows side files lose their modes, and commits and pushes run 3 to 5 times slower. It hasn't been tried
+on a machine an organization manages.
 
 The usual way is the setup prompt: paste [`docs/setup-prompt.md`](docs/setup-prompt.md)'s prompt into Claude Code, and
 Claude Code leads. It asks you once whether it should do every step itself, your Claude Code settings and crontab
 included, or show you each change to make, and then drives the whole setup: plain questions one at a time, each with a
-default, steps 1, 2 and 4 below taken itself, with your approval at Claude Code's own prompts, a command handed to you
-only where it can't, saying why, and at the end it checks that it works. It checks those tools, reads which of your
-organization's managed settings apply, keeps your code in the Linux home on WSL, says what a new project starts with,
-and offers to set up the daily load check. If you say you'll run work through relays, it writes the kit's settings
-file, and adds the two optional hooks to your Claude Code settings only when you say so. By hand, the steps are:
+default, steps 1, 2 and 4 below taken itself, with your approval at Claude Code's own prompts where its permission mode
+shows them (auto mode doesn't routinely), a command handed to you only where it can't, saying why, and at the end it
+checks that it works. It checks those tools, reads which of your organization's managed settings apply, keeps your code
+in the Linux home on WSL, says what a new project starts with, and offers to set up the daily load check. If you say
+you'll run work through relays, it writes the kit's settings file, and adds the two optional hooks to your Claude Code
+settings only when you say so. By hand, the steps are:
 1. Clone this repository and check out the release's tag:
    `git clone https://github.com/morrowcairn/morrowcairn-kit morrowcairn`, then `cd morrowcairn` and
-   `git checkout v0.15.0`.
-2. Build the release's read-only install: `tools/install-release.sh v0.15.0`. It runs the release's own hook suite on the
-   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v0.15.0` (or under
+   `git checkout v1.0.0`.
+2. Build the release's read-only install: `tools/install-release.sh v1.0.0`. It runs the release's own hook suite on the
+   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v1.0.0` (or under
    `$KIT_INSTALL_ROOT`, to keep installs elsewhere).
 3. Make a project from it: follow the install's copy of [`patterns/local-spawn.md`](patterns/local-spawn.md), whose
    procedure pins the project to the release and puts its hooks in before commit one; then
    [`patterns/repo-genesis.md`](patterns/repo-genesis.md) for its identity and commit one. A new project starts with no
    do-not-publish list (the one line saying so, pinned) and no identity guard; local-spawn says how to turn on each.
-4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v0.15.0/bin/kit-pin user v0.15.0`
+4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v1.0.0/bin/kit-pin user v1.0.0`
    links the rules file every session loads, `rules/morrowcairn.md`, the three triggered skills and the two optional
    hooks' scripts into Claude Code's folder, writes the kit's user pin, and changes no settings file.
    [`docs/rules-explained.md`](docs/rules-explained.md) says why each rule is there;
@@ -192,12 +196,19 @@ Failing closed is the correct behavior, not a gap: an adopter who pushes without
 or with one that isn't the pinned list, gets a hard error rather than a green scan that checked
 nothing, or less. **A check that cannot fail is worse than no check, because it ends the search.**
 
-Hooks are per-clone and **do not survive `git clone`**. A project gets them back from `bin/kit-pin`
-(`restore` or `to`, [`patterns/local-spawn.md`](patterns/local-spawn.md)); a clone of the kit itself
-runs `git config core.hooksPath leak-detection`. The CI workflows are the only clone-surviving layer,
-and for the do-not-publish list's terms they check nothing.
+Hooks are per-clone and **do not survive `git clone`**. In a fresh clone of a project, run the install's
+`bin/kit-pin to` with the release its `kit.pin` names: it writes the two stubs, then prints the next
+step for the do-not-publish list, whose pin isn't cloned either (`bin/kit-pin repin local --first`, once
+the list is checked against its source; [`patterns/local-spawn.md`](patterns/local-spawn.md)).
+`bin/kit-pin restore` rebuilds a missing or damaged install, then checks; it writes no stub. A clone of
+the kit itself runs `git config core.hooksPath leak-detection`. The CI workflows are the only
+clone-surviving layer, and for the do-not-publish list's terms they check nothing.
 
 ## Versioning
+
+From v1.0.0, only a 2.0 can change these: the commands and options of `tools/install-release.sh`, `bin/kit-pin to` and
+`bin/kit-pin user`, where each writes, and `bin/kit-pin`'s exit statuses (0 on a pass, 1 on a refusal, 3 from `check`,
+`migrate` and `restore` when no push would pass). A 1.x release can still add commands, options and files there.
 
 A **minor** release (v0.12.0, say) changes what a project sees: a hook may refuse what it passed before, or a step may
 work differently, so a project moves onto it on purpose, with `bin/kit-pin to` from the new release's install
