@@ -1,7 +1,7 @@
 # SYNTHETIC credential fixture — every value here is FAKE and inert.
 # Purpose: prove the credential scanner (.gitleaks.toml) still DETECTS. See leak-detection/README.md.
 # This path is allowlisted in .gitleaks.toml so routine scans stay green; the canary PROCEDURE
-# scans a COPY (outside the allowlisted path) to confirm all nine custom rules still fire.
+# scans a COPY (outside the allowlisted path) to confirm all eleven custom rules still fire.
 # Do NOT remove the allowlist entry, and do NOT move this file without updating it.
 
 # generic-api-key-40char-in-config
@@ -32,6 +32,12 @@ aws_secret_access_key = "abcDEF123456ghiJKL789012mnoPQR345678stuv"
 
 # monitoring-ping-url-uuid
 PING_URL = "https://hc.example.com/ping/12345678-1234-1234-1234-123456789abc"
+
+# supabase-access-token
+The Supabase access token is sbp_cc02f7373665c53632912eaeaffbf69303476999 for now.
+
+# supabase-secret-key
+The backend reads sb_secret_2lbE1nMNu6ubrnVvV8RSMK_8lAfXJnM at start.
 
 # Further shapes, each read alone by a case of its own in tests/hooks_test.sh (GR10 on).
 

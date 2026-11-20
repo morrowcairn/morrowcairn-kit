@@ -173,7 +173,7 @@ acting on it.
   took the paste as a yes, and nothing recorded that anyone had decided it.
 - **Prior rulings first.** Two proposals in one project repeated rulings already made. Checking the decisions log
   before building costs a search; building against a ruling costs the build.
-- **Whose lane.** The instinct to build is itself something to watch. A check or a component may be Claude Code's to
+- **Whose lane.** The instinct to build itself is something to watch for. A check or a component may be Claude Code's to
   provide, an organization's to set, or the project's; only the last is the project's to build.
 - **The owner's queue.** A handoff held 18 questions for the user, some six days old, that the user had never seen.
   Two of them then reached the user already answered or out of date, because both came from notes written before a

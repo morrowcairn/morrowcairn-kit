@@ -1,0 +1,5 @@
+# v0.15.0's old-git lines, as tests/standin/run.sh reads them: copied from the tester's criterion of 2026-11-08
+# (decisions log §768, its 17 lines; the other conditions pass on their containers' exits). One file a release.
+old-git: hooks_test exit 1; hooks_test: 143 passed, 401 failed, 13 skipped
+old-git: install_test exit 1; install_test: 133 passed, 267 failed, 67 skipped
+old-git: smoke_test exit 1; smoke_test: 1 passed, 1 failed, 7 not run

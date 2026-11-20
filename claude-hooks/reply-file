@@ -22,7 +22,8 @@
 # files named -resendK before it are such reports), and a report already filed byte for byte isn't filed again, so a
 # later turn end over the same text files nothing new. Nothing is masked:
 # the file holds what the session showed. An end line naming another session, or one mid-turn with no path line before
-# it (a quoted one), ends no report.
+# it (a quoted one), ends no report. A quoted one naming this session whose text no report filed after it holds, so
+# that it reaches no file, is named to the person (below): a report meant to end there isn't lost unseen.
 #
 # Off until the person names it in their settings (`kit-pin user` links it at hooks/morrowcairn-reply-file in Claude
 # Code's config folder, a path an upgrade never changes). The setting is read from rules/morrowcairn-local.md in that
@@ -40,20 +41,31 @@
 # Exit 0 when it filed the reports or had nothing to do; 1, with one line on stderr, when the setting can't be used or
 # a write fails, which Claude Code shows as a non-blocking hook error: the turn ends either way. On stdout it prints
 # nothing, except when it has just filed a report under a tag the rules don't name (the rules file's section 4 names
-# direct, wake and part, each with its number) or from a line with marks around it, or met an end line it can't read:
-# then one JSON object holding only systemMessage, naming each file and why, or quoting each unread line and why,
-# which Claude Code's hooks page says is shown to the person as a warning. Never decision, continue or exit 2, so it
+# direct, wake and part, each with its number) or from a line with marks around it, or met an end line it can't read,
+# or one naming this session read as quoted whose text no later report holds, or has just filed a report that says
+# nothing of compaction (no line holding "compact"; the rules ask every report whether the session compacted since its
+# last report): then one JSON object holding only systemMessage, naming each file and why, or quoting each such line and
+# why, and for a report silent on compaction what the [compaction log] setting's log holds for this session since its
+# last report (the newest file in the reply folder for this session ID before this turn's), each line counted by the
+# session ID in full or its first eight characters, with its time and trigger. A log's local times carry a zone
+# abbreviation, so in the hour a clock goes back a line's time reads two ways and may be counted on the wrong side.
+# Claude Code's hooks page says a systemMessage is shown to the person as a warning.
+# Never decision, continue or exit 2, so it
 # never asks Claude Code to keep going; a report already filed byte for byte says nothing again, though an unread line
 # is named at each turn end that reads it, as nothing records that it was named. Started with -I, so no module
 # from the caller's environment loads; the two hooks share no module for the same reason (isolated mode adds no script
-# folder to the path). Tests: tests/install_test.sh, RF0 to RF12c.
+# folder to the path). Tests: tests/install_test.sh, RF0 to RF12c (RF5b and RF5c for a quoted end line), RC1 to RC5b
+# (a report silent on compaction).
 
 import json
 import os
 import re
 import sys
+import time
 
 SETTING = "[reply folder]"
+LOG_SETTING = "[compaction log]"
+COMPACT = re.compile(r"compact", re.I)   # a line that says something of compaction
 END = re.compile(r"End of report ([A-Za-z0-9._-]+) ([A-Za-z0-9._-]+) #([0-9]+)((?:-[A-Za-z]+[0-9]*)*) "
                  r"\(session ([0-9A-Fa-f]{8})\)")
 TAG = re.compile(r"-([a-z]+)([0-9]*)")            # one tag in a lowercased run of them
@@ -221,11 +233,13 @@ def reports(body, session, folder):
     report's end line, to an end line naming SESSION that is the last line or has its path line before it; text after
     the last end line is no report's. Its notes say what the person is told when it is filed: a tag the rules don't
     name, marks around the end line. The second list holds each line that starts like an end line, names no other
-    session and stands where an end line would close a report, but can't be read: it closes nothing."""
+    session and stands where an end line would close a report, but can't be read: it closes nothing. The third holds
+    each end line naming SESSION read as quoted, [(line, index)]: mid-turn with no path line before it, it closes
+    nothing."""
     lines = body.split("\n")
     filled = [i for i, ln in enumerate(lines) if ln.strip()]
     own = session[:8].lower()
-    out, unread, start, prev = [], [], 0, None
+    out, unread, quoted, start, prev = [], [], [], 0, None
     for i in filled:
         s = lines[i].strip()
         core = s.strip(AROUND)
@@ -247,12 +261,59 @@ def reports(body, session, folder):
                     notes.append("its end line has formatting marks around it, which the rules' form doesn't")
                 out.append(("\n".join(part), base, notes, i))
                 start = i + 1
+            else:
+                quoted.append((core, i))
         elif not m and core.lower().startswith("end of report") \
                 and all(x.lower() == own for x in SESSION.findall(core)) \
                 and (closing or (prev is not None and in_folder(lines[prev], folder))):
             unread.append((core, unread_why(core), i))
         prev = i
-    return out, unread
+    return out, unread, quoted
+
+
+def last_report_time(folder, session):
+    """The newest modification time of a file in FOLDER for SESSION's first eight characters, or None."""
+    mark = "-%s-" % session[:8].lower()
+    try:
+        times = [os.path.getmtime(os.path.join(folder, n))
+                 for n in os.listdir(folder) if mark in n and n.endswith(".md")]
+    except OSError:
+        return None
+    return max(times) if times else None
+
+
+def compaction_reading(session, since):
+    """What the [compaction log] setting's log holds for SESSION after SINCE (a time, or None for every line): a phrase
+    for the person, never a failure."""
+    value = setting(LOG_SETTING)
+    if not value:
+        return "no compaction log is set, so there is none to read"
+    path = os.path.expanduser(value) if value.startswith("~/") else value
+    if not os.path.isabs(path):
+        return "the %s setting isn't a path starting / or ~/" % LOG_SETTING
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            rows = f.read().splitlines()
+    except FileNotFoundError:
+        return "the compaction log %s isn't there" % path
+    except OSError as e:
+        return "the compaction log %s can't be read (%s)" % (path, e.strerror)
+    ids, hits = (session, session[:8]), []
+    for row in rows:
+        f = [x.strip() for x in row.split("|")]
+        if len(f) < 3 or f[1] not in ids:
+            continue
+        try:
+            when = time.mktime(time.strptime(f[0][:19], "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            when = None
+        if since is not None and when is not None and when <= since:
+            continue
+        hits.append("%s, %s" % (f[0], f[2] or "?"))
+    if not hits:
+        return "the compaction log holds no line for this session since its last report"
+    return "the compaction log holds %d line%s for this session since its last report (%s)" % (
+        len(hits), "" if len(hits) == 1 else "s", "; ".join(hits[:5]) + ("; ..." if len(hits) > 5 else ""))
 
 
 def file_report(folder, base, text):
@@ -307,22 +368,36 @@ def main():
     body = "\n\n".join(texts).rstrip()
     if not body.strip():
         return 0
-    found, unread = reports(body, session, folder)
+    found, unread, quoted = reports(body, session, folder)
     told = []
     if found:
         try:
             os.makedirs(folder, mode=0o700, exist_ok=True)
         except OSError as e:
             fail("can't make the reply folder %s (%s)" % (folder, e.strerror))
+    since = last_report_time(folder, session) if found else None
     for text, base, notes, _ in found:
         path = file_report(folder, base, text)
         if path and notes:
             told.append("reply-file filed %s, but %s." % (os.path.basename(path), "; and ".join(notes)))
+        if path and not COMPACT.search(text):
+            told.append("reply-file filed %s, which says nothing of compaction (each report says whether the session "
+                        "compacted since its last report): %s."
+                        % (os.path.basename(path), compaction_reading(session, since)))
     for line, why, i in unread:
         shown = line if len(line) <= 160 else line[:157] + "..."
         later = any(j > i for _, _, _, j in found)
         told.append('reply-file filed nothing for the end line "%s": %s; %s.%s' % (
             shown, why, FORM, " Its report's text went into the next report filed." if later else ""))
+    for line, i in quoted:
+        if any(j > i for _, _, _, j in found):
+            continue
+        shown = line if len(line) <= 160 else line[:157] + "..."
+        told.append('reply-file filed nothing for the end line "%s": it isn\'t the turn\'s last line and no path line '
+                    'comes before it, so it was read as quoted, and no report filed after it holds its text; a report '
+                    'that ends mid-turn needs its path line, the line ending with its own file, just before its end '
+                    'line.'
+                    % shown)
     if told:
         sys.stdout.write(json.dumps({"systemMessage": " ".join(told)}) + "\n")
     return 0

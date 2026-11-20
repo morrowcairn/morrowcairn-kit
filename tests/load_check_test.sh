@@ -35,8 +35,26 @@ skip() { SKIP=$((SKIP+1)); printf 'skip  %s  -- %s\n' "$1" "$2"; }
 want_ok() { if [[ $2 -eq 0 && ( -z "${4:-}" || "$3" == *"$4"* ) ]]; then result "$1" 0
             else result "$1" 1 "exit $2${4:+, want '$4'}: $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-200)"; fi; }
 sha() { local s; s=$(sha256sum < "$1") && printf '%s' "${s%% *}"; }
+# exit_wrong OUTPUT RC: each refusal line in OUTPUT naming a refusal leak-detection/refusals.txt lists, in brackets after
+# a tool's REFUSING, whose EXIT there disagrees with RC, the exit status the case saw (1+ takes any non-zero status), so
+# a list line's EXIT is checked against what the stub returned; prints each, nothing when all agree (LE0). The hooks
+# and install suites' names_wrong makes the same comparison.
+RN_LIST="$ROOT/leak-detection/refusals.txt"
+exit_wrong() { [[ -f "$RN_LIST" ]] || return 0
+    printf '%s\n' "$1" | awk -v L="$RN_LIST" -v R="$2" '
+        function exit_ok(e, r) { if (e ~ /^[0-9]+$/) return r == e + 0
+                                 if (e ~ /^[0-9]+[+]$/) { sub(/[+]$/, "", e); return r != 0 && r >= e + 0 }
+                                 return 0 }
+        BEGIN { while ((getline l < L) > 0) { if (l == "" || substr(l, 1, 1) == "#") continue
+                    split(l, f, "\t"); ex[f[1]] = f[2] } }
+        { k = "REFUSING ["; i = index($0, k)
+          if (i == 0 || (i > 1 && substr($0, i - 2, 2) != ": ")) next
+          rest = substr($0, i + length(k)); j = index(rest, "]"); if (j == 0) next
+          got = substr(rest, 1, j - 1)
+          if ((got in ex) && !exit_ok(ex[got], R + 0))
+              print "carries [" got "], listed with EXIT " ex[got] ", but the case saw exit " R ": " substr($0, 1, 90) }'; }
 
-CASES=(LC0 LC0b LC16 LC4 LC5 LC7 LC8 LC9 LCe LC12 LC13 LC13b LC13c LC13d LC14 LC15 LQ2 LQ2b LQ4 LQ5 LCa LCb LCc LCd LCf LCg
+CASES=(LE0 LC0 LC0b LC16 LC17 LC18 LC19 LC20 LC21 LC4 LC5 LC7 LC8 LC9 LCe LC12 LC13 LC13b LC13c LC13d LC14 LC15 LQ2 LQ2b LQ4 LQ5 LCa LCb LCc LCd LCf LCg
        LQ1 LS1 LS2 LS3 LS4 LS5 LS6 LS6b LS7 LS8 LP3 LS14 LS14b LP1a LP1b LP1c LP1d LP1e LP2a LP2b LP2c LP2d LP2e LP2f LP2g
        LP2h LS13 LS9 LS10 LS11 LS11b LS12 EG25 EG26 EG27 LP1f LP3b LP4)
 if ! git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -151,8 +169,10 @@ open(f, "wb").write(b"\n".join(lines[:1] + [b"\0" * 40] + lines[1:]))
 PY
 }
 # A stand-in claude for the probe. FAKE_MODE: pass, auth, timeout, nocanary, exit93 (no answer, exit status 93),
-# zqanswer (an answer and error output holding a stand-in term, no canary). It answers as `claude -p --output-format
-# json` does and writes the transcript a real run would, under the projects folder.
+# zqanswer (an answer and error output holding a stand-in term, no canary), noskills (a start event with no skills
+# list). It answers as `claude -p --output-format stream-json --verbose` does, a system/init event naming the skills
+# Claude Code found (FAKE_SKILLS, else each skill folder in the user level's skills folder, as Claude Code lists them)
+# and then the result, and writes the transcript a real run would, under the projects folder.
 FB="$TMP/fakebin"; mkdir -p "$FB"
 cat > "$FB/claude" <<'SH'
 #!/usr/bin/env bash
@@ -173,7 +193,19 @@ slug=$(python3 -I -c 'import os, re; print(re.sub(r"[^A-Za-z0-9]", "-", os.path.
 bash "$FAKE_TRANSCRIPT" "$FAKE_PROJECTS/$slug/$sid.jsonl" "${FAKE_VERSION:-2.1.291}" "$mode"
 answer=$(grep -ohE 'kc-[0-9a-f]{16}' $FAKE_ANSWER_FILES | sort -u)
 [[ "${FAKE_MODE:-pass}" == nocanary ]] && answer="the rules file did not load"
-python3 -I -c 'import json,sys; print(json.dumps({"type":"result","subtype":"success","is_error":False,"result":sys.argv[1],"session_id":sys.argv[2]}))' "$answer" "$sid"
+[[ -n "${FAKE_SKILLS+set}" ]] || FAKE_SKILLS=$(cd "$FAKE_SKILL_DIR" 2>/dev/null && for d in *; do [[ -f "$d/SKILL.md" ]] && printf '%s ' "$d"; done)
+python3 -I - "$answer" "$sid" "$FAKE_SKILLS" "${FAKE_MODE:-pass}" <<'PY'
+import json, sys
+answer, sid, skills, mode = sys.argv[1:5]
+init = {"type": "system", "subtype": "init", "session_id": sid, "tools": []}
+if mode != "noskills":
+    init["skills"] = skills.split() + ["a-bundled-skill"]
+print(json.dumps(init))
+if mode == "blank":
+    answer = ""
+if mode != "noresult":
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": answer, "session_id": sid}))
+PY
 SH
 chmod +x "$FB/claude"
 # A Windows python3 can't start a script: there the probe gets a .cmd that hands its arguments to bash and the stand-in.
@@ -184,7 +216,7 @@ if [[ "$PY_OS" == nt ]]; then
 fi
 # The stand-in calls this to write its transcript (the same synthetic form as above).
 { echo 'set -uo pipefail'; declare -f transcript; echo 'UF='"'$UF'"; echo 'I='"'$I'"; echo "IMPORTS=(${IMPORTS[*]})"; echo 'transcript "$@"'; } > "$TMP/write_transcript.sh"
-export FAKE_TRANSCRIPT="$TMP/write_transcript.sh" FAKE_PROJECTS="$P" FAKE_ANSWER_FILES="$I/$RULES"
+export FAKE_TRANSCRIPT="$TMP/write_transcript.sh" FAKE_PROJECTS="$P" FAKE_ANSWER_FILES="$I/$RULES" FAKE_SKILL_DIR="$SK"
 export FAKE_SEEN="$TMP/probe-seen" FAKE_ARGS="$TMP/probe-args" FAKE_ENV="$TMP/probe-env"
 
 STUB="$ROOT/bin/kit-load-check-stub"
@@ -213,20 +245,32 @@ rep=$(lc); rc=$?;                              passes "LC0 a passing probe, its 
                                                want_ok "LC0b the report holds no canary and no absolute path" $? "$rep"
 # The check sees that each skill is linked or copied, not that it loads: its probe asks for the rules file's canary
 # alone, so a lock on skills goes unnoticed by it. Its report says so, rather than claim more than it checks.
-[[ "$rep" == *"skills: gates linked"*"; whether they load isn't checked"* ]]
-                                               want_ok "LC16 the report says the skills are linked, and that whether they load isn't checked" $? "$rep"
+[[ "$rep" == *"skills: gates linked"*"; whether Claude Code lists them is the probe's, whether a body loads isn't checked"* ]]
+                                               want_ok "LC16 the report says the skills are linked, that the probe checks Claude Code lists them, and that whether a body loads isn't checked" $? "$rep"
 fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290
+# The probe also reads, from the session's start event, the skills Claude Code found: one of the kit's missing fails,
+# naming it, and a start event with no skills list fails as such, never as a pass (B9).
+fresh_projects; rep=$(lc FAKE_SKILLS="gates session-close"); rc=$?
+                                               fails_for "LC17 a start event missing one of the kit's skills fails, naming it" $rc "$rep" "probe: skill record-stamps not seen by Claude Code"
+fresh_projects; rep=$(lc FAKE_MODE=noskills); rc=$?
+                                               fails_for "LC18 a start event with no skills list fails, saying the probe can't see skills" $rc "$rep" "probe: can't tell: the session's start event lists no skills"
+fresh_projects; rm -f "$FAKE_ARGS"; rep=$(lc); rc=$?
+a=$(tr '\0' '\n' < "$FAKE_ARGS" 2>/dev/null); [[ "$a" == *$'--output-format\nstream-json'* && "$a" == *$'\n--verbose'* ]] || rc=1
+                                               passes "LC19 the probe asks for the session's events, stream-json with --verbose, and a full answer passes" $rc "$rep"
 rep=$(lc FAKE_MODE=auth); rc=$?;               fails_for "LC4 a probe that can't authenticate fails, for auth" $rc "$rep" "probe: auth"
 rep=$(lc FAKE_MODE=timeout); rc=$?;            fails_for "LC5 a probe that runs past its time fails, for timeout" $rc "$rep" "probe: timeout"
 fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290
 rm "$SK/gates"; ln -s "$TMP" "$SK/gates"
-rep=$(lc); rc=$?;                              fails_for "LC7 a user-level skill whose link points elsewhere fails" $rc "$rep" "skill gates: its link points elsewhere than the pinned install"
+rep=$(lc); rc=$?;                              fails_for "LC7 a user-level skill whose link points elsewhere fails, and the probe's session, finding no skill there, doesn't list it" $rc "$rep" "skill gates: its link points elsewhere than the pinned install" "probe: skill gates not seen by Claude Code"
 skills; rm "$SK/record-stamps"; mkdir -p "$SK/record-stamps"; { cat "$I/.claude/skills/record-stamps/SKILL.md"; echo "an edit"; } > "$SK/record-stamps/SKILL.md"
 rep=$(lc); rc=$?;                              fails_for "LC8 a user-level skill copy that differs from the pinned install fails" $rc "$rep" "skill record-stamps: its copy differs from the pinned install"
 skills; rm -rf "$SK/record-stamps"; mkdir -p "$SK/record-stamps"; cp "$I/.claude/skills/record-stamps/SKILL.md" "$SK/record-stamps/"
 fresh_projects; rep=$(lc); rc=$?;           passes "LC9 a skill copy that matches the pinned install passes" $rc "$rep"
 skills; fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290
 rep=$(lc FAKE_MODE=nocanary); rc=$?;           fails_for "LCe a probe whose answer lacks the rules file's canary fails, naming the rules file" $rc "$rep" "probe: missing from the answer: $RULES"
+# The probe reads stream-json since B9, so a lookup that came back blank must read as a failure, never a pass.
+rep=$(lc FAKE_MODE=blank); rc=$?;              fails_for "LC20 a probe whose answer is empty fails, naming the rules file, not passing" $rc "$rep" "probe: missing from the answer: $RULES"
+rep=$(lc FAKE_MODE=noresult); rc=$?;           fails_for "LC21 a probe whose output has a start event but no result fails, saying it can't tell" $rc "$rep" "probe: can't tell: its output was not the JSON it should be"
 # The user level's rules entry is the kit's link into the pinned install, or a byte-equal copy: missing, linked into another release, or a copy that differs, it fails, as a skill entry does. And a
 # user-level CLAUDE.md that still imports a kit file loads the kit a second way, from whichever release it names, so it
 # fails too: the kit loads from the rules folder alone.
@@ -389,10 +433,24 @@ rep=$(lc); rc=$?;                              passes "LQ5 transcripts the old s
 # The stub reads the kit's user pin and verifies the whole install against it before any of the install's code runs; a
 # refusal still reports, so a stopped check is never a silent one.
 fresh_projects; transcript "$P/-a/s1.jsonl" 2.1.290
-stub_refused() {  # NAME RC REPORT REASON: refused, with one REFUSING line, for REASON, and the report says so
-    local n; n=$(grep -c 'REFUSING' "$TMP/lc.out")
-    if [[ $2 -ne 0 && $n -eq 1 && "$(cat "$TMP/lc.out")" == *"$4"* && "$3" == *"kit load check: FAIL"* && "$3" == *"$4"* ]]; then result "$1" 0
-    else result "$1" 1 "exit $2, $n refusal(s), want '$4': $(head -c 200 "$TMP/lc.out" | tr '\n' ' ') | report: $(echo $3 | cut -c1-120)"; fi; }
+stub_refused() {  # NAME RC REPORT REASON: refused, with one REFUSING line, for REASON, and the report says so; the
+    # refusal's EXIT in refusals.txt agrees with RC (exit_wrong)
+    local n ew; n=$(grep -c 'REFUSING' "$TMP/lc.out"); ew=$(exit_wrong "$(cat "$TMP/lc.out")" "$2")
+    if [[ $2 -ne 0 && $n -eq 1 && -z "$ew" && "$(cat "$TMP/lc.out")" == *"$4"* && "$3" == *"kit load check: FAIL"* && "$3" == *"$4"* ]]; then result "$1" 0
+    else result "$1" 1 "exit $2, $n refusal(s), want '$4'${ew:+, its EXIT: $ew}: $(head -c 200 "$TMP/lc.out" | tr '\n' ' ') | report: $(echo $3 | cut -c1-120)"; fi; }
+# LE0, exit_wrong's own control: a scratch list gives kit-load-check-stub/no-user-pin EXIT 2 and no-hasher 1+; a line
+# naming the first with exit 1 is flagged, the second with exit 4 isn't and with exit 0 is; the real list and an
+# unlisted name flag nothing.
+LEL="$TMP/le0-list.txt"
+awk -F'\t' -v OFS='\t' '$1 == "kit-load-check-stub/no-user-pin" { $2 = 2 } $1 == "kit-load-check-stub/no-hasher" { $2 = "1+" } 1' "$RN_LIST" > "$LEL"
+le=$(RN_LIST="$LEL" exit_wrong 'kit-load-check-stub: REFUSING [kit-load-check-stub/no-user-pin] -- EXIT 2, saw 1.' 1)
+le1=$(RN_LIST="$LEL" exit_wrong 'kit-load-check-stub: REFUSING [kit-load-check-stub/no-hasher] -- EXIT 1+, saw 4.' 4)
+le2=$(RN_LIST="$LEL" exit_wrong 'kit-load-check-stub: REFUSING [kit-load-check-stub/no-hasher] -- EXIT 1+, saw 0.' 0)
+le3=$(exit_wrong 'kit-load-check-stub: REFUSING [kit-load-check-stub/no-user-pin] -- the real list, saw 1.' 1)
+le4=$(RN_LIST="$LEL" exit_wrong 'kit-load-check-stub: REFUSING [kit-load-check-stub/zz-unlisted] -- saw 9.' 9)
+[[ "$le" == *"[kit-load-check-stub/no-user-pin]"*"EXIT 2"*"exit 1"* && -z "$le1" && "$le2" == *"EXIT 1+"*"exit 0"* \
+   && -z "$le3" && -z "$le4" ]]
+                                               want_ok "LE0 exit_wrong flags a listed refusal whose EXIT disagrees with the status the case saw, 1+ taking any non-zero status" $? "[$le] [$le1] [$le2] [$le3] [$le4]"
 rm -f "$UPIN"; rep=$(lc); rc=$?;              stub_refused "LS1 the stub refuses with no user pin" $rc "$rep" "no kit user pin can be read"
 printf 'release=v1.0.0\nmanifest=sha256:12\n' > "$UPIN"
 rep=$(lc); rc=$?;                              stub_refused "LS2 the stub refuses a malformed user pin" $rc "$rep" "the kit user pin is malformed"
@@ -597,9 +655,10 @@ eg_stub_run "" bash
 if [[ -z "$b3why" ]]; then eg_stub_run " (bash 3)" "$B3"
 else for c in EG25 EG26 EG27; do skip "$c (bash 3)" "$b3why"; done; fi
 # The stub's ping, likewise: a copy with one refusal its ping doesn't list, its reason naming a stand-in term, put right
-# after its first check, pings the fixed line and keeps the reason in the report.
+# after its first check, pings the fixed line and keeps the reason in the report. It is written in the helper's form,
+# its name first (A2.6).
 mkcurl
-inj "$STUB" "$TMP/stub-plant/kit-load-check-stub" 'release=""' "refuse \"the machine names $PL here\""; sp=$?
+inj "$STUB" "$TMP/stub-plant/kit-load-check-stub" 'release=""' "refuse kit-load-check-stub/planted \"the machine names $PL here\""; sp=$?
 fresh_projects; LC_STUB="$TMP/stub-plant/kit-load-check-stub"; stub_ping_run; LC_STUB=$STUB; (( sp == 0 )) || rc=0
                                                stub_ping_clean "LP1f a refusal the stub's ping doesn't list goes as a fixed line, its reason kept in the report" $rc "$rep" "the stub refused (the report on the machine says why)" "$PL"
 # The fail ping under bash 3 too: a stock Mac runs the stub under its /bin/bash, 3.2, where EG25 to EG27 set no ping, so

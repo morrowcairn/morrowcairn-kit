@@ -6,9 +6,14 @@
 #   bin/kit-pin check                          this spawn's pin, install, stubs and hooks path, whether pre-push scans
 #                                              binaries, and where it reads the do-not-publish list; changes nothing
 #   bin/kit-pin to RELEASE                     move this spawn's pin, keeping the move only if it tests green
+#   bin/kit-pin to RELEASE --rehearse          make the move in a copy of this clone, in a folder of its own, and
+#                                              say whether it passed; this clone and its lists folder never change
 #   bin/kit-pin migrate RELEASE                move a spawn that runs a hooks path onto RELEASE's install
-#   bin/kit-pin restore KIT-CLONE              rebuild the pinned install from a clone of the kit, then check
+#   bin/kit-pin restore KIT-CLONE              rebuild the pinned install from a clone of the kit where it is missing,
+#                                              differs or has a file that can't run; write both stubs where the clone
+#                                              has none or another release's and no hooks path is set; then check
 #   bin/kit-pin repin local|ci [--first] [--ruling §N]
+#   bin/kit-pin repin local --row N --ruling §N < FILE   one row of the list replaced by FILE's one line
 #                                              pin the do-not-publish list (.git/leak-pattern.pin, untracked, in the
 #                                              shared git folder every worktree reads, as pre-push does) or CI's
 #                                              list (.github/leak-pattern.pin, tracked, from its record
@@ -72,9 +77,9 @@ KIT_DIR=${SELF%/bin/*}                            # the kit or the install this 
 # A command this script tells its user to run names this script by its absolute path, so it runs from inside a project,
 # which has no bin/ (install test PC1 to PC10).
 KP_CMD="\"$SELF\""
-refuse() {   # REASON [LINE...]: the refusal, then each line after it, as written ("You can: ...")
-    echo "kit-pin: REFUSING -- $1." >&2
-    shift
+refuse() {   # NAME REASON [LINE...]: the refusal, its name from leak-detection/refusals.txt, then each line after it
+    echo "kit-pin: REFUSING [$1] -- $2." >&2
+    shift 2
     while (( $# )); do echo "  $1" >&2; shift; done
     exit 1
 }
@@ -86,12 +91,19 @@ refuse() {   # REASON [LINE...]: the refusal, then each line after it, as writte
 # clears KIT_UNDO first, so a refusal that has already put things back doesn't do it twice. A refusal's own non-zero
 # exit is left as it is.
 kit_passed=0; KIT_UNDO=""
+# A rehearsal's folders (to --rehearse), set by that step alone: emptied here, so none is ever taken from the
+# environment, and a real run can't be pointed at another lists folder or have a folder removed (install test RH4).
+KP_REHEARSAL=""; KP_REHEARSAL_DIR=""
 kit_guard() {
     local rc=$?
+    [[ "${kit_passed:-0}" == 1 ]] || [[ -z "${KIT_UNDO:-}" ]] || "$KIT_UNDO"
+    # A rehearsal's copy, and the lists folder it made there, go however to ends (install test RH1, RH2), one left that
+    # can't be entered too: each folder in it is made enterable and writable first, inside the rehearsal's folder only
+    # (RH10).
+    if [[ -n "$KP_REHEARSAL_DIR" ]]; then cd / && chmod -R u+rwX "$KP_REHEARSAL_DIR" 2>/dev/null; rm -rf "${KP_REHEARSAL_DIR:?}"; fi
     [[ "${kit_passed:-0}" == 1 ]] && return
-    [[ -z "${KIT_UNDO:-}" ]] || "$KIT_UNDO"
     if [[ $rc -eq 0 ]]; then
-        echo "kit-pin: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+        echo "kit-pin: REFUSING [kit-pin/stopped-early] -- the check stopped before it finished, so what it had not reached was never checked." >&2
         exit 1
     fi
 }
@@ -174,13 +186,29 @@ kit_verify_install() {   # DIR RELEASE MANIFEST-HASH: 0, or 1 with KV_ERROR sayi
     return 0
 }
 
-release_name() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || refuse "$1 is not a release name (vX.Y.Z)"; }
+# The manifest holds contents, not modes, so an install whose hook lost its execute bit passes the verifier above while
+# the stub refuses to run that hook. This check is kit-pin's alone, for verify and restore (install test KV5, KR4); the
+# stub keeps its own check of the one hook it runs. A file that must run is one whose first two bytes are #!, but those
+# under patterns/, copy-paste examples the kit never runs (one ships without the bit). Run after the verifier, so every
+# file it reads is the release's.
+kit_install_modes() {   # DIR: 0, or 1 with KX_ERROR naming the first such file that isn't executable
+    local dir=$1 sum path
+    KX_ERROR=""
+    while read -r sum path; do
+        case "$path" in patterns/*) continue ;; esac
+        [[ "$(head -c 2 "$dir/$path" 2>/dev/null)" == '#!' ]] || continue
+        if [[ ! -x "$dir/$path" ]]; then KX_ERROR="$path in the install is not executable, so it can't run"; return 1; fi
+    done < "$dir/MANIFEST.sha256"
+    return 0
+}
+
+release_name() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || refuse kit-pin/not-a-release-name "$1 is not a release name (vX.Y.Z)"; }
 manifest_hash() { local s; s=$(kit_sha256 < "$1/MANIFEST.sha256" 2>/dev/null) || return 1; printf 'sha256:%s' "${s%% *}"; }
 clean_tree() { [[ -z "$(git status --porcelain --untracked-files=no)" ]]; }
 
 in_clone() {   # sets TOP and HOOKS, and moves to TOP
-    TOP=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "this is not inside a git clone"
-    cd "$TOP" || refuse "could not enter $TOP"
+    TOP=$(git rev-parse --show-toplevel 2>/dev/null) || refuse kit-pin/not-a-clone "this is not inside a git clone"
+    cd "$TOP" || refuse kit-pin/top-folder-unreadable "could not enter $TOP"
     HOOKS=$(git rev-parse --path-format=absolute --git-common-dir)/hooks
 }
 
@@ -234,7 +262,7 @@ in_list() { local n=$1 x; shift; for x in "$@"; do [[ "$x" == "$n" ]] && return 
 read_pin() {   # sets PIN_RELEASE and PIN_MANIFEST from kit.pin, or refuses
     local line n=0
     PIN_RELEASE=""; PIN_MANIFEST=""
-    [[ -f kit.pin ]] || refuse "no kit.pin in this clone's top folder" \
+    [[ -f kit.pin ]] || refuse kit-pin/no-pin "no kit.pin in this clone's top folder" \
         "A spawn on a hooks path is pinned by migrate ($KP_CMD migrate vX.Y.Z); kit.pin may also be in this project's history."
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1))
@@ -244,7 +272,7 @@ read_pin() {   # sets PIN_RELEASE and PIN_MANIFEST from kit.pin, or refuses
         esac
     done < kit.pin
     [[ $n -eq 2 && "$PIN_RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$PIN_MANIFEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
-        || refuse "kit.pin is malformed" "It holds two lines: release=vX.Y.Z and manifest=sha256:<64 hex>."
+        || refuse kit-pin/pin-malformed "kit.pin is malformed" "It holds two lines: release=vX.Y.Z and manifest=sha256:<64 hex>."
 }
 
 # Where a release's hooks read this project's list, as READER, that release's list reader, names it from the work tree's
@@ -259,7 +287,13 @@ list_place() {   # READER
                    kit_list_file || { printf "%s" "$LP_ERROR"; exit 1; }
                    printf "%s\n%s\n%s" "$KL_ID" "$KL_FILE" "$KL_SHOW"' _ "$1" 2>/dev/null); rc=$?
     case $rc in
-        0) LS_ID=${out%%$'\n'*}; out=${out#*$'\n'}; LS_FILE=${out%%$'\n'*}; LS_SHOW=${out#*$'\n'}; return 0 ;;
+        0) LS_ID=${out%%$'\n'*}; out=${out#*$'\n'}; LS_FILE=${out%%$'\n'*}; LS_SHOW=${out#*$'\n'}
+           # In a rehearsal the place is read where it holds a list, which nothing here writes over; otherwise a place
+           # in the rehearsal's own folder stands in, so the real lists folder is never written (install test RH1, RH3).
+           if [[ -n "$KP_REHEARSAL" && ! -e "$LS_FILE" && ! -L "$LS_FILE" ]]; then
+               LS_FILE="$KP_REHEARSAL/$LS_ID"; LS_SHOW="the rehearsal's own place for $LS_SHOW"
+           fi
+           return 0 ;;
         2) LS_FILE="$(git rev-parse --git-dir)/leak-pattern"; LS_SHOW=".git/leak-pattern"; return 2 ;;
         *) LS_ERROR=$out; [[ -n "$LS_ERROR" ]] || LS_ERROR="the list reader did not load"; return 1 ;;
     esac
@@ -280,11 +314,11 @@ move_check() {   # READER: returns when the move can go ahead; refuses otherwise
     [[ -e kit.list-id || -L kit.list-id ]] || return 0             # a new id names a file nothing holds yet
     list_place "$1"; rc=$?
     (( rc != 2 )) || return 0
-    (( rc == 0 )) || refuse "the list's place can't be found: $LS_ERROR" "Nothing was changed."
+    (( rc == 0 )) || refuse kit-pin/list-place-unknown "the list's place can't be found: $LS_ERROR" "Nothing was changed."
     if [[ -e "$LS_FILE" || -L "$LS_FILE" ]]; then
-        [[ -f "$LS_FILE" && ! -L "$LS_FILE" ]] || refuse "$LS_SHOW is not a plain file, so the list can't be moved there" "Nothing was changed."
+        [[ -f "$LS_FILE" && ! -L "$LS_FILE" ]] || refuse kit-pin/list-place-not-a-file "$LS_SHOW is not a plain file, so the list can't be moved there" "Nothing was changed."
         if [[ -e "$old" ]] && ! cmp -s "$old" "$LS_FILE"; then
-            refuse "$LS_SHOW already holds a list that differs from .git/leak-pattern; kit-pin never overwrites a list" \
+            refuse kit-pin/list-place-differs "$LS_SHOW already holds a list that differs from .git/leak-pattern; kit-pin never overwrites a list" \
                 "Decide which is this project's list, put it at $LS_SHOW and remove or keep the other yourself; nothing was changed."
         fi
     fi
@@ -347,13 +381,13 @@ back_check() {   # TARGET-READER TARGET-RELEASE
     bash -c '. "$1" && declare -F kit_list_file' _ "$1" >/dev/null 2>&1 && return 0     # the target reads the list at its place
     [[ -e kit.list-id || -L kit.list-id ]] || return 0                                  # never moved: .git/leak-pattern is its list
     list_place "$KIT_DIR/leak-detection/read-leak-pattern.sh"; rc=$?
-    (( rc == 0 )) || refuse "release $2's hooks read the list at .git/leak-pattern, and this project's list can't be found at its place to compare: ${LS_ERROR:-the reader beside this kit-pin names no place}" \
+    (( rc == 0 )) || refuse kit-pin/back-list-unfound "release $2's hooks read the list at .git/leak-pattern, and this project's list can't be found at its place to compare: ${LS_ERROR:-the reader beside this kit-pin names no place}" \
         "Nothing was changed."
     [[ -e "$LS_FILE" || -L "$LS_FILE" ]] || return 0                                    # no list at its place to differ from
     old=$(move_old)
-    [[ -e "$old" ]] || refuse "release $2's hooks read the list at .git/leak-pattern, and this clone holds none there; the project's list is at $LS_SHOW" \
+    [[ -e "$old" ]] || refuse kit-pin/back-list-missing "release $2's hooks read the list at .git/leak-pattern, and this clone holds none there; the project's list is at $LS_SHOW" \
         "You can: put a copy of $LS_SHOW at .git/leak-pattern first, byte for byte, at mode 600, then run this again. Nothing was changed."
-    cmp -s "$old" "$LS_FILE" || refuse "release $2's hooks read the list at .git/leak-pattern, which differs from the project's list at $LS_SHOW" \
+    cmp -s "$old" "$LS_FILE" || refuse kit-pin/back-list-differs "release $2's hooks read the list at .git/leak-pattern, which differs from the project's list at $LS_SHOW" \
         "You can: put a copy of $LS_SHOW at .git/leak-pattern first, byte for byte, at mode 600, then run this again. Nothing was changed."
     return 0
 }
@@ -505,7 +539,7 @@ That file is outside the repository's tracked files and is therefore never commi
 the point: the pattern IS the marker list, so committing it would publish exactly what it exists
 to hide. Its pin sits in .git, untracked too: a hash of the whole list would let anyone holding a
 guess at it confirm the guess. A list changed later is repinned: an append by the session that
-makes it, any other change citing the user's words (leak-detection/README.md, Changing the list).
+makes it; any other change needs a recorded ruling (--ruling §N; leak-detection/README.md, Changing the list).
 
 For CI, set a repository secret named LEAK_PATTERN holding a synthetic canary, machine-path patterns and an
 IP-address pattern; it never holds terms you've agreed or are required to keep confidential.
@@ -539,9 +573,9 @@ binary_report() {   # whether pre-push will scan the binaries a push carries, re
 target_install() {   # RELEASE: sets INST and INST_HASH for a release not yet pinned, or refuses
     release_name "$1"
     INST="$ROOT_DIR/$1"
-    [[ -d "$INST" ]] || refuse "no install for $1 in $ROOT_DIR" "You can: build it from a clone of the kit: tools/install-release.sh $1"
-    INST_HASH=$(manifest_hash "$INST") || refuse "the install for $1 has no readable manifest"
-    kit_verify_install "$INST" "$1" "$INST_HASH" || refuse "the install for $1 fails its own manifest: $KV_ERROR" \
+    [[ -d "$INST" ]] || refuse kit-pin/no-install "no install for $1 in $ROOT_DIR" "You can: build it from a clone of the kit: tools/install-release.sh $1"
+    INST_HASH=$(manifest_hash "$INST") || refuse kit-pin/install-no-manifest "the install for $1 has no readable manifest"
+    kit_verify_install "$INST" "$1" "$INST_HASH" || refuse kit-pin/install-fails-manifest "the install for $1 fails its own manifest: $KV_ERROR" \
         "You can: remove that install (chmod -R u+w on its folder, then delete it) and build it again from a clone of the kit: tools/install-release.sh $1"
 }
 
@@ -588,28 +622,31 @@ take_ci_copies() {   # TARGET HELD-RELEASE HELD-MANIFEST: 0, or 1 when a copy co
 }
 
 mode_verify() {
-    [[ $# -eq 2 ]] || refuse "verify takes a release and a manifest hash: $KP_CMD verify vX.Y.Z sha256:HASH"
+    [[ $# -eq 2 ]] || refuse kit-pin/verify-usage "verify takes a release and a manifest hash: $KP_CMD verify vX.Y.Z sha256:HASH"
     release_name "$1"
-    kit_verify_install "$ROOT_DIR/$1" "$1" "$2" || refuse "$KV_ERROR"
+    kit_verify_install "$ROOT_DIR/$1" "$1" "$2" || refuse kit-pin/install-unverified "$KV_ERROR"
+    kit_install_modes "$ROOT_DIR/$1" \
+        || refuse kit-pin/install-not-runnable "$KX_ERROR" "You can: rebuild the install from a project pinned to $1 ($KP_CMD restore \"\$KIT\"; KIT is your clone of the kit's public repository)." \
+               "If IT manages this machine: where the home folder is mounted noexec or programs are allow-listed, ask IT to allow running from $ROOT_DIR."
     echo "kit-pin: verify passed: the install for $1 matches $2."
     kit_passed=1                                  # ---- verify's pass point
 }
 
 mode_check() {
-    [[ $# -eq 0 ]] || refuse "check takes nothing"
+    [[ $# -eq 0 ]] || refuse kit-pin/check-usage "check takes nothing"
     local hp ihp="" h f n stub relay lrc lout paths="no hooks path" chain=0 notrun="" relayed=""
     local -a names=(pre-commit pre-push)
     in_clone; read_pin
-    kit_verify_install "$ROOT_DIR/$PIN_RELEASE" "$PIN_RELEASE" "$PIN_MANIFEST" || refuse "$KV_ERROR" \
+    kit_verify_install "$ROOT_DIR/$PIN_RELEASE" "$PIN_RELEASE" "$PIN_MANIFEST" || refuse kit-pin/install-unverified "$KV_ERROR" \
         "You can: rebuild the pinned install from this project ($KP_CMD restore \"\$KIT\"; KIT is your clone of the kit's public repository), or move the pin ($KP_CMD to vX.Y.Z)."
     ihp=$(inherited_hp) || ihp=""
     if hp=$(git config --local --get core.hooksPath); then
-        [[ "$hp" == "$HOOKS" ]] || refuse "core.hooksPath is set in this clone ($hp), so git runs no stub" \
+        [[ "$hp" == "$HOOKS" ]] || refuse kit-pin/hooks-path-set "core.hooksPath is set in this clone ($hp), so git runs no stub" \
             "Unset it where it is set (git config --show-origin --get core.hooksPath shows where)."
         paths="this clone's own hooks path on the stubs"
         [[ -z "$ihp" ]] || paths="$paths, which run $ihp's pre-commit and pre-push first"
     elif [[ -n "$ihp" ]]; then
-        refuse "core.hooksPath is set outside this clone ($ihp), so git runs that folder's hooks and no stub" \
+        refuse kit-pin/hooks-path-outside "core.hooksPath is set outside this clone ($ihp), so git runs that folder's hooks and no stub" \
             "Give this clone its own path, on the stubs and the relays, which run that folder's hooks first ($KP_CMD to $PIN_RELEASE)."
     fi
     if [[ -n "$ihp" ]] || read_chain; then chain=1; names+=("${RELAYED[@]}"); fi
@@ -619,44 +656,44 @@ mode_check() {
         f="$HOOKS/$h.project"
         [[ -e "$f" || -L "$f" ]] || continue
         is_relay "$f" && continue
-        [[ -f "$f" && -x "$f" ]] || refuse "$f, this project's own $h that kit-pin kept, is not an executable file, so the kit refuses whenever git runs $h" \
+        [[ -f "$f" && -x "$f" ]] || refuse kit-pin/project-hook-not-executable "$f, this project's own $h that kit-pin kept, is not an executable file, so the kit refuses whenever git runs $h" \
             "Restore its execute bit (chmod +x $f) or remove it."
         paths="$paths; the project's own $h kept as $h.project"
     done
     stub="$ROOT_DIR/$PIN_RELEASE/leak-detection/stub-hook"
     for h in pre-commit pre-push; do
-        [[ -f "$HOOKS/$h" ]] || refuse "the $h stub is missing from $HOOKS" "Write both stubs ($KP_CMD to $PIN_RELEASE)."
-        [[ -x "$HOOKS/$h" ]] || refuse "the $h stub is not executable, so git would skip it"
-        cmp -s "$HOOKS/$h" "$stub" || refuse "the $h stub differs from release $PIN_RELEASE's" "You can: refresh it ($KP_CMD to $PIN_RELEASE)."
+        [[ -f "$HOOKS/$h" ]] || refuse kit-pin/stub-missing "the $h stub is missing from $HOOKS" "Write both stubs ($KP_CMD to $PIN_RELEASE)."
+        [[ -x "$HOOKS/$h" ]] || refuse kit-pin/stub-not-executable "the $h stub is not executable, so git would skip it"
+        cmp -s "$HOOKS/$h" "$stub" || refuse kit-pin/stub-differs "the $h stub differs from release $PIN_RELEASE's" "You can: refresh it ($KP_CMD to $PIN_RELEASE)."
     done
     # The relays, where an org's path is set or a former path is chained: the paths they read the ones git reads now,
     # each relay the release's, and every hook a chained folder holds that a relay can carry relayed, since the stub
     # refuses every commit until it is (install test HM4b, HM6, HM10).
     if (( chain )); then
-        read_chain || refuse "this clone records no hooks path for relays to run ($ihp's), so git runs none of its hooks but pre-commit and pre-push" \
+        read_chain || refuse kit-pin/no-chain-record "this clone records no hooks path for relays to run ($ihp's), so git runs none of its hooks but pre-commit and pre-push" \
             "Record it ($KP_CMD to $PIN_RELEASE)."
-        [[ "$CH_ORG" == "$ihp" ]] || refuse "this clone relays the hooks of ${CH_ORG:-no org hooks path}, but git reads ${ihp:-none} now" \
+        [[ "$CH_ORG" == "$ihp" ]] || refuse kit-pin/hooks-path-changed "this clone relays the hooks of ${CH_ORG:-no org hooks path}, but git reads ${ihp:-none} now" \
             "You can: record the path git reads now ($KP_CMD to $PIN_RELEASE)."
         relay="$ROOT_DIR/$PIN_RELEASE/leak-detection/org-hook"
         for h in "${RELAYED[@]}"; do
             f="$HOOKS/$h"
             if is_relay "$f"; then
-                [[ -x "$f" ]] || refuse "the $h relay is not executable, so git would skip it"
-                cmp -s "$f" "$relay" || refuse "$f differs from release $PIN_RELEASE's relay" "You can: refresh it ($KP_CMD to $PIN_RELEASE)."
+                [[ -x "$f" ]] || refuse kit-pin/relay-not-executable "the $h relay is not executable, so git would skip it"
+                cmp -s "$f" "$relay" || refuse kit-pin/relay-differs "$f differs from release $PIN_RELEASE's relay" "You can: refresh it ($KP_CMD to $PIN_RELEASE)."
                 relayed="$relayed $h"
             elif holds_hook "$CH_ORG" "$h" || holds_hook "$CH_FORMER" "$h"; then
                 holds_hook "$CH_ORG" "$h" && n=$CH_ORG || n=$CH_FORMER
-                refuse "$n holds $h, a hook this clone doesn't relay, so git skips it and the stub refuses every commit" \
+                refuse kit-pin/unrelayed-hook "$n holds $h, a hook this clone doesn't relay, so git skips it and the stub refuses every commit" \
                     "You can: relay it ($KP_CMD to $PIN_RELEASE)."
             fi
         done
         for h in pre-commit pre-push; do
             f="$HOOKS/$h.project"
             if is_relay "$f"; then
-                cmp -s "$f" "$relay" || refuse "$f, the relay that runs $CH_FORMER's $h, isn't release $PIN_RELEASE's relay" \
+                cmp -s "$f" "$relay" || refuse kit-pin/former-relay-differs "$f, the relay that runs $CH_FORMER's $h, isn't release $PIN_RELEASE's relay" \
                     "You can: refresh it ($KP_CMD to $PIN_RELEASE)."
             elif holds_hook "$CH_FORMER" "$h"; then
-                refuse "$CH_FORMER holds $h, a hook this clone doesn't relay, so git skips it and the stub refuses every commit" \
+                refuse kit-pin/unrelayed-hook "$CH_FORMER holds $h, a hook this clone doesn't relay, so git skips it and the stub refuses every commit" \
                     "You can: relay it ($KP_CMD to $PIN_RELEASE)."
             fi
         done
@@ -692,17 +729,46 @@ mode_check() {
     fi
 }
 
+# A rehearsal (B5, RL8): to's move made in a copy of this clone, in a folder of to's own, with the list's place there
+# too where the real one holds no list, so this clone, its hooks and its lists folder never change, and a refusal there
+# is the one the move would give. The copy holds the clone's git folder, a list kept at .git/leak-pattern among it, in a
+# folder only its user can read, removed however to ends (install test RH1 to RH5). A clone pinned where an org sets the
+# hooks path holds its own path to its stubs' folder, written as an absolute path into its git folder: the copy's is set
+# to the copy's own folder, so the rehearsal checks what the move would; any other path of the clone's own is left as it
+# is, and refused there as the move refuses it (install test RH6 to RH8).
+rehearse_to() {   # RELEASE
+    local rel=$1 top own
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse kit-pin/not-a-clone "this is not inside a git clone"
+    [[ "$(git rev-parse --absolute-git-dir 2>/dev/null)" == "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]] \
+        || refuse kit-pin/rehearse-worktree "a rehearsal copies the clone whole, and this linked worktree's git folder is the main clone's" \
+            "Rehearse from the main clone."
+    own=$(git rev-parse --path-format=absolute --git-common-dir)/hooks
+    KP_REHEARSAL_DIR=$(mktemp -d) || refuse kit-pin/no-save-folder "could not make a folder for the rehearsal"
+    cp -pR "$top" "$KP_REHEARSAL_DIR/clone" 2>/dev/null \
+        || refuse kit-pin/rehearse-copy-failed "the clone couldn't be copied into the rehearsal's folder" "Nothing was changed."
+    KP_REHEARSAL="$KP_REHEARSAL_DIR/lists"
+    echo "kit-pin: rehearsing the move to $rel in a copy of this clone ($KP_REHEARSAL_DIR); nothing in this clone or its lists folder changes."
+    cd "$KP_REHEARSAL_DIR/clone" || refuse kit-pin/rehearse-copy-failed "the copy of the clone couldn't be entered" "Nothing was changed."
+    if [[ "$(git config --local --get core.hooksPath)" == "$own" ]]; then
+        git config --local core.hooksPath "$(git rev-parse --path-format=absolute --git-common-dir)/hooks" \
+            || refuse kit-pin/rehearse-copy-failed "the copy's own hooks path couldn't be set to its stubs' folder" "Nothing was changed."
+    fi
+    mode_to "$rel"
+    echo "kit-pin: the rehearsal passed: the move to $rel worked in the copy, now removed; this clone, its hooks and its lists folder are as they were. Make the move with: $KP_CMD to $rel"
+}
+
 mode_to() {
-    [[ $# -eq 1 ]] || refuse "to takes one release: $KP_CMD to vX.Y.Z"
+    if [[ $# -eq 2 && "$2" == --rehearse && -z "$KP_REHEARSAL" ]]; then rehearse_to "$1"; return; fi
+    [[ $# -eq 1 ]] || refuse kit-pin/to-usage "to takes one release: $KP_CMD to vX.Y.Z, or $KP_CMD to vX.Y.Z --rehearse to try the move in a copy first"
     local rel=$1 hp ihp="" set_hp=0 f h n=0 line rc held_rel="" held_man="" p chain=0 former=""
     local -a kept=() names=(pre-commit pre-push) saved=(pre-commit pre-push) relays=() fproj=()
     in_clone; target_install "$rel"
-    clean_tree || refuse "the work tree has uncommitted changes" "Commit or stash them, so the pin move is the only change left to commit."
+    clean_tree || refuse kit-pin/uncommitted-changes "the work tree has uncommitted changes" "Commit or stash them, so the pin move is the only change left to commit."
     # This clone's own hooks path is the stubs' folder, set here when an org's IT sets one at the system or global level,
     # so git runs the stubs and each stub runs the org's hook first; any other path of this clone's own is refused.
     ihp=$(inherited_hp) || ihp=""
     if hp=$(git config --local --get core.hooksPath); then
-        [[ "$hp" == "$HOOKS" ]] || refuse "core.hooksPath is set in this clone ($hp)" \
+        [[ "$hp" == "$HOOKS" ]] || refuse kit-pin/hooks-path-set "core.hooksPath is set in this clone ($hp)" \
             "A spawn that runs a hooks path moves with: $KP_CMD migrate $rel"
     elif [[ -n "$ihp" ]]; then
         set_hp=1
@@ -714,7 +780,7 @@ mode_to() {
     if read_chain; then chain=1; former=$CH_FORMER; fi
     [[ -z "$ihp" ]] || chain=1
     if (( chain )); then
-        [[ -f "$INST/leak-detection/org-hook" ]] || refuse "release $rel ships no relay (leak-detection/org-hook), so moving to it would stop running ${ihp:-$former}'s hooks other than pre-commit and pre-push" \
+        [[ -f "$INST/leak-detection/org-hook" ]] || refuse kit-pin/no-relay-in-release "release $rel ships no relay (leak-detection/org-hook), so moving to it would stop running ${ihp:-$former}'s hooks other than pre-commit and pre-push" \
             "Move to a release that ships one."
         for h in "${RELAYED[@]}"; do
             if holds_hook "$ihp" "$h" || holds_hook "$former" "$h" || [[ -e "$HOOKS/$h.project" || -L "$HOOKS/$h.project" ]]; then
@@ -731,18 +797,18 @@ mode_to() {
         [[ -e "$f" || -L "$f" ]] || continue
         is_stub "$f" && continue
         is_relay "$f" && continue
-        [[ -f "$f" && ! -L "$f" && -x "$f" ]] || refuse "$f is this project's own hook, and the kit can't run it in its place (a link, a folder, or not executable)" \
+        [[ -f "$f" && ! -L "$f" && -x "$f" ]] || refuse kit-pin/project-hook-unrunnable "$f is this project's own hook, and the kit can't run it in its place (a link, a folder, or not executable)" \
             "Make it an executable file, or move it out of the way: kit-pin to never overwrites a hook."
-        [[ ! -e "$f.project" && ! -L "$f.project" ]] || refuse "$f is this project's own hook, and $f.project is already there" \
+        [[ ! -e "$f.project" && ! -L "$f.project" ]] || refuse kit-pin/project-hook-kept-already "$f is this project's own hook, and $f.project is already there" \
             "Move one of them out of the way: kit-pin to never overwrites a hook."
         kept+=("$h")
     done
     for h in ${fproj[@]+"${fproj[@]}"}; do
         f="$HOOKS/$h.project"
-        [[ ! -e "$f" && ! -L "$f" ]] || is_relay "$f" || refuse "$f is this project's own $h, where the relay for $former's $h goes" \
+        [[ ! -e "$f" && ! -L "$f" ]] || is_relay "$f" || refuse kit-pin/project-hook-in-relay-place "$f is this project's own $h, where the relay for $former's $h goes" \
             "Move it out of the way: kit-pin to never overwrites a hook."
     done
-    [[ -f kit-pin.tests ]] || refuse "no kit-pin.tests" \
+    [[ -f kit-pin.tests ]] || refuse kit-pin/no-tests-file "no kit-pin.tests" \
         "List this spawn's own test commands there, one per line; an empty list is a choice, written down."
     # The list's place, where the target release's hooks read it: refused here, before anything is written, when a list
     # there differs from the one this clone holds.
@@ -757,7 +823,7 @@ mode_to() {
         done < kit.pin
     fi
     # Keep what the move replaces, byte for byte, and put it back on any red.
-    SAVE=$(mktemp -d) || refuse "could not make a folder to keep the current pin and stubs in"
+    SAVE=$(mktemp -d) || refuse kit-pin/no-save-folder "could not make a folder to keep the current pin and stubs in"
     [[ -e kit.pin ]] && cp -p kit.pin "$SAVE/kit.pin"
     for h in "${saved[@]}"; do [[ -e "$HOOKS/$h" ]] && cp -p "$HOOKS/$h" "$SAVE/$h"; done
     if (( chain )); then
@@ -791,51 +857,51 @@ mode_to() {
     KIT_UNDO=rollback
     printf 'release=%s\nmanifest=%s\n' "$rel" "$INST_HASH" > kit.pin
     if ! move_list "$INST/leak-detection/read-leak-pattern.sh"; then
-        rollback; refuse "$MV_ERROR" "kit.pin and both stubs are back as they were."
+        rollback; refuse kit-pin/list-move-failed "$MV_ERROR" "kit.pin and both stubs are back as they were."
     fi
     # kit-pin.tests run before anything is committed, on the work tree and the index, so a kit.list-id the move made is
     # staged, as a CI copy it takes is: a test reading the index sees what the commit will hold (upgrade test U3,
     # install test LM4b). kit.pin is left for the person to commit.
     if (( MV_ID )) && ! git add -- kit.list-id; then
-        rollback; refuse "could not stage kit.list-id" "kit.pin and both stubs are back as they were."
+        rollback; refuse kit-pin/list-id-unstaged "could not stage kit.list-id" "kit.pin and both stubs are back as they were."
     fi
     mkdir -p "$HOOKS"
     for h in ${kept[@]+"${kept[@]}"}; do
-        cp -p "$HOOKS/$h" "$HOOKS/$h.project" || { rollback; refuse "could not keep $HOOKS/$h as $h.project" "Nothing was changed."; }
+        cp -p "$HOOKS/$h" "$HOOKS/$h.project" || { rollback; refuse kit-pin/project-hook-not-kept "could not keep $HOOKS/$h as $h.project" "Nothing was changed."; }
     done
     if (( set_hp )) && ! git config --local core.hooksPath "$HOOKS"; then
-        rollback; refuse "could not set this clone's own hooks path to $HOOKS" "kit.pin and both stubs are back as they were."
+        rollback; refuse kit-pin/hooks-path-not-written "could not set this clone's own hooks path to $HOOKS" "kit.pin and both stubs are back as they were."
     fi
     if ! install -m 0755 "$INST/leak-detection/stub-hook" "$HOOKS/pre-commit" \
        || ! install -m 0755 "$INST/leak-detection/stub-hook" "$HOOKS/pre-push"; then
-        rollback; refuse "could not write the stubs into $HOOKS" "kit.pin and both stubs are back as they were."
+        rollback; refuse kit-pin/stubs-unwritten "could not write the stubs into $HOOKS" "kit.pin and both stubs are back as they were."
     fi
     if (( chain )); then
         for h in "${RELAYED[@]}"; do
             if in_list "$h" ${relays[@]+"${relays[@]}"}; then
                 install -m 0755 "$INST/leak-detection/org-hook" "$HOOKS/$h" \
-                    || { rollback; refuse "could not write the $h relay into $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
+                    || { rollback; refuse kit-pin/relay-unwritten "could not write the $h relay into $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
             elif is_relay "$HOOKS/$h"; then
-                rm -f "$HOOKS/$h" || { rollback; refuse "could not remove the $h relay from $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
+                rm -f "$HOOKS/$h" || { rollback; refuse kit-pin/relay-unremoved "could not remove the $h relay from $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
             fi
         done
         for h in pre-commit pre-push; do
             if in_list "$h" ${fproj[@]+"${fproj[@]}"}; then
                 install -m 0755 "$INST/leak-detection/org-hook" "$HOOKS/$h.project" \
-                    || { rollback; refuse "could not write the relay for $former's $h into $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
+                    || { rollback; refuse kit-pin/relay-unwritten "could not write the relay for $former's $h into $HOOKS" "kit.pin, the stubs and the relays are back as they were."; }
             elif is_relay "$HOOKS/$h.project"; then
-                rm -f "$HOOKS/$h.project" || { rollback; refuse "could not remove the relay $HOOKS/$h.project" "kit.pin, the stubs and the relays are back as they were."; }
+                rm -f "$HOOKS/$h.project" || { rollback; refuse kit-pin/relay-unremoved "could not remove the relay $HOOKS/$h.project" "kit.pin, the stubs and the relays are back as they were."; }
             fi
         done
         printf '%s\n%s\n' "$ihp" "$former" > "$HOOKS/$CHAIN_FILE" \
-            || { rollback; refuse "could not record the hooks paths the relays run in $HOOKS/$CHAIN_FILE" "kit.pin, the stubs and the relays are back as they were."; }
+            || { rollback; refuse kit-pin/chain-unrecorded "could not record the hooks paths the relays run in $HOOKS/$CHAIN_FILE" "kit.pin, the stubs and the relays are back as they were."; }
     fi
     export KIT_INSTALL="$INST"
     if ! bash -c '. "$1" && read_leak_pattern_selftest' _ "$INST/leak-detection/read-leak-pattern.sh" >/dev/null 2>&1; then
-        rollback; refuse "release $rel's list reader failed its selftest" "kit.pin and both stubs are back as they were."
+        rollback; refuse kit-pin/reader-selftest-failed "release $rel's list reader failed its selftest" "kit.pin and both stubs are back as they were."
     fi
     if ! take_ci_copies "$rel" "$held_rel" "$held_man"; then
-        rollback; refuse "could not write release $rel's CI copy into this project" "kit.pin, both stubs and the copies are back as they were."
+        rollback; refuse kit-pin/ci-copy-unwritten "could not write release $rel's CI copy into this project" "kit.pin, both stubs and the copies are back as they were."
     fi
     if ! "$INST/leak-detection/check-copies.sh" kit-pin; then   # it prints its own refusal
         rollback; echo "  kit.pin and both stubs are back as they were." >&2; exit 1
@@ -846,7 +912,7 @@ mode_to() {
         bash -c "$line" < /dev/null
         rc=$?
         if (( rc != 0 )); then
-            rollback; refuse "kit-pin.tests line $n failed (exit $rc) under $rel" "kit.pin and both stubs are back as they were."
+            rollback; refuse kit-pin/tests-failed "kit-pin.tests line $n failed (exit $rc) under $rel" "kit.pin and both stubs are back as they were."
         fi
     done < kit-pin.tests
     KIT_UNDO=""                                   # the move is kept: nothing to put back from here on
@@ -874,13 +940,13 @@ mode_to() {
 }
 
 mode_migrate() {
-    [[ $# -eq 1 ]] || refuse "migrate takes one release: $KP_CMD migrate vX.Y.Z"
+    [[ $# -eq 1 ]] || refuse kit-pin/migrate-usage "migrate takes one release: $KP_CMD migrate vX.Y.Z"
     local rel=$1 had_hp=0 old_hp="" h out why crc former="" src p=""
     local -a moved=() names=(pre-commit pre-push) fproj=()
     in_clone
-    [[ ! -e kit.pin ]] || refuse "kit.pin already exists, so this spawn is pinned" "Move its pin with: $KP_CMD to $rel"
+    [[ ! -e kit.pin ]] || refuse kit-pin/already-pinned "kit.pin already exists, so this spawn is pinned" "Move its pin with: $KP_CMD to $rel"
     target_install "$rel"
-    clean_tree || refuse "the work tree has uncommitted changes" "Commit or stash them first."
+    clean_tree || refuse kit-pin/uncommitted-changes "the work tree has uncommitted changes" "Commit or stash them first."
     if old_hp=$(git config --local --get core.hooksPath); then had_hp=1; fi
     # A former hooks path other than the kit's own old one (leak-detection, patterns/local-upgrade.md) is the
     # repository's own: a hook manager's, as .husky, or Husky v9's .husky/_. Its hooks keep running after the switch,
@@ -889,18 +955,18 @@ mode_migrate() {
     # hooks are replaced, as before.
     if (( had_hp )) && [[ "${old_hp%/}" != leak-detection && "${old_hp%/}" != ./leak-detection && "${old_hp%/}" != "$TOP/leak-detection" ]]; then
         former=$old_hp
-        [[ -f "$INST/leak-detection/org-hook" ]] || refuse "release $rel ships no relay (leak-detection/org-hook), so migrating would stop $former's hooks" \
+        [[ -f "$INST/leak-detection/org-hook" ]] || refuse kit-pin/no-relay-in-release "release $rel ships no relay (leak-detection/org-hook), so migrating would stop $former's hooks" \
             "Migrate to a release that ships one."
         for h in pre-commit pre-push; do holds_hook "$former" "$h" && fproj+=("$h"); done
         for h in ${fproj[@]+"${fproj[@]}"}; do
-            [[ ! -e "$HOOKS/$h.project" && ! -L "$HOOKS/$h.project" ]] || refuse "$HOOKS/$h.project is there, where the relay for $former's $h goes" \
+            [[ ! -e "$HOOKS/$h.project" && ! -L "$HOOKS/$h.project" ]] || refuse kit-pin/project-hook-in-relay-place "$HOOKS/$h.project is there, where the relay for $former's $h goes" \
                 "Move it out of the way first: migrate never overwrites a hook."
         done
-        [[ ! -e "$HOOKS/$CHAIN_FILE" ]] || refuse "$HOOKS/$CHAIN_FILE is there from an earlier move" "Move it out of the way first."
+        [[ ! -e "$HOOKS/$CHAIN_FILE" ]] || refuse kit-pin/chain-file-there "$HOOKS/$CHAIN_FILE is there from an earlier move" "Move it out of the way first."
         for h in "${RELAYED[@]}"; do holds_hook "$former" "$h" && names+=("$h"); done
     fi
     for h in "${names[@]}"; do
-        [[ ! -e "$HOOKS/$h.pre-kit-pin" ]] || refuse "$HOOKS/$h.pre-kit-pin is there from an earlier migrate" \
+        [[ ! -e "$HOOKS/$h.pre-kit-pin" ]] || refuse kit-pin/old-hooks-kept-already "$HOOKS/$h.pre-kit-pin is there from an earlier migrate" \
             "Move it out of the way first: migrate keeps one copy of the old hooks and never overwrites one."
     done
     move_check "$INST/leak-detection/read-leak-pattern.sh"     # the list's place, refused before anything is written
@@ -921,20 +987,20 @@ mode_migrate() {
     mkdir -p "$HOOKS"
     for h in "${names[@]}"; do
         if [[ -e "$HOOKS/$h" || -L "$HOOKS/$h" ]]; then
-            mv "$HOOKS/$h" "$HOOKS/$h.pre-kit-pin" || { undo; refuse "could not move $HOOKS/$h aside"; }
+            mv "$HOOKS/$h" "$HOOKS/$h.pre-kit-pin" || { undo; refuse kit-pin/hook-not-set-aside "could not move $HOOKS/$h aside"; }
             moved+=("$h")
         fi
         case $h in pre-commit|pre-push) src="$INST/leak-detection/stub-hook" ;; *) src="$INST/leak-detection/org-hook" ;; esac
-        install -m 0755 "$src" "$HOOKS/$h" || { undo; refuse "could not write the $h hook"; }
+        install -m 0755 "$src" "$HOOKS/$h" || { undo; refuse kit-pin/stubs-unwritten "could not write the $h hook"; }
     done
     if [[ -n "$former" ]]; then
         for h in ${fproj[@]+"${fproj[@]}"}; do
-            install -m 0755 "$INST/leak-detection/org-hook" "$HOOKS/$h.project" || { undo; refuse "could not write the relay for $former's $h"; }
+            install -m 0755 "$INST/leak-detection/org-hook" "$HOOKS/$h.project" || { undo; refuse kit-pin/relay-unwritten "could not write the relay for $former's $h"; }
         done
-        printf '\n%s\n' "$former" > "$HOOKS/$CHAIN_FILE" || { undo; refuse "could not record $former in $HOOKS/$CHAIN_FILE"; }
+        printf '\n%s\n' "$former" > "$HOOKS/$CHAIN_FILE" || { undo; refuse kit-pin/chain-unrecorded "could not record $former in $HOOKS/$CHAIN_FILE"; }
     fi
     printf 'release=%s\nmanifest=%s\n' "$rel" "$INST_HASH" > kit.pin
-    move_list "$INST/leak-detection/read-leak-pattern.sh" || { undo; refuse "$MV_ERROR" "The hooks path, the old hooks and the clone are back as they were."; }
+    move_list "$INST/leak-detection/read-leak-pattern.sh" || { undo; refuse kit-pin/list-move-failed "$MV_ERROR" "The hooks path, the old hooks and the clone are back as they were."; }
     # 2. The switch: from here git runs the stubs, which refuse until everything checks.
     if (( had_hp )); then git config --local --unset core.hooksPath; fi
     # 3. Check at once; on red, everything goes back. Check's 3 isn't red: the switch is right, and only the
@@ -943,8 +1009,8 @@ mode_migrate() {
     out=$("$SELF" check 2>&1); crc=$?
     if (( crc != 0 && crc != 3 )); then
         undo
-        why=$(printf '%s\n' "$out" | sed -n 's/^kit-pin: REFUSING -- //p' | head -n 1)
-        refuse "check failed after the switch: ${why%.}" "The hooks path, the old hooks and the clone are back as they were."
+        why=$(printf '%s\n' "$out" | sed -n -E 's/^kit-pin: REFUSING( \[[^]]*\])? -- //p' | head -n 1)
+        refuse kit-pin/check-failed-after-switch "check failed after the switch: ${why%.}" "The hooks path, the old hooks and the clone are back as they were."
     fi
     KIT_UNDO=""                                   # the switch is kept: nothing to put back from here on
     if [[ -n "$former" ]]; then
@@ -965,58 +1031,116 @@ mode_migrate() {
 }
 
 mode_move_list() {
-    [[ $# -eq 0 ]] || refuse "move-list takes nothing"
+    [[ $# -eq 0 ]] || refuse kit-pin/move-list-usage "move-list takes nothing"
     local top reader
-    top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "this is not inside a git clone with a work tree"
-    cd "$top" || refuse "could not enter $top"
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse kit-pin/no-work-tree "this is not inside a git clone with a work tree"
+    cd "$top" || refuse kit-pin/top-folder-unreadable "could not enter $top"
     # The reader beside this script, as repin reads with: the place it names is where this release's hooks read.
     reader="$KIT_DIR/leak-detection/read-leak-pattern.sh"
     bash -c '. "$1" && read_leak_pattern_selftest' _ "$reader" >/dev/null 2>&1 \
-        || refuse "the list reader beside this kit-pin ($reader) is missing or fails its selftest"
+        || refuse kit-pin/reader-unusable "the list reader beside this kit-pin ($reader) is missing or fails its selftest"
     bash -c '. "$1" && declare -F kit_list_file' _ "$reader" >/dev/null 2>&1 \
-        || refuse "the list reader beside this kit-pin names no place for the list: it is an older release's"
+        || refuse kit-pin/reader-too-old "the list reader beside this kit-pin names no place for the list: it is an older release's"
     move_check "$reader"
     KIT_UNDO=move_undo
-    move_list "$reader" || refuse "$MV_ERROR" "Nothing was changed."
+    move_list "$reader" || refuse kit-pin/list-move-failed "$MV_ERROR" "Nothing was changed."
     KIT_UNDO=""
     move_report
     kit_passed=1                                  # ---- move-list's pass point
 }
 
+# A fresh clone has no stubs: git clones no hook. Where nothing else decides which hooks git runs (no hooks path set in
+# this clone or for this person, and none chained by to or migrate) and each stub's place holds a stub or nothing,
+# restore writes both stubs from the pinned install, as to does, keeping what they replace until it passes (install
+# test KR5); anything else it leaves as it is, for check to name and to to handle (KR6, KR7).
+STUB_SAVE=""; STUB_WRITING=0; STUB_MADE_HOOKS=0
+# Puts back what restore_stubs replaced, once it has begun writing: each stub it kept, from its copy, and none where
+# there was none, the one it wrote there removed; and a hooks folder it made itself, which then holds nothing, goes
+# too (rmdir removes only an empty folder; install test KS4). Every stub present was kept before the first write, so
+# one not kept is one it wrote. Before that, nothing has been written, and nothing is touched: a stub it couldn't
+# keep, or any other, stays where it was (install test KS2).
+stubs_back() {
+    local h
+    [[ -n "$STUB_SAVE" ]] || return 0
+    if (( STUB_WRITING )); then
+        for h in pre-commit pre-push; do
+            if [[ -e "$STUB_SAVE/$h" ]]; then cp -p "$STUB_SAVE/$h" "$HOOKS/$h"; else rm -f "$HOOKS/$h"; fi
+        done
+        if (( STUB_MADE_HOOKS )); then rmdir "$HOOKS" 2>/dev/null || :; fi
+    fi
+    rm -rf "${STUB_SAVE:?}"; STUB_SAVE=""; STUB_WRITING=0; STUB_MADE_HOOKS=0
+}
+restore_stubs() {   # INSTALL: writes both stubs where restore may (above); 0 when it wrote them or had nothing to do
+    local h n=0
+    git config --local --get core.hooksPath >/dev/null 2>&1 && return 0
+    inherited_hp >/dev/null && return 0
+    [[ -e "$HOOKS/$CHAIN_FILE" ]] && return 0
+    for h in pre-commit pre-push; do
+        if [[ -e "$HOOKS/$h" || -L "$HOOKS/$h" ]]; then
+            is_stub "$HOOKS/$h" || return 0
+            cmp -s "$HOOKS/$h" "$1/leak-detection/stub-hook" || n=$((n + 1))
+        else
+            n=$((n + 1))
+        fi
+    done
+    (( n )) || return 0
+    STUB_SAVE=$(mktemp -d) || { STUB_SAVE=""; refuse kit-pin/no-save-folder "could not make a folder to keep the current stubs in" "Nothing changed."; }
+    for h in pre-commit pre-push; do [[ ! -e "$HOOKS/$h" ]] || cp -p "$HOOKS/$h" "$STUB_SAVE/$h" \
+        || refuse kit-pin/stub-not-kept "could not keep $HOOKS/$h before writing the stubs" "Nothing changed."; done
+    [[ -e "$HOOKS" || -L "$HOOKS" ]] || STUB_MADE_HOOKS=1
+    STUB_WRITING=1
+    mkdir -p "$HOOKS"
+    install -m 0755 "$1/leak-detection/stub-hook" "$HOOKS/pre-commit" && install -m 0755 "$1/leak-detection/stub-hook" "$HOOKS/pre-push" \
+        || refuse kit-pin/stubs-unwritten "could not write the stubs into $HOOKS" "Nothing changed: both stubs, and the install, are back as they were."
+    echo "kit-pin: wrote both stubs, release $PIN_RELEASE's, into $HOOKS."
+}
+
 mode_restore() {
-    [[ $# -eq 1 ]] || refuse "restore takes the path of a clone of the kit"
-    local kit=$1 inst aside="" out why built=0
-    git -C "$kit" rev-parse --git-dir >/dev/null 2>&1 || refuse "no kit repository at $kit"
-    [[ -x "$kit/tools/install-release.sh" ]] || refuse "$kit has no tools/install-release.sh, so it can't build an install"
+    [[ $# -eq 1 ]] || refuse kit-pin/restore-usage "restore takes the path of a clone of the kit"
+    local kit=$1 inst aside="" out why built=0 rebuilt=0
+    git -C "$kit" rev-parse --git-dir >/dev/null 2>&1 || refuse kit-pin/no-kit-clone "no kit repository at $kit"
+    [[ -x "$kit/tools/install-release.sh" ]] || refuse kit-pin/no-install-tool "$kit has no tools/install-release.sh, so it can't build an install"
     in_clone; read_pin
     inst="$ROOT_DIR/$PIN_RELEASE"
-    if kit_verify_install "$inst" "$PIN_RELEASE" "$PIN_MANIFEST"; then
+    # What restore's refusals put back, and the guard on any other stop: the stubs it wrote go and those they replaced
+    # come back; a rebuild this run made goes, and the install it set aside comes back.
+    restore_back() {
+        KIT_UNDO=""
+        stubs_back
+        if (( built )); then chmod -R u+w "$inst"; rm -rf "${inst:?}"; fi
+        [[ -z "$aside" ]] || mv "$aside" "$inst"
+    }
+    if kit_verify_install "$inst" "$PIN_RELEASE" "$PIN_MANIFEST" && kit_install_modes "$inst"; then
         echo "kit-pin: the install for $PIN_RELEASE already matches the pin; nothing to rebuild."
     else
         if [[ -e "$inst" ]]; then
             aside="$inst.set-aside.$$"
-            mv "$inst" "$aside" || refuse "could not move the damaged install aside"
+            mv "$inst" "$aside" || refuse kit-pin/install-not-set-aside "could not move the damaged install aside"
         fi
-        # What restore's refusals put back, and the guard on any other stop: a rebuild this run made goes, and the
-        # install it set aside comes back.
-        restore_back() {
-            KIT_UNDO=""
-            if (( built )); then chmod -R u+w "$inst"; rm -rf "${inst:?}"; fi
-            [[ -z "$aside" ]] || mv "$aside" "$inst"
-        }
         KIT_UNDO=restore_back
         if ! out=$(cd "$kit" && tools/install-release.sh "$PIN_RELEASE" 2>&1); then
             restore_back
-            why=$(printf '%s\n' "$out" | sed -n 's/^install-release: REFUSING -- //p' | head -n 1)
-            refuse "install-release could not rebuild $PIN_RELEASE: ${why:-it failed}" "Nothing changed."
+            why=$(printf '%s\n' "$out" | sed -n -E 's/^install-release: REFUSING( \[[^]]*\])? -- //p' | head -n 1)
+            refuse kit-pin/rebuild-failed "install-release could not rebuild $PIN_RELEASE: ${why:-it failed}" "Nothing changed."
         fi
         built=1
         if ! kit_verify_install "$inst" "$PIN_RELEASE" "$PIN_MANIFEST"; then
             restore_back
-            refuse "the rebuilt install doesn't match the pin: $KV_ERROR" \
+            refuse kit-pin/rebuild-fails-pin "the rebuilt install doesn't match the pin: $KV_ERROR" \
                 "The rebuild is removed. A pin and a release that disagree need a person: read kit.pin's history."
         fi
-        KIT_UNDO=""                               # the rebuild is kept: nothing to put back from here on
+        if ! kit_install_modes "$inst"; then
+            restore_back
+            refuse kit-pin/rebuild-not-runnable "the rebuilt install still has a file that can't run: $KX_ERROR" "The rebuild is removed." \
+                "If IT manages this machine: where the home folder is mounted noexec or programs are allow-listed, ask IT to allow running from $ROOT_DIR."
+        fi
+        rebuilt=1
+    fi
+    KIT_UNDO=restore_back
+    restore_stubs "$inst"
+    KIT_UNDO=""                                   # the rebuild and the stubs are kept: nothing to put back from here on
+    [[ -z "$STUB_SAVE" ]] || { rm -rf "${STUB_SAVE:?}"; STUB_SAVE=""; }
+    if (( rebuilt )); then
         [[ -z "$aside" ]] || echo "kit-pin: the damaged install is kept at $aside for a look; nothing reads it."
         echo "kit-pin: rebuilt the install for $PIN_RELEASE from $kit."
     fi
@@ -1024,22 +1148,34 @@ mode_restore() {
     exec "$SELF" check                            # and whose exit, a 3 included, is restore's
 }
 
-mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
+mode_repin() {   # local|ci [--first] [--ruling §N] [--row N]: write a list's pin, or change one row and repin
     local ctx=${1:-} first=0 ruling="" gitdir common top pin list value from old_rows="" old_sum new_rows new_sum head kind tmp prc
+    local row="" newrow upto ltmp got
     [[ $# -gt 0 ]] && shift
     while (( $# )); do
         case $1 in
             --first)  first=1; shift ;;
             --ruling) ruling=${2:-}; shift; [[ $# -gt 0 ]] && shift ;;
-            *)        refuse "repin takes local or ci, then --first or --ruling §N; not '$1'" ;;
+            --row)    row=${2:-}; shift; [[ $# -gt 0 ]] && shift ;;
+            # An argument it doesn't take is never echoed back: it may be a term put on the command line (install
+            # test RW1).
+            *)        refuse kit-pin/repin-usage "repin takes local or ci, then --first, --ruling §N or --row N, and nothing else; an argument it doesn't take isn't shown, since it may be a term" ;;
         esac
     done
-    gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || refuse "this is not inside a git clone"
-    top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse "this clone has no work tree"
+    # A row edit (B6): one row of the local list replaced by the one line on standard input, never the command line,
+    # with a recorded ruling cited (--ruling §N), starting from a list its pin names; the list and its pin are written
+    # together, and nothing but counts is printed (install test RW1 to RW13).
+    if [[ -n "$row" ]]; then
+        [[ $ctx == local ]] || refuse kit-pin/row-edit-ci "a row is changed in the local list alone: CI's list is the forge's secret, which kit-pin can't write" \
+            "Change the secret at the forge and its record, .git/leak-pattern.ci, then repin ci with --ruling §N."
+        [[ "$row" =~ ^[1-9][0-9]*$ ]] || refuse kit-pin/row-not-a-number "--row takes a row number, 1 or more"
+    fi
+    gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || refuse kit-pin/not-a-clone "this is not inside a git clone"
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || refuse kit-pin/no-work-tree "this clone has no work tree"
     # The list's pin and CI's record sit in the repository's shared git folder, which every worktree of it shares, as
     # pre-push reads them, never in a linked worktree's own (queue 452; install test WK3, RP14, RP15).
     common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
-        || refuse "this clone's shared git folder, where the list's pin and CI's record sit, can't be named"
+        || refuse kit-pin/shared-git-folder-unnamed "this clone's shared git folder, where the list's pin and CI's record sit, can't be named"
     case $ctx in
         local)
             # The do-not-publish list, read as pre-push reads it, by the reader beside this script, at the place that
@@ -1050,34 +1186,56 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
                 list=$LS_FILE
                 value=$(bash -c '. "$1" && read_leak_pattern_selftest || exit 3; read_leak_pattern "$2" || exit 1; printf "%s" "$LP_VALUE"' \
                         _ "$KIT_DIR/leak-detection/read-leak-pattern.sh" "$list" 2>/dev/null) \
-                    || refuse "the do-not-publish list ($LS_SHOW) can't be read as pre-push reads it" \
+                    || refuse kit-pin/list-unreadable "the do-not-publish list ($LS_SHOW) can't be read as pre-push reads it" \
                            "You can: give it the shape pre-push reads: blank lines, full-line comments and one LEAK_PATTERN='...' line (leak-detection/README.md, Setup)."
                 from=$LS_SHOW
             # No list is taken from this caller's environment: pre-push drops one unread (the gates skill, procedure 13).
             elif (( prc == 1 )); then
-                refuse "there is no do-not-publish list to pin: its place can't be found ($LS_ERROR)" \
+                refuse kit-pin/list-place-unknown "there is no do-not-publish list to pin: its place can't be found ($LS_ERROR)" \
                     "You can: give the project its place, then commit kit.list-id: $KP_CMD move-list."
             elif [[ -e "$gitdir/leak-pattern" ]] && (( prc == 0 )); then
-                refuse "there is no do-not-publish list to pin at $LS_SHOW" \
+                refuse kit-pin/list-at-old-place "there is no do-not-publish list to pin at $LS_SHOW" \
                     "You can: move it with $KP_CMD move-list, then repin: this clone still holds one at .git/leak-pattern, the list's old place."
-            else refuse "there is no do-not-publish list to pin: none at $LS_SHOW" \
+            else refuse kit-pin/no-list "there is no do-not-publish list to pin: none at $LS_SHOW" \
                 "You can: put the project's list at $LS_SHOW, or the line saying it has none (leak-detection/README.md, Setup), then give it its first pin ($KP_CMD repin local --first)." \
                 "The project's owner: whether this project keeps a do-not-publish list."; fi ;;
         ci)
             # CI's list can't be read back from the forge, so its record, the secret's exact value, is kept untracked in
             # .git/leak-pattern.ci, in the shared git folder; its pin is tracked, so a change to it is a reviewed commit.
             pin="$top/.github/leak-pattern.pin"; list="$common/leak-pattern.ci"; from=".git/leak-pattern.ci"
-            [[ -r "$list" ]] || refuse "there is no record of CI's list ($list)" \
+            [[ -r "$list" ]] || refuse kit-pin/no-ci-record "there is no record of CI's list ($list)" \
                 "Keep the LEAK_PATTERN secret's exact value there, untracked, with no trailing newline."
             value=$(cat "$list") ;;
-        *)  refuse "repin takes local or ci" ;;
+        *)  refuse kit-pin/repin-usage "repin takes local or ci" ;;
     esac
-    [[ -n "$value" ]] || refuse "the $ctx list ($from) is empty"
+    [[ -n "$value" ]] || refuse kit-pin/list-empty "the $ctx list ($from) is empty"
+    if [[ -n "$row" ]]; then
+        [[ -f "$pin" ]] || refuse kit-pin/no-pin-yet "there is no $ctx pin yet" "A row is changed in a pinned list; a first pin is written with --first."
+        kit_pin_check "$value" "$pin" || refuse kit-pin/row-edit-unpinned "the $ctx list ($from) doesn't match its pin ($KP_ERROR), and a row edit starts from the pinned list" \
+            "You can: repin the list as it is first, citing the § that rules its change (--ruling §N), or put it back."
+        old_rows=$(kit_list_rows "$value")
+        (( row <= old_rows )) || refuse kit-pin/row-out-of-range "the $ctx list holds $old_rows row(s), so there is no row $row"
+        [[ "$ruling" =~ ^§[0-9]+ ]] || refuse kit-pin/row-edit-unruled "a row edit changes the list, and any change but an append needs a recorded ruling (--ruling §N)" \
+            "Repin naming the decisions-log § that holds it."
+        newrow=$(cat; printf .); newrow=${newrow%.}; newrow=${newrow%$'\n'}
+        [[ -n "$newrow" ]] || refuse kit-pin/row-empty "no new row came on standard input" \
+            "Give the new row as the one line of a file, never on the command line: $KP_CMD repin local --row $row --ruling §N < FILE"
+        [[ "$newrow" != *$'\n'* ]] || refuse kit-pin/row-lines "the new row is more than one line"
+        [[ "$newrow" != *"'"* ]] || refuse kit-pin/row-apostrophe "the new row holds an apostrophe, which the list's shape can't hold"
+        (( $(kit_list_rows "$newrow") == 1 )) || refuse kit-pin/row-not-one "the new row holds more than one row (a | outside any group or bracket)"
+        head=""; (( row == 1 )) || head="$(kit_list_head "$value" $((row - 1)))|"
+        upto=$(kit_list_head "$value" "$row")
+        value="$head$newrow${value:${#upto}}"
+        # The changed list compiles where pre-push's tree scan reads it, as check's compile test does (install test LG1).
+        LC_ALL="$KIT_CALLER_LOCALE" git grep --no-color -q -inE "$value" 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -- . >/dev/null 2>&1
+        (( $? == 1 )) || refuse kit-pin/row-not-a-regex "the list with the new row isn't an extended regex pre-push's tree scan can read"
+        old_rows=""
+    fi
     new_rows=$(kit_list_rows "$value")
-    new_sum=$(printf '%s' "$value" | kit_sha256) || refuse "the $ctx list could not be hashed"
+    new_sum=$(printf '%s' "$value" | kit_sha256) || refuse kit-pin/list-unhashed "the $ctx list could not be hashed"
     new_sum=${new_sum%% *}
     if [[ ! -f "$pin" ]]; then
-        (( first )) || refuse "there is no $ctx pin yet" \
+        (( first )) || refuse kit-pin/no-pin-yet "there is no $ctx pin yet" \
             "A first pin is written with --first, once, after the list is checked against the source it was made from, never against itself."
         kind="a first pin"
     else
@@ -1094,17 +1252,34 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
             kind="an append"
         elif [[ "$ruling" =~ ^§[0-9]+ ]]; then
             kind="a change ruled in $ruling"
+            [[ -z "$row" ]] || kind="row $row edited, ruled in $ruling"
         else
-            refuse "the $ctx list changed by more than an append (${old_rows:-?} row(s) to $new_rows)" \
-                "Any other change, a row retired with a placeholder included, takes the user's words: repin with --ruling §N, the decisions-log § that holds them."
+            refuse kit-pin/not-an-append "the $ctx list changed by more than an append (${old_rows:-?} row(s) to $new_rows)" \
+                "Any other change, a row retired with a placeholder included, needs a recorded ruling (--ruling §N): repin naming the decisions-log § that holds it."
         fi
     fi
     tmp="$pin.tmp.$$"
-    mkdir -p "${pin%/*}" || refuse "could not make ${pin%/*}"
+    mkdir -p "${pin%/*}" || refuse kit-pin/pin-folder-unmade "could not make ${pin%/*}"
     { printf '# The %s list'"'"'s pin, written by bin/kit-pin repin: its rows and the SHA-256 of its value.\n' "$ctx"
-      printf 'rows=%s\nsha256=%s\n' "$new_rows" "$new_sum"; } > "$tmp" || refuse "could not write $tmp"
+      printf 'rows=%s\nsha256=%s\n' "$new_rows" "$new_sum"; } > "$tmp" || refuse kit-pin/pin-unwritten "could not write $tmp"
     [[ $ctx != local ]] || chmod 600 "$tmp"
-    mv -f "$tmp" "$pin" || { rm -f "$tmp"; refuse "could not write $pin"; }
+    # A row edit's list: written beside it, read back as pre-push reads it, then moved in, its old file kept until the
+    # pin is in, so a pin that can't be written puts the list back (install test RW4).
+    if [[ -n "$row" ]]; then
+        ltmp="$list.tmp.$$"
+        if ! ( umask 077 && KP_NEW=$value awk -v q="'" 'match($0, "^(export )?LEAK_PATTERN=" q) { print substr($0, 1, RLENGTH) ENVIRON["KP_NEW"] q; next } { print }' "$list" > "$ltmp" ) \
+            || ! chmod 600 "$ltmp" \
+            || ! got=$(bash -c '. "$1" && read_leak_pattern "$2" && printf "%s" "$LP_VALUE"' _ "$KIT_DIR/leak-detection/read-leak-pattern.sh" "$ltmp" 2>/dev/null) \
+            || [[ "$got" != "$value" ]] || ! cp -p "$list" "$list.was.$$" || ! mv -f "$ltmp" "$list"; then
+            rm -f "$tmp" "$ltmp" "$list.was.$$"
+            refuse kit-pin/row-unwritten "the changed list couldn't be written and read back as pre-push reads it" "Nothing was changed."
+        fi
+    fi
+    if ! mv -f "$tmp" "$pin"; then
+        rm -f "$tmp"; [[ -z "$row" ]] || mv -f "$list.was.$$" "$list"
+        refuse kit-pin/pin-unwritten "could not write $pin"
+    fi
+    [[ -z "$row" ]] || rm -f "$list.was.$$"
     echo "kit-pin: repinned the $ctx list ($from): rows ${old_rows:-none} -> $new_rows, $kind."
     echo "  Record it in the decisions log: the rows before and after, and why${ruling:+ ($ruling)}."
     [[ $ctx != ci ]] || echo "  Commit .github/leak-pattern.pin; CI checks the LEAK_PATTERN secret against it."
@@ -1121,13 +1296,13 @@ mode_repin() {   # local|ci [--first] [--ruling §N]: write a list's pin
 # install, which stays too, and the run names it. Writes that fail partway are put back (install test KU0 to
 # KU12).
 mode_user() {   # RELEASE
-    [[ $# -eq 1 ]] || refuse "user takes one release: $KP_CMD user vX.Y.Z"
+    [[ $# -eq 1 ]] || refuse kit-pin/user-usage "user takes one release: $KP_CMD user vX.Y.Z"
     local rel=$1 ud pinf d n i entry want have rest relpart pinbody old_pin=""
     local -a entries=() targets=() acts=() done_e=() done_old=()
     target_install "$rel"
     ud=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}
     pinf=${KIT_USER_PIN:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/morrowcairn/user.pin}
-    [[ -f "$INST/rules/morrowcairn.md" ]] || refuse "release $rel ships no rules/morrowcairn.md, so it can't be the user level's" \
+    [[ -f "$INST/rules/morrowcairn.md" ]] || refuse kit-pin/no-rules-in-release "release $rel ships no rules/morrowcairn.md, so it can't be the user level's" \
         "Take a release that has one."
     entries+=("rules/morrowcairn.md"); targets+=("$INST/rules/morrowcairn.md")
     for d in "$INST"/.claude/skills/*/; do
@@ -1150,20 +1325,20 @@ mode_user() {   # RELEASE
                     && "$have" == "$ROOT_DIR/$relpart/${want#"$INST"/}" ]]; then
                 acts+=(move)
             else
-                refuse "${entries[i]} isn't the kit's own link (it points elsewhere), and kit-pin never replaces it" \
+                refuse kit-pin/user-entry-elsewhere "${entries[i]} isn't the kit's own link (it points elsewhere), and kit-pin never replaces it" \
                     "Move it out of $ud, then run kit-pin user again."
             fi
         elif [[ -e "$entry" ]]; then
-            refuse "${entries[i]} isn't the kit's own link, and kit-pin never replaces it" \
+            refuse kit-pin/user-entry-not-kit "${entries[i]} isn't the kit's own link, and kit-pin never replaces it" \
                 "Move it out of $ud, then run kit-pin user again."
         else
             acts+=(new)
         fi
     done
     if [[ -L "$pinf" || ( -e "$pinf" && ! -f "$pinf" ) ]]; then
-        refuse "the kit's user pin ($pinf) isn't a plain file, so kit-pin won't write through it"
+        refuse kit-pin/user-pin-not-a-file "the kit's user pin ($pinf) isn't a plain file, so kit-pin won't write through it"
     fi
-    [[ ! -f "$pinf" ]] || old_pin=$(cat "$pinf") || refuse "the kit's user pin ($pinf) can't be read"
+    [[ ! -f "$pinf" ]] || old_pin=$(cat "$pinf") || refuse kit-pin/user-pin-unreadable "the kit's user pin ($pinf) can't be read"
     pinbody=$(printf 'release=%s\nmanifest=%s' "$rel" "$INST_HASH")
 
     user_undo() {
@@ -1181,10 +1356,10 @@ mode_user() {   # RELEASE
             same) echo "kit-pin: ${entries[i]} in place, release $rel's." ;;
             new|move)
                 have=""; [[ ${acts[i]} == new ]] || have=$(readlink "$entry")
-                mkdir -p "${entry%/*}" || { user_undo; refuse "could not make ${entry%/*}" "Nothing was changed."; }
+                mkdir -p "${entry%/*}" || { user_undo; refuse kit-pin/user-folder-unmade "could not make ${entry%/*}" "Nothing was changed."; }
                 done_e+=("$entry"); done_old+=("$have")
-                if [[ ${acts[i]} == move ]]; then rm -f "${entry:?}" || { user_undo; refuse "could not move ${entries[i]}" "Nothing was changed."; }; fi
-                ln -s "${targets[i]}" "$entry" || { user_undo; refuse "could not link ${entries[i]}" "Nothing was changed."; }
+                if [[ ${acts[i]} == move ]]; then rm -f "${entry:?}" || { user_undo; refuse kit-pin/user-entry-unmoved "could not move ${entries[i]}" "Nothing was changed."; }; fi
+                ln -s "${targets[i]}" "$entry" || { user_undo; refuse kit-pin/user-entry-unlinked "could not link ${entries[i]}" "Nothing was changed."; }
                 if [[ ${acts[i]} == new ]]; then echo "kit-pin: ${entries[i]} linked to release $rel's."
                 else echo "kit-pin: ${entries[i]} moved from ${have#"$ROOT_DIR"/} to release $rel's."; fi ;;
         esac
@@ -1195,7 +1370,7 @@ mode_user() {   # RELEASE
         # The pin's folder made here is 700, as to and migrate make ~/.config/morrowcairn; one already there keeps its mode.
         if [[ ! -d "${pinf%/*}" ]]; then mkdir -p "${pinf%/*}" && chmod 700 "${pinf%/*}"; fi \
             && printf '%s\n' "$pinbody" > "$pinf.tmp.$$" && mv -f "$pinf.tmp.$$" "$pinf" \
-            || { rm -f "$pinf.tmp.$$"; user_undo; refuse "could not write the kit's user pin ($pinf)" "The links are back as they were."; }
+            || { rm -f "$pinf.tmp.$$"; user_undo; refuse kit-pin/user-pin-unwritten "could not write the kit's user pin ($pinf)" "The links are back as they were."; }
         echo "kit-pin: the user pin now names $rel ($INST_HASH); the load check's stub reads it."
     fi
     KIT_UNDO=""
@@ -1214,7 +1389,7 @@ mode_user() {   # RELEASE
 
 trap kit_guard EXIT
 # Every mode hashes, restore after moving an install aside: with no tool to hash with, refuse before any of it.
-if why=$(kit_no_sha256); then refuse "$why, so no install can be checked"; fi
+if why=$(kit_no_sha256); then refuse kit-pin/no-hasher "$why, so no install can be checked"; fi
 # The git kit-pin needs: 2.31 or later, as the hooks do. Below it git echoes --path-format back as
 # output, so to failed at mkdir on a folder named after the option, with no reason given. A git that old, or one
 # whose version can't be read, is refused by name before any mode changes anything; verify reads no git (install test
@@ -1222,11 +1397,11 @@ if why=$(kit_no_sha256); then refuse "$why, so no install can be checked"; fi
 if [[ "${1:-}" != verify ]]; then
     gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
     if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
-        refuse "could not read git's version, and kit-pin needs git 2.31 or later" \
+        refuse kit-pin/git-version-unknown "could not read git's version, and kit-pin needs git 2.31 or later" \
             "You can: install git 2.31 or later where you may, then run kit-pin again." "If IT manages this machine: ask IT for git 2.31 or later."
     fi
     if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
-        refuse "git $gv is older than 2.31, the oldest kit-pin reads correctly: an older git can't name this clone's git folder as an absolute path" \
+        refuse kit-pin/git-too-old "git $gv is older than 2.31, the oldest kit-pin reads correctly: an older git can't name this clone's git folder as an absolute path" \
             "You can: install git 2.31 or later where you may, then run kit-pin again." "If IT manages this machine: ask IT for git 2.31 or later."
     fi
 fi
@@ -1237,7 +1412,7 @@ fi
 if [[ "${1:-}" != verify && "${1:-}" != user ]]; then
     grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
     if [[ -n "$grafts" && -s "$grafts" ]]; then
-        refuse "this repository has grafts, which change the history git shows, so what kit-pin reads from it can't be read as it is" \
+        refuse kit-pin/grafts "this repository has grafts, which change the history git shows, so what kit-pin reads from it can't be read as it is" \
             "You can: remove them (info/grafts in the git folder); git replace --convert-graft-file turns them into replace refs, which kit-pin ignores."
     fi
 fi
@@ -1250,5 +1425,5 @@ case "${1:-}" in
     repin)   shift; mode_repin "$@" ;;
     move-list) shift; mode_move_list "$@" ;;
     user)    shift; mode_user "$@" ;;
-    *)       refuse "unknown mode '${1:-}'; the modes are verify, check, to, migrate, restore, repin, move-list and user" ;;
+    *)       refuse kit-pin/unknown-mode "unknown mode '${1:-}'; the modes are verify, check, to, migrate, restore, repin, move-list and user" ;;
 esac

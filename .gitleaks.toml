@@ -2,11 +2,12 @@
 ##
 ## Scope: detects credential SHAPES — API keys, tokens, connection strings, private keys.
 ## Identity markers (operator names, hosts, personal addresses) are a SEPARATE layer, handled by
-## .github/workflows/leak-scan.yml, because that pattern cannot be committed. This file is
-## additive to that one, not a replacement.
+## CI's leak scan (the kit's .github/workflows/leak-scan.yml; a project's copy of ci/leak-scan.yml),
+## because that pattern cannot be committed. This file is additive to that one, not a replacement.
 ##
 ## Used by:
-##   .github/workflows/gitleaks.yml   — server-side scan (the clone-surviving layer)
+##   CI's credential scan             — server-side scan (the clone-surviving layer): the kit's
+##                                      .github/workflows/gitleaks.yml, a project's copy of ci/gitleaks.yml
 ##   leak-detection/pre-commit        — client-side staged-content scan
 ##
 ## `useDefault = true` inherits gitleaks' maintained provider rules (GitHub, AWS, Slack, Stripe,
@@ -147,6 +148,32 @@ regex = '''https?://[A-Za-z0-9.\-]+/(?:ping/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{
 secretGroup = 1
 keywords = ["ping", "heartbeat", "healthcheck"]
 tags = ["credential", "capability-url"]
+
+# ---------------------------------------------------------------------------------------------
+# Supabase — a bare access token or secret key is a credential with no key name beside it, and
+# gitleaks 8.30.1's own rules have none for Supabase, while its generic rule needs a name and an
+# assignment. These two stand in until a gitleaks release covers the shapes; then they go. The
+# publishable key (sb_publishable_...) is public by design and isn't matched. A length floor keeps
+# a bare prefix named in prose out; the entropy floor keeps a one-character placeholder out.
+# ---------------------------------------------------------------------------------------------
+
+[[rules]]
+id = "supabase-access-token"
+description = "Supabase access token: sbp_, an optional version (v0_), then 20 or more letters and digits"
+regex = '''\b(sbp_(?:v[0-9]+_)?[A-Za-z0-9]{20,})'''
+secretGroup = 1
+entropy = 3
+keywords = ["sbp_"]
+tags = ["credential", "provider-token"]
+
+[[rules]]
+id = "supabase-secret-key"
+description = "Supabase secret API key: sb_secret_, then 16 or more letters, digits, - or _"
+regex = '''\b(sb_secret_[A-Za-z0-9_-]{16,})'''
+secretGroup = 1
+entropy = 3
+keywords = ["sb_secret_"]
+tags = ["credential", "provider-token"]
 
 # ---------------------------------------------------------------------------------------------
 # PROJECT-SPECIFIC RULES — add yours below this line.

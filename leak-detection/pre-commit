@@ -34,7 +34,7 @@ kit_passed=0
 kit_guard() {
     local rc=$?
     if [[ $rc -eq 0 && "${kit_passed:-0}" != 1 ]]; then
-        echo "pre-commit: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+        echo "pre-commit: REFUSING [pre-commit/stopped-early] -- the check stopped before it finished, so what it had not reached was never checked." >&2
         exit 1
     fi
 }
@@ -46,13 +46,13 @@ trap kit_guard EXIT
 # merges. A git that old, or one whose version can't be read, is refused by name (hooks_test OG1, OG3).
 gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
 if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
-    echo "pre-commit: REFUSING -- could not read git's version, and this hook needs git 2.31 or later." >&2
+    echo "pre-commit: REFUSING [pre-commit/git-version-unknown] -- could not read git's version, and this hook needs git 2.31 or later." >&2
     echo "  You can: install git 2.31 or later where you may, then commit again." >&2
     echo "  If IT manages this machine: ask IT for git 2.31 or later." >&2
     exit 1
 fi
 if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
-    echo "pre-commit: REFUSING -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can colour the diff gitleaks reads and blind it." >&2
+    echo "pre-commit: REFUSING [pre-commit/git-too-old] -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can colour the diff gitleaks reads and blind it." >&2
     echo "  You can: install git 2.31 or later where you may, then commit again." >&2
     echo "  If IT manages this machine: ask IT for git 2.31 or later." >&2
     exit 1
@@ -66,7 +66,7 @@ fi
 export GIT_NO_REPLACE_OBJECTS=1
 grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
 if [[ -n "$grafts" && -s "$grafts" ]]; then
-    echo "pre-commit: REFUSING -- this repository has grafts, which change the history git shows." >&2
+    echo "pre-commit: REFUSING [pre-commit/grafts] -- this repository has grafts, which change the history git shows." >&2
     echo "  Remove them (info/grafts, or the file GIT_GRAFT_FILE names); git replace --convert-graft-file turns them into replace refs, which this hook ignores." >&2
     exit 1
 fi
@@ -81,7 +81,7 @@ SENTINEL='UNSET-SEE-REPO-GENESIS'
 SENTINEL_EMAIL='unset@invalid.local'
 idents="$(git var GIT_AUTHOR_IDENT 2>/dev/null) $(git var GIT_COMMITTER_IDENT 2>/dev/null)"
 if [[ "$idents" == *"$SENTINEL"* || "$idents" == *"<$SENTINEL_EMAIL>"* ]]; then
-    echo "pre-commit: REFUSING -- the commit identity is still the genesis sentinel ($SENTINEL or $SENTINEL_EMAIL)." >&2
+    echo "pre-commit: REFUSING [pre-commit/genesis-identity] -- the commit identity is still the genesis sentinel ($SENTINEL or $SENTINEL_EMAIL)." >&2
     echo "  You can: if the environment or --author sets it, drop that; otherwise set the real identity LOCALLY," >&2
     echo "  then read it back (patterns/repo-genesis.md):" >&2
     echo "      git config --local user.name '<name>'; git config --local user.email '<email>'" >&2
@@ -97,12 +97,12 @@ if ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
     claude_md=$(git show :CLAUDE.md 2>/dev/null)
     rc=$?
     if (( rc != 0 )); then
-        echo "pre-commit: REFUSING -- the first commit stages no CLAUDE.md." >&2
+        echo "pre-commit: REFUSING [pre-commit/first-commit-no-claude-md] -- the first commit stages no CLAUDE.md." >&2
         echo "  A spawn without the template is far likelier incomplete than deliberate. Stage it." >&2
         exit 1
     fi
     if [[ "$claude_md" == *"$FRAME_TODO"* ]]; then
-        echo "pre-commit: REFUSING -- CLAUDE.md still carries the stakes-frame TODO." >&2
+        echo "pre-commit: REFUSING [pre-commit/stakes-frame-todo] -- CLAUDE.md still carries the stakes-frame TODO." >&2
         echo "  Write this project's own frame and delete the TODO before commit one." >&2
         exit 1
     fi
@@ -136,11 +136,11 @@ local_names() {
 staged_local=$(git diff --cached --no-color --name-only -- .local/ 2>/dev/null)
 rc=$?
 if (( rc != 0 )); then
-    echo "pre-commit: REFUSING -- could not list staged paths (git diff exit $rc)." >&2
+    echo "pre-commit: REFUSING [pre-commit/staged-paths-unread] -- could not list staged paths (git diff exit $rc)." >&2
     exit 1
 fi
 if [[ -n "$staged_local" ]]; then
-    echo "pre-commit: REFUSING -- staged paths under .local/, which holds the local operator notes:" >&2
+    echo "pre-commit: REFUSING [pre-commit/local-staged] -- staged paths under .local/, which holds the local operator notes:" >&2
     local_names >&2
     echo "  Unstage them: git restore --staged .local/" >&2
     exit 1
@@ -150,7 +150,7 @@ fi
 # Under Claude Code's sandbox read block a gitleaks in a hidden folder (~/.local/bin, say) looks missing, as the install
 # does to the stub, so the refusal names both causes and what to let sandboxed commands read.
 if ! command -v gitleaks >/dev/null 2>&1; then
-    echo "pre-commit: REFUSING -- gitleaks was not found (missing, or hidden from this process), so staged content cannot be scanned for credentials." >&2
+    echo "pre-commit: REFUSING [pre-commit/no-gitleaks] -- gitleaks was not found (missing, or hidden from this process), so staged content cannot be scanned for credentials." >&2
     echo "  You can: install gitleaks 8.30.1 if it is missing (the kit's ci/gitleaks.yml names each platform's archive and its sha256), then commit again; if it is hidden by a sandbox read block you set yourself (one that blocks reading the home folder makes its folder look missing), add its folder to sandbox.filesystem.allowRead in your user settings." >&2
     echo "  If IT manages this machine: ask IT to install or allow gitleaks 8.30.1. A sandbox read policy may block its folder: ask IT to allow reading it rather than changing it in your own settings." >&2
     exit 1
@@ -166,7 +166,7 @@ cfg=()
 if [[ -f .gitleaks.toml ]]; then cfg=(--config .gitleaks.toml)
 elif [[ -f "$gl_dir/spawn.gitleaks.toml" ]]; then cfg=(--config "$gl_dir/spawn.gitleaks.toml")
 else
-    echo "pre-commit: REFUSING -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan with." >&2
+    echo "pre-commit: REFUSING [pre-commit/no-credential-rules] -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan with." >&2
     # A command it names runs from inside a project, by its absolute path (install test PC13).
     kp_cmd="\"$(cd "$gl_dir/.." 2>/dev/null && pwd)/bin/kit-pin\""
     echo "  Add the project's .gitleaks.toml, or rebuild the release's install, from this project ($kp_cmd restore \"\$KIT\")." >&2
@@ -183,7 +183,7 @@ gl_noclr=(GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never 
 gl_git=$(command -v git) && gl_shim=$(mktemp -d "${TMPDIR:-/tmp}/kit-pre-commit.XXXXXX") \
     && printf '#!/bin/sh\nexec "$KIT_GIT" -c color.ui=never -c color.diff=never "$@"\n' > "$gl_shim/git" \
     && chmod 0700 "$gl_shim/git" \
-    || { echo "pre-commit: REFUSING -- could not set up the uncoloured git gitleaks runs (a temporary folder in ${TMPDIR:-/tmp})." >&2; exit 1; }
+    || { echo "pre-commit: REFUSING [pre-commit/no-temp-folder] -- could not set up the uncoloured git gitleaks runs (a temporary folder in ${TMPDIR:-/tmp})." >&2; exit 1; }
 gl_out=$(env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML "${gl_noclr[@]}" KIT_GIT="$gl_git" PATH="$gl_shim:$PATH" \
     gitleaks protect --staged --no-banner --no-color --log-level info --redact "${cfg[@]}" 2>&1)
 gl_rc=$?
@@ -191,7 +191,7 @@ rm -rf "${gl_shim:?}"
 [[ -z "$gl_out" ]] || printf '%s\n' "$gl_out" >&2
 if (( gl_rc != 0 )); then
     echo >&2
-    echo "pre-commit: BLOCKED -- credential shapes detected in staged content." >&2
+    echo "pre-commit: BLOCKED [pre-commit/credentials] -- credential shapes detected in staged content." >&2
     echo "  Remove the secret. If it is a false positive, add a scoped rule to .gitleaks.toml" >&2
     echo "  with a comment explaining why -- never a blanket allowlist entry." >&2
     exit 1
@@ -202,13 +202,13 @@ fi
 # So when git counts added text lines and gitleaks reports ~0 bytes, or no count at all, the commit is refused
 # (hooks_test TW1, TW2; TW3 to TW7 the commits that add nothing). The log level is set above, so nothing hides the count.
 ns=$(git diff --cached --no-color --numstat 2>/dev/null) \
-    || { echo "pre-commit: REFUSING -- could not count the text this commit adds (git diff --numstat failed)." >&2; exit 1; }
+    || { echo "pre-commit: REFUSING [pre-commit/adds-uncounted] -- could not count the text this commit adds (git diff --numstat failed)." >&2; exit 1; }
 adds=$(printf '%s\n' "$ns" | awk '$1 ~ /^[0-9]+$/ { a += $1 } END { print a + 0 }')
 gl_re='scanned ~([0-9]+) byte'; gl_read=""
 [[ "$gl_out" =~ $gl_re ]] && gl_read=${BASH_REMATCH[1]}
 if (( adds > 0 )) && [[ -z "$gl_read" || "$gl_read" == 0 ]]; then
     gl_said="no count"; [[ -z "$gl_read" ]] || gl_said="~$gl_read bytes scanned"
-    echo "pre-commit: REFUSING -- gitleaks read nothing of the $adds line(s) of text this commit adds (it reported $gl_said), so its clean result means nothing." >&2
+    echo "pre-commit: REFUSING [pre-commit/partial-scan] -- gitleaks read nothing of the $adds line(s) of text this commit adds (it reported $gl_said), so its clean result means nothing." >&2
     echo "  Something kept it from reading the staged changes: check git's colour settings and gitleaks' version." >&2
     exit 1
 fi
@@ -234,13 +234,13 @@ fi
 EXT=hook-checks/pre-commit
 if [[ -e "$EXT" || -L "$EXT" ]]; then
     if [[ ! -d "$EXT" || ! -r "$EXT" || ! -x "$EXT" ]]; then
-        echo "pre-commit: REFUSING -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
+        echo "pre-commit: REFUSING [pre-commit/checks-folder-unreadable] -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
         exit 1
     fi
     before=$(git write-tree 2>/dev/null)
     rc=$?
     if (( rc != 0 )); then
-        echo "pre-commit: REFUSING -- could not record the staged tree (git write-tree exit $rc), so $EXT cannot run." >&2
+        echo "pre-commit: REFUSING [pre-commit/staged-tree-unrecorded] -- could not record the staged tree (git write-tree exit $rc), so $EXT cannot run." >&2
         exit 1
     fi
     LC_COLLATE=C
@@ -249,21 +249,21 @@ if [[ -e "$EXT" || -L "$EXT" ]]; then
     shopt -u nullglob dotglob
     for x in ${checks[@]+"${checks[@]}"}; do
         if [[ ! -f "$x" || ! -x "$x" ]]; then
-            echo "pre-commit: REFUSING -- $x is not an executable file, so it cannot run." >&2
+            echo "pre-commit: REFUSING [pre-commit/check-not-executable] -- $x is not an executable file, so it cannot run." >&2
             echo "  Make it executable (git update-index --chmod=+x $x), or move it out of $EXT." >&2
             exit 1
         fi
         LC_ALL="$KIT_CALLER_LOCALE" "$x" "$@"
         rc=$?
         if (( rc != 0 )); then
-            echo "pre-commit: REFUSING -- $x exited $rc." >&2
+            echo "pre-commit: REFUSING [pre-commit/check-failed] -- $x exited $rc." >&2
             exit 1
         fi
     done
     after=$(git write-tree 2>/dev/null)
     rc=$?
     if (( rc != 0 )) || [[ "$after" != "$before" ]]; then
-        echo "pre-commit: REFUSING -- a check in $EXT changed what is staged; the credential scan read the index before it." >&2
+        echo "pre-commit: REFUSING [pre-commit/check-restaged] -- a check in $EXT changed what is staged; the credential scan read the index before it." >&2
         exit 1
     fi
 fi

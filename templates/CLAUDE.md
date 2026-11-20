@@ -51,8 +51,9 @@ This frame calibrates every judgment below.
 
 ## Doctrine
 
-The kit's doctrine (the `skills/` of its pinned release) loads once per session through this
-machine's user-level `CLAUDE.md`, never from here: a spawn holds no copy of it, so nothing loads twice.
+The kit's doctrine loads once per session through the rules and skills `kit-pin user` links into this
+machine's `~/.claude/rules/` and `~/.claude/skills/`, from the release it names, never from here: a
+spawn holds no copy of it, so nothing loads twice.
 `skills/README.md` in the release says what loads when.
 
 ## Working with the human here

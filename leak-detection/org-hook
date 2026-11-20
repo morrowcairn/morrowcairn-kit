@@ -24,17 +24,17 @@ name=${0##*/}
 case $0 in */*) dir=${0%/*} ;; *) dir=. ;; esac
 case $dir in /*) ;; *) dir=$PWD/$dir ;; esac
 passed=0
-refuse() {   # REASON [LINE...]: the refusal, then each line after it, as written ("You can: ...")
-    echo "kit relay ($name): REFUSING -- $1" >&2
-    shift
+refuse() {   # NAME REASON [LINE...]: the refusal, NAME from refusals.txt, then each LINE as written ("You can: ...")
+    echo "kit relay ($name): REFUSING [$1] -- $2" >&2
+    shift 2
     while [ $# -gt 0 ]; do echo "  $1" >&2; shift; done
     passed=1; exit 1
 }
 # Any exit 0 that isn't a pass below, an early one or a stop on an error the shell reports as 0, refuses.
-trap 'rc=$?; if [ "$rc" -eq 0 ] && [ "$passed" != 1 ]; then echo "kit relay ($name): REFUSING -- the relay stopped before it finished, so what it had not reached never ran." >&2; exit 1; fi' EXIT
+trap 'rc=$?; if [ "$rc" -eq 0 ] && [ "$passed" != 1 ]; then echo "kit relay ($name): REFUSING [org-hook/stopped-early] -- the relay stopped before it finished, so what it had not reached never ran." >&2; exit 1; fi' EXIT
 
 conf=$dir/.kit-hooks
-[ -f "$conf" ] || refuse "$conf, where kit-pin records the hooks paths this clone chains, is missing" \
+[ -f "$conf" ] || refuse org-hook/no-chain-record "$conf, where kit-pin records the hooks paths this clone chains, is missing" \
     "Write it again from the project's top folder: kit-pin to, with the release kit.pin names."
 org=; former=
 { IFS= read -r org || :; IFS= read -r former || :; } < "$conf"
@@ -51,7 +51,7 @@ if [ "$only_former" = 0 ] && [ -n "$org" ]; then pick "$org/$hook"; t1=$p; fi
 if [ -n "$former" ]; then pick "$former/$hook"; t2=$p; fi
 kept=$dir/$name.project
 if [ "$only_former" = 0 ] && { [ -e "$kept" ] || [ -L "$kept" ]; }; then
-    { [ -f "$kept" ] && [ -x "$kept" ]; } || refuse "$kept, this project's own $hook that kit-pin kept, is not an executable file" \
+    { [ -f "$kept" ] && [ -x "$kept" ]; } || refuse org-hook/project-hook-not-executable "$kept, this project's own $hook that kit-pin kept, is not an executable file" \
         "Restore its execute bit (chmod +x $kept) or remove it. The kit runs it and never skips it."
     t3=$kept
 fi
@@ -73,9 +73,9 @@ for t in "$t1" "$t2" "$t3"; do
     if [ "$fed" = 1 ]; then printf '%s' "$input" | "$t" "$@"; else "$t" "$@"; fi
     rc=$?
     if [ "$rc" -ne 0 ]; then   # the org's hook is IT's; a former path's or a kept one is the project's own
-        [ "$t" != "$t1" ] || refuse "$t refused (exit $rc)" \
+        [ "$t" != "$t1" ] || refuse org-hook/org-hook-refused "$t refused (exit $rc)" \
             "If IT manages this machine: it is IT's own hook, run as git would run it; what it printed above says why."
-        refuse "$t refused (exit $rc)" \
+        refuse org-hook/project-hook-refused "$t refused (exit $rc)" \
             "The project's owner: it is this project's own hook, run as git would run it; what it printed above says why."
     fi
 done

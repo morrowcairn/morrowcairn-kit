@@ -14,6 +14,69 @@ changed is a fork it declares in `kit.forks`.
 
 A **minor** release marks a change in behavior a spawn sees. A **patch** changes nothing a spawn's hooks refuse.
 
+## v1.1.0
+
+A minor: a project moves onto it with `kit-pin to v1.1.0` from the new release's install.
+- Every refusal the kit's hooks and tools print names itself, in brackets after REFUSING or BLOCKED, as in `pre-push:
+  REFUSING [pre-push/no-list] -- ...`, and `leak-detection/refusals.txt` lists each name with its exit status and what
+  it means. No exit status changed. Apart from any name added, each existing refusal keeps its words but three. Those
+  three change as follows, as does the text `check` prints after its steps for a list:
+  - `repin`, refusing a change that is more than an append: "Any other change, a row retired with a placeholder
+    included, needs a recorded ruling (--ruling §N): repin naming the decisions-log § that holds it." It was: "...
+    takes the user's words: repin with --ruling §N, the decisions-log § that holds them."
+  - `repin`, refusing what it doesn't take: "repin takes local or ci, then --first, --ruling §N or --row N, and nothing
+    else; an argument it doesn't take isn't shown, since it may be a term". It was: "repin takes local or ci, then
+    --first or --ruling §N; not '<the argument>'", which printed the argument back.
+  - `to`, refusing what it doesn't take: "to takes one release: <kit-pin's path> to vX.Y.Z, or <kit-pin's path> to
+    vX.Y.Z --rehearse to try the move in a copy first". It was: "to takes one release: <kit-pin's path> to vX.Y.Z".
+  - `check`, with no list, the text after the steps for one: "A list changed later is repinned: an append by the session
+    that makes it; any other change needs a recorded ruling (--ruling §N; leak-detection/README.md, Changing the
+    list)." It was: "... any other change citing the user's words (leak-detection/README.md, Changing the list)."
+- When a v1.0.0 install is restored from a clone of this release and the rebuild is refused, v1.0.0's kit-pin says only
+  "it failed"; run the clone's `tools/install-release.sh` directly to see why.
+- The credential scan refuses a bare Supabase access token (`sbp_`, with or without `v0_`) or secret key
+  (`sb_secret_`), which gitleaks' own rules miss: two custom rules, `supabase-access-token` and `supabase-secret-key`,
+  in `.gitleaks.toml` and the copy a project takes. A commit or push carrying one, which the hooks passed before, is
+  refused. The fixture's canary expects eleven custom rules.
+- `kit-pin to RELEASE --rehearse` makes the move in a copy of the clone, in a folder of its own, and says whether it
+  passed; the clone, its hooks and its lists folder don't change, and the copy goes when it ends. Under an
+  organization's hooks path it gives the move's own verdict.
+- One row is changed without the list being shown: `bin/kit-pin repin local --row N --ruling §N < FILE` replaces row N
+  with the one line of FILE, writes the list and its pin together, and prints counts only. It starts from a list its pin
+  names, and never takes the row from the command line.
+- `kit-pin verify` refuses, and `kit-pin restore` rebuilds, an install in which a file that must run has lost its
+  execute bit; `restore` also writes the two stubs where the clone has none, or another release's, and no hooks path is
+  set.
+- An install no longer ships the kit's own CI workflows, `.github/workflows/`. A project's copies of the `ci/`
+  workflows are checked at every path `ci/copies.txt` names.
+- The CI copy `ci/gitleaks.yml` names no Windows archive, since no job runs on a Windows runner; a project takes the new
+  copy when it moves.
+- The do-not-publish list's reader fails on a list file that isn't there or can't be read, where it returned success
+  with nothing set; every caller already refused an empty list. A project's own check can read the list through the
+  install's reader, as `leak-detection/README.md` says.
+- The daily load check's probe also fails, naming the skill, when its session's start event doesn't list one of the
+  kit's three skills.
+- The reply-file hook tells the person when a report says nothing of compaction, with what the compaction log holds for
+  the session since its last report, and when an end line naming the session was taken as a quotation and no report was
+  filed for it.
+- `tools/install-release.sh`'s closing line gives the install's file count without BSD wc's padding on a Mac.
+- The README opens with who the kit is for, with a link to Anthropic's Claude Code quickstart; it says the credential
+  rules are complete in that they need no configuration, not that every credential is caught; it names the kit's
+  operator's two later WSL2 runs, `bin/kit-pin check` as the check to schedule for a clone's stubs with its exit
+  statuses, and the three example scripts in `patterns/`. The IT document names the same WSL2 runs and what the load
+  check's probe sees of the skills, and drops its sentence on the kit's own CI workflows. The setup prompt says what to
+  sign in with before it starts, how long the install takes and how to wait for it (step 4), what the daily check
+  checks (step 8), and what a new project starts with in its closing summary (step 12).
+- The setup prompt and the IT document name Claude Code's Project instructions setting, whose managed-only value leaves
+  out the kit's rules file.
+- The session rules (`rules/morrowcairn.md`) and the chat's half (`docs/drafting-chat-instructions.md`) give the retry
+  route for a refused action by its kind: auto mode's own block from `/permissions`, Recently blocked; any other, such
+  as a deny rule's, asked about. `docs/rules-explained.md`'s "Whose lane" opens "The instinct to build itself is
+  something to watch for." `leak-detection/README.md` says what a project's own checks need and how they read the list,
+  how one row is changed, and that a change beyond an append needs a recorded ruling; `patterns/local-upgrade.md` gives
+  the rehearsal.
+- The upgrade test carries a project from v1.0.0 too.
+
 ## v1.0.0
 
 The first major release: a project moves onto it with `kit-pin to v1.0.0` from the new release's install.

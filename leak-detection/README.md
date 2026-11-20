@@ -119,10 +119,10 @@ With it, pre-push turns its do-not-publish check off, says so on every push, and
 scan; `kit-pin check` reports the do-not-publish check off. For CI, set the secret to that reserved line's value,
 `kit:no-identity-list`, and pin it (`repin ci --first`); the tree scan then says the do-not-publish check is off. A list file that exists but
 can't be read refuses with a message of its own, never the missing list's. The pin guards the line:
-written over a real list, it doesn't match that list's pin, and changing a list's rows needs the
-user's words (below). A project going public needs a real list: `bin/kit-history-audit` refuses the
-line. *A release older than this one* reads the line as a one-row list and, once it is pinned, passes
-pushes with no note: move such a project onto this release before writing the line.
+written over a real list, it doesn't match that list's pin, and changing a list's rows needs a recorded ruling (below).
+A project going public needs a real list: `bin/kit-history-audit` refuses the line. *A release older than this one*
+reads the line as a one-row list and, once it is pinned, passes pushes with no note: move such a project onto this
+release before writing the line.
 
 **Each list is pinned.** pre-push refuses unless the local list is the one `.git/leak-pattern.pin` names, and
 CI's scan refuses unless the `LEAK_PATTERN` secret is the one the tracked `.github/leak-pattern.pin` names. A pin
@@ -149,9 +149,12 @@ only in the local list.
 anything else:
 - An append, new rows after the old ones with the old untouched, is taken as it is: the session that makes it
   repins and records it.
-- Any other change takes the user's words: a row changed or removed, or retired by the never-matching placeholder
-  that keeps its place (a list is append-only, so its rows keep their positions), because fewer rows, or other
-  ones, protect less. repin refuses it without `--ruling §N`, the decisions-log § that holds those words.
+- Any other change needs a recorded ruling: a row changed or removed, or retired by the never-matching placeholder that
+  keeps its place (a list is append-only, so its rows keep their positions), because fewer rows, or other ones, protect
+  less. repin refuses it without `--ruling §N`, the decisions-log § that holds that ruling.
+- One row is changed without the list being shown: `bin/kit-pin repin local --row N --ruling §N < FILE` replaces row N
+  with the one line of FILE, writes the list and its pin together, and prints counts only. It starts from a list its pin
+  names, and never takes the row from the command line.
 - Every repin is recorded in the decisions log with the rows before and after, which repin prints, and why.
 - For CI, change the secret and `.git/leak-pattern.ci` together, then `repin ci` and commit the pin.
 - A list that doesn't match its pin is what the pin exists to catch: never repin to quiet a refusal you didn't
@@ -216,10 +219,15 @@ A project that needs one more check at commit or push time does not fork a hook 
   sent.
 
 The folder belongs to the project. The kit ships nothing in it, so an upgrade never touches it, and an
-absent folder runs nothing. A fresh clone of a project needs only its stubs, which `bin/kit-pin to`
-writes with the release `kit.pin` names (`restore` writes none): the checks are tracked and run from
-wherever the release's hooks run, with `KIT_INSTALL` naming the install. A project that points
-`core.hooksPath` at a wrapper folder moves the wrapper's checks here, then runs `bin/kit-pin migrate`.
+absent folder runs nothing. For these checks, a fresh clone of a project needs only its stubs, which `bin/kit-pin to`
+writes with the release `kit.pin` names (`restore` writes them too, where no hooks path is set and each place holds a
+stub or nothing); its do-not-publish list's pin is a step of its own, which `to` prints. The checks are tracked and run
+from wherever the release's hooks run, with `KIT_INSTALL` naming the install. A check that reads the do-not-publish list
+loads it through that install's reader: it sources `"$KIT_INSTALL/leak-detection/read-leak-pattern.sh"`, calls
+`kit_list_file`, then `read_leak_pattern "$KL_FILE"`. The reader fails when the list file isn't there or can't be read.
+The check exits non-zero when either call fails or `LP_VALUE` comes back empty (a list that sets nothing), so it never
+passes on a list it couldn't read (the hooks suite's D90 to D93). A project that points `core.hooksPath` at a wrapper
+folder moves the wrapper's checks here, then runs `bin/kit-pin migrate`.
 
 ### Binary files: the reviewed list
 
@@ -340,12 +348,12 @@ gitleaks dir /tmp/synthetic_config.txt --config .gitleaks.toml -v   # expect fin
 rm /tmp/synthetic_config.txt
 ```
 
-**Expect all nine custom rules to fire** — the five that rarely see live traffic are the whole point;
-a fixture that trips four of nine has reproduced the coverage gap it exists to close:
+**Expect all eleven custom rules to fire** — the ones that rarely see live traffic are the whole point;
+a fixture that trips only the others has reproduced the coverage gap it exists to close:
 `generic-api-key-40char-in-config`, `generic-secret-assignment`, `kit-jwt`, `bearer-header`,
 `db-url-with-password`, `private-key-pem`, `aws-named-access-key-id`, `aws-named-secret-access-key`,
-`monitoring-ping-url-uuid`. (Three gitleaks *default* rules fire alongside them, `generic-api-key`,
-`jwt` and `private-key` — expected, `useDefault` is on.)
+`monitoring-ping-url-uuid`, `supabase-access-token`, `supabase-secret-key`. (Three gitleaks *default* rules fire
+alongside them, `generic-api-key`, `jwt` and `private-key` — expected, `useDefault` is on.)
 
 `tests/hooks_test.sh` makes this check on every run, one case per rule: each rule must
 catch its own block of the fixture, scanned alone, under its own id. A refusal alone proves nothing
@@ -362,7 +370,7 @@ Two committed-on-purpose findings. Neither is a live leak; both are self-describ
 1. **A history-wide identity scan reds on `CANARY.md` in the canary commits.** The synthetic sentinel
    was committed to prove the scan fires, then removed; the pattern still matches it and the object
    still exists in history. The current *tree* is clean, which is why the tree scan is green.
-2. **A credential scan of a *copy* of the fixture reds** (nine custom rules). The fixture itself is
+2. **A credential scan of a *copy* of the fixture reds** (eleven custom rules). The fixture itself is
    allowlisted, so the committed tree stays green — but if someone copies it elsewhere and scans,
    that is the canary working, not a leak.
 

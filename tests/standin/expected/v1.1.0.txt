@@ -1,0 +1,6 @@
+# v1.1.0's old-git lines, as tests/standin/run.sh reads them: from its stand-in run on the kit's machine (kit decisions
+# log §919; again for the release commits carrying relay blue #3's, #5's and #7's cases), its failing and skipped
+# cases v1.0.0's set and 1.1's new cases, each classified as §768 did. One file a release.
+old-git: hooks_test exit 1; hooks_test: 169 passed, 408 failed, 13 skipped
+old-git: install_test exit 1; install_test: 153 passed, 322 failed, 67 skipped
+old-git: smoke_test exit 1; smoke_test: 1 passed, 1 failed, 7 not run

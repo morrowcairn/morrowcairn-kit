@@ -38,17 +38,42 @@ PASS=0; FAIL=0; SKIP=0
 skip() { SKIP=$((SKIP+1)); printf 'skip  %s  -- %s\n' "$1" "$2"; }
 result() { if [[ $2 -eq 0 ]]; then PASS=$((PASS+1)); printf 'ok    %s\n' "$1"
            else FAIL=$((FAIL+1)); printf 'FAIL  %s  -- %s\n' "$1" "$3"; fi; }
+# names_wrong OUTPUT [RC] (A2): each refusal line in OUTPUT that carries a name, in brackets after REFUSING or BLOCKED
+# (after a tool's label, or opening an audit's closing line), must carry one leak-detection/refusals.txt lists, and a
+# refusal line that carries no name is flagged too, so each refusal case checks the name its gate printed, with no case
+# rewritten; kit_docs RN1 checks each listed gate's own file. Given RC, the exit status the case saw, a line naming a
+# listed refusal whose EXIT disagrees with RC is flagged too (1+ takes any non-zero status; the hooks suite's NE0), so a
+# list line's EXIT is checked against what its gate returned. Prints each line that doesn't; nothing when all do (NW0).
+RN_LIST="$ROOT/leak-detection/refusals.txt"
+names_wrong() { [[ -f "$RN_LIST" ]] || return 0
+    printf '%s\n' "$1" | awk -v L="$RN_LIST" -v R="${2-}" '
+        function exit_ok(e, r) { if (e ~ /^[0-9]+$/) return r == e + 0
+                                 if (e ~ /^[0-9]+[+]$/) { sub(/[+]$/, "", e); return r != 0 && r >= e + 0 }
+                                 return 0 }
+        BEGIN { while ((getline l < L) > 0) { if (l == "" || substr(l, 1, 1) == "#") continue
+                    split(l, f, "\t"); nm[f[1]] = 1; ex[f[1]] = f[2] } }
+        { for (w = 1; w <= 2; w++) {
+              v = (w == 1 ? "REFUSING" : "BLOCKED")
+              if (index($0, ": " v " -- ") || substr($0, 1, length(v) + 2) == v ": ") print "carries no name: " substr($0, 1, 90)
+              k = (w == 1 ? "REFUSING [" : "BLOCKED ["); i = index($0, k)
+              if (i == 0 || (i > 1 && substr($0, i - 2, 2) != ": ")) continue
+              rest = substr($0, i + length(k)); j = index(rest, "]"); got = j ? substr(rest, 1, j - 1) : rest
+              if (!(got in nm)) print "carries [" got "], which refusals.txt does not list: " substr($0, 1, 90)
+              else if (R != "" && !exit_ok(ex[got], R + 0))
+                  print "carries [" got "], listed with EXIT " ex[got] ", but the case saw exit " R ": " substr($0, 1, 90) } }'; }
 # want_ok NAME RC OUTPUT [NEEDLE] / want_refused NAME RC OUTPUT NEEDLE: a refusal must be for the
 # stated reason -- a red for the wrong reason reads exactly like a red for the right one.
 want_ok() { if [[ $2 -eq 0 && ( -z "${4:-}" || "$3" == *"$4"* ) ]]; then result "$1" 0
             else result "$1" 1 "exit $2${4:+, want '$4'}: $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-160)"; fi; }
-want_refused() { if [[ $2 -ne 0 && "$3" == *"$4"* ]]; then result "$1" 0
-                 else result "$1" 1 "exit $2, want refusal '$4': $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-160)"; fi; }
+want_refused() { local nw; nw=$(names_wrong "$3" "$2")
+                 if [[ $2 -ne 0 && "$3" == *"$4"* && -z "$nw" ]]; then result "$1" 0
+                 else result "$1" 1 "exit $2, want refusal '$4'${nw:+, its name: $nw}: $(printf '%s' "$3" | tr '\n' ' ' | cut -c1-160)"; fi; }
 # want_says NAME RC OUTPUT LINE...: a refusal (RC non-zero) whose output holds each LINE: the lines a refusal adds after
 # its first, each labelled for who acts on it ("You can:", "If IT manages this machine:", "The project's owner:"), in
 # the do-not-publish wording.
 want_says() { local n=$1 rc=$2 o=$3 l miss=""; shift 3
               for l in "$@"; do [[ "$o" == *"$l"* ]] || miss="$miss '$l'"; done
+              miss="$miss$(names_wrong "$o" "$rc")"
               if [[ $rc -ne 0 && -z "$miss" ]]; then result "$n" 0
               else result "$n" 1 "exit $rc, want a refusal saying$miss: $(printf '%s' "$o" | tr '\n' ' ' | cut -c1-160)"; fi; }
 no_leak() { if [[ "$2" == *SYNTH-MARKER* ]]; then result "$1" 1 "output quotes the pattern"; else result "$1" 0; fi; }
@@ -545,6 +570,27 @@ push() { (cd "$C" && env PATH="${2:-$PATH}" git push "${3:-r}" $1 2>&1); }
 on_remote() { git -C "$TMP/${2:-push}.git" rev-parse --verify -q "$1" >/dev/null; }
 from_base() { git -C "$C" checkout -q -B "$1" "$BASE"; }
 
+# NW0, names_wrong's own control: a refusal line, after "<label>: REFUSING" or "BLOCKED" or at an audit's closing
+# "REFUSING [name]:", is flagged when it carries no name, or a name refusals.txt doesn't list; a listed name passes.
+nw=$(names_wrong $'x: REFUSING [pre-push/no-git] -- listed.\nx: REFUSING [zz/unlisted] -- not listed.\nREFUSING [zz/closing]: 2 hit(s).\nx: REFUSING -- nameless one.\nREFUSING: 2 hit(s), nameless two.\nx: BLOCKED -- nameless three.')
+n=$(printf '%s\n' "$nw" | awk 'NF' | wc -l)
+[[ "$nw" == *"[zz/unlisted]"* && "$nw" == *"[zz/closing]"* && "$nw" != *"pre-push/no-git"* && "$nw" == *"nameless one"* \
+   && "$nw" == *"nameless two"* && "$nw" == *"nameless three"* && $n -eq 5 ]]
+                                               want_ok "NW0 names_wrong flags a refusal line carrying no name, or a name refusals.txt doesn't list, after a tool's REFUSING or BLOCKED or at an audit's closing line" $? "$nw"
+# NE0, the exit check's own control: given the exit status a case saw, names_wrong flags a listed name whose EXIT
+# disagrees with it; 1+ takes any non-zero status and no other. A scratch list gives pre-push/no-git EXIT 2 and
+# pre-push/no-list 1+; the real list, and a call with no status, flag nothing.
+NEL="$TMP/ne0-list.txt"
+awk -F'\t' -v OFS='\t' '$1 == "pre-push/no-git" { $2 = 2 } $1 == "pre-push/no-list" { $2 = "1+" } 1' "$RN_LIST" > "$NEL"
+ne=$(RN_LIST="$NEL" names_wrong 'x: REFUSING [pre-push/no-git] -- its EXIT is 2, the case saw 1.' 1)
+ne1=$(RN_LIST="$NEL" names_wrong 'x: REFUSING [pre-push/no-list] -- its EXIT is 1+, the case saw 7.' 7)
+ne2=$(RN_LIST="$NEL" names_wrong 'x: REFUSING [pre-push/no-list] -- its EXIT is 1+, the case saw 0.' 0)
+ne3=$(names_wrong 'x: REFUSING [pre-push/no-git] -- the real list, the case saw 1.' 1)
+ne4=$(RN_LIST="$NEL" names_wrong 'x: REFUSING [pre-push/no-git] -- no status given.')
+[[ "$ne" == *"[pre-push/no-git]"*"EXIT 2"*"exit 1"* && -z "$ne1" && "$ne2" == *"[pre-push/no-list]"*"EXIT 1+"*"exit 0"* \
+   && -z "$ne3" && -z "$ne4" ]]
+                                               want_ok "NE0 given the exit status a case saw, names_wrong flags a listed name whose EXIT disagrees, 1+ taking any non-zero status" $? "[$ne] [$ne1] [$ne2] [$ne3] [$ne4]"
+
 out=$(push "HEAD:refs/heads/main");            want_ok "P0  first push to an empty remote scans history" $? "$out" "2 of 2 commit(s) adding text scanned, clean"
 from_base u1; out=$(push "u1:refs/heads/u1");  want_ok "P1a new branch with no new commits passes" $? "$out" "no new commits"
 echo more >> "$C/README.md"; commit "$C" upd
@@ -1000,7 +1046,7 @@ out=$(mpush md11:refs/heads/md11);             want_ok      "MD11 metadata: a ma
 mfrom md12; mc md12.txt "clean"; tlist "$M" "$MARK("
 out=$( (cd "$M" && git push r md12:refs/heads/md12 2>&1) ); rc=$?; tlist "$M" "$MARK"
                                                want_refused "MD12 metadata: a pattern that does not compile refuses the metadata scan" $rc "$out" "metadata scan did not run"
-want_says "MS13 pre-push: the tree's scan of that pattern refuses too, naming the do-not-publish scan" $rc "$out" "REFUSING -- the do-not-publish scan did not run"
+want_says "MS13 pre-push: the tree's scan of that pattern refuses too, naming the do-not-publish scan" $rc "$out" "REFUSING [pre-push/scan-failed] -- the do-not-publish scan did not run"
                                                no_leak      "MD12b metadata: that refusal does not quote the pattern" "$out"
 git -C "$M" checkout -q main 2>/dev/null || git -C "$M" checkout -q -B main "$MBASE"
 
@@ -1239,7 +1285,9 @@ RULES=(GR1:generic-api-key-40char-in-config GR2:generic-secret-assignment GR3:ki
        GR5:db-url-with-password GR6:private-key-pem GR7:aws-named-access-key-id GR8:aws-named-secret-access-key
        GR9:monitoring-ping-url-uuid "GR10:bearer-header:an = inside the token"
        "GR11:generic-api-key-40char-in-config:its key name on another line"
-       "GR12:private-key-pem:a tab after BEGIN" "GR13:private-key-pem:two spaces inside PRIVATE KEY")
+       "GR12:private-key-pem:a tab after BEGIN" "GR13:private-key-pem:two spaces inside PRIVATE KEY"
+       GR14:supabase-access-token GR15:supabase-secret-key)
+rule_ids() { grep -oE '"RuleID": *"[^"]*"' "$1" | sed -E 's/.*"([^"]*)"$/\1/' | sort -u | tr '\n' ' '; }  # REPORT: its rule ids
 rule_fires() {  # CASE ID [NOTE]: 0 only when the block under "# ID" (or "# ID, NOTE"), scanned alone, has a finding whose RuleID is ID
     local d="$TMP/rules/$1" rep="$TMP/rules/$1.json" h="# $2${3:+, $3}"; mkdir -p "$d"
     awk -v h="$h" '$0 == h {on = 1; next} on && !NF {exit} on' "$FIXTURE" > "$d/config.local.txt" 2>/dev/null
@@ -1248,12 +1296,68 @@ rule_fires() {  # CASE ID [NOTE]: 0 only when the block under "# ID" (or "# ID, 
         --report-format json --report-path "$rep" --exit-code 0 2>&1 || { echo "gitleaks did not run"; return 1; }
     grep -qE "\"RuleID\": *\"$2\"" "$rep" && return 0
     # Name the rules that did fire, never the matched text.
-    echo "reported only: $(grep -oE '"RuleID": *"[^"]*"' "$rep" | sed -E 's/.*"([^"]*)"$/\1/' | sort -u | tr '\n' ' ')"
+    echo "reported only: $(rule_ids "$rep")"
     return 1; }
 for r in "${RULES[@]}"; do
     IFS=: read -r c id note <<< "$r"
     out=$(rule_fires "$c" "$id" "$note");      want_ok      "$c credential rule $id catches its own fixture block${note:+ ($note)}, under its own id" $? "$out"
 done
+
+# ============================== Supabase's shapes =================================================
+# gitleaks's own rules have none for Supabase, and its generic rule needs a key name and an assignment, so a bare
+# access token (sbp_...) or secret key (sb_secret_...) in prose went through. supabase-access-token and
+# supabase-secret-key catch them, in place until a gitleaks release covers them. Supabase's page on API keys calls
+# the publishable key (sb_publishable_...) safe to expose, source code included, so it must pass. Every value is made
+# here at run time and never printed; a failing case names only the rules that fired.
+sbr() {  # ALPHABET N: N characters drawn from ALPHABET
+    od -An -tu1 -N128 /dev/urandom | awk -v a="$1" -v n="$2" '
+        {for (i = 1; i <= NF; i++) {printf "%s", substr(a, $i % length(a) + 1, 1); if (++c == n) exit}}'; }
+SBHEX=0123456789abcdef; SBAN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789; nl=$'\n'
+sbsec() { printf 'sb_secret_%s_%s' "$(sbr "$SBAN" 22)" "$(sbr "$SBAN" 8)"; }   # Supabase's secret key: 22, _, 8
+sbscan() {  # CASE WANT TEXT: TEXT alone in a fresh folder, scanned with ROOT's .gitleaks.toml; 0 when WANT, a rule
+            # id, is among the findings, or, WANT "none", when there is no finding at all
+    local d="$TMP/sb/$1" rep="$TMP/sb/$1.json" got; mkdir -p "$d"; printf '%s' "$3" > "$d/note.txt"
+    gitleaks dir "$d" --config "$ROOT/.gitleaks.toml" --no-banner --log-level error \
+        --report-format json --report-path "$rep" --exit-code 0 2>&1 || { echo "gitleaks did not run"; return 1; }
+    got=$(rule_ids "$rep")
+    if [[ "$2" == none ]]; then [[ -z "$got" ]] && return 0; echo "reported: $got"; return 1; fi
+    [[ " $got" == *" $2 "* ]] && return 0; echo "reported only: $got"; return 1; }
+A=supabase-access-token; K=supabase-secret-key
+out=$(sbscan SR1 $A "sbp_$(sbr $SBHEX 40)$nl");                       want_ok "SR1 $A: sbp_ and 40 hex, alone on a line" $? "$out"
+out=$(sbscan SR2 $A "Use sbp_v0_$(sbr $SBHEX 40) for now.$nl");         want_ok "SR2 $A: the versioned form, sbp_v0_ and 40 hex, in prose" $? "$out"
+out=$(sbscan SR3 $A "The token sbp_$(sbr $SBAN 40) works.$nl");        want_ok "SR3 $A: 40 letters and digits, mixed case" $? "$out"
+out=$(sbscan SR4 $A "sbp_$(sbr $SBHEX 30)$nl");                       want_ok "SR4 $A: 30 hex" $? "$out"
+out=$(sbscan SR5 $A "sbp_$(sbr $SBHEX 60)$nl");                       want_ok "SR5 $A: 60 hex" $? "$out"
+out=$(sbscan SR6 $A "A scoped one: sbp_fc$(sbr $SBHEX 38).$nl");       want_ok "SR6 $A: a scoped token, sbp_fc and hex" $? "$out"
+out=$(sbscan SR7 $A "https://api.example.com/v1?access_token=sbp_$(sbr $SBHEX 40)&x=1$nl")
+                                               want_ok "SR7 $A: in a URL's query string" $? "$out"
+out=$(sbscan SR8 $A "SUPABASE_ACCESS_TOKEN=sbp_$(sbr $SBHEX 40)$nl");  want_ok "SR8 $A: the NAME=value form, under its own id too" $? "$out"
+out=$(sbscan SR9 $A "The last line, sbp_$(sbr $SBHEX 40)");             want_ok "SR9 $A: at the end of a file with no final newline" $? "$out"
+out=$(sbscan SR10 $K "$(sbsec)$nl");                                  want_ok "SR10 $K: sb_secret_ and 22, _, 8, alone on a line" $? "$out"
+out=$(sbscan SR11 $K "The backend reads \"$(sbsec)\" at start.$nl");   want_ok "SR11 $K: in double quotes, in prose" $? "$out"
+out=$(sbscan SR12 $K "Run it with \`$(sbsec)\` set.$nl");              want_ok "SR12 $K: in backticks" $? "$out"
+out=$(sbscan SR13 $K "sb_secret_$(sbr "$SBAN-_" 24)$nl");             want_ok "SR13 $K: 24 characters, - and _ among them" $? "$out"
+out=$(sbscan SR14 $K "sb_secret_$(sbr $SBAN 48)$nl");                 want_ok "SR14 $K: 48 characters" $? "$out"
+out=$(sbscan SR15 $K "{\"secret_key\": \"$(sbsec)\"}$nl");              want_ok "SR15 $K: the JSON form, under its own id too" $? "$out"
+out=$(sbscan SR16 $K "The last line, $(sbsec)");                       want_ok "SR16 $K: at the end of a file with no final newline" $? "$out"
+out=$(sbscan SX1 none "The page loads sb_publishable_$(sbr $SBAN 22)_$(sbr $SBAN 8) in its script.$nl")
+                                               want_ok "SX1 control: a publishable key, public by design, is no finding" $? "$out"
+out=$(sbscan SX2 none "Supabase access tokens start with sbp_ and secret keys with sb_secret_.$nl")
+                                               want_ok "SX2 control: prose naming the prefixes is no finding" $? "$out"
+out=$(sbscan SX3 none "Put sbp_<your token> there; the page shows sb_secret_... and sb_secret_xxx, sb_publishable_xxx.$nl")
+                                               want_ok "SX3 control: placeholders are no finding" $? "$out"
+out=$(sbscan SX4 none "sbp_$(printf '%040d' 0 | tr 0 x)$nl");         want_ok "SX4 control: sbp_ and 40 x, a placeholder's low entropy, is no finding" $? "$out"
+out=$(sbscan SX5 none "sbp_abc and sb_secret_abc$nl");                 want_ok "SX5 control: a prefix and three letters is no finding" $? "$out"
+# The same through pre-commit, as a commit carrying one: the tokens are refused, the publishable key commits.
+git -C "$P" reset -q; SBB=$(git -C "$P" rev-parse HEAD)
+sbcommit() { printf '%s\n' "$1" > "$P/sb.txt"; git -C "$P" add sb.txt; pc; }
+sbreset() { git -C "$P" reset -q --hard "$SBB"; rm -f "$P/sb.txt"; }
+out=$(sbcommit "The Supabase access token is sbp_$(sbr $SBHEX 40) for now."); rc=$?; sbreset
+                                               want_refused "SB1 pre-commit: a bare Supabase access token in prose is refused" $rc "$out" "credential shapes"
+out=$(sbcommit "The backend reads $(sbsec) at start."); rc=$?; sbreset
+                                               want_refused "SB2 pre-commit: a bare Supabase secret key in prose is refused" $rc "$out" "credential shapes"
+out=$(sbcommit "The page loads sb_publishable_$(sbr $SBAN 22)_$(sbr $SBAN 8) in its script."); rc=$?; sbreset
+                                               want_ok      "SB3 control: a Supabase publishable key, public by design, commits" $rc "$out"
 
 # ============================== the project's own checks: hook-checks/ ==========================
 # A spawn's extra checks live in hook-checks/<hook>/ and run inside the kit's hooks, after the kit's
@@ -1275,6 +1379,48 @@ rm -f "$TMP/x4-ran"; cp "$FIXTURE" "$P/config.local.txt"; git -C "$P" add config
 out=$(pc); rc=$?; [[ -f "$TMP/x4-ran" ]] && rc=0
                                                want_refused "X5 pre-commit: the kit's refusal stands, and no project check runs" $rc "$out" "credential shapes"
 git -C "$P" reset -q; rm -f "$P/config.local.txt"; rm -rf "$P/hook-checks"
+# A project's own check that reads the do-not-publish list does it through the pinned install's reader (D9): it
+# sources "$KIT_INSTALL/leak-detection/read-leak-pattern.sh", which the stub exports KIT_INSTALL to name, calls
+# kit_list_file and read_leak_pattern, and refuses when either fails or the list is empty (rule 13 (d)), never passes.
+# The fixture is this suite's, never shipped. Its KIT_INSTALL is a scratch one: the swapped reader, so the list is read
+# in this suite's home, and the copies layer with nothing to check, since pre-commit runs it whenever KIT_INSTALL is set.
+D9I="$TMP/d9-install"; mkdir -p "$D9I/leak-detection" "$D9I/ci"; : > "$D9I/CLASSES"; : > "$D9I/ci/copies.txt"
+: > "$D9I/MANIFEST.sha256"; printf 'tag=v9.9.9\n' > "$D9I/RELEASE"
+rswap "$H/read-leak-pattern.sh" "$D9I/leak-detection/read-leak-pattern.sh"
+install -m 0755 "$H/check-copies.sh" "$D9I/leak-detection/check-copies.sh"
+rm -rf "$XC"; mkdir -p "$XC"; cat > "$XC/10-own-terms" <<'EOF'
+#!/usr/bin/env bash
+# A project's own check: no line this commit stages holds a listed term, the list read through the pinned install.
+. "${KIT_INSTALL:?}/leak-detection/read-leak-pattern.sh" || { echo "own-terms: no reader in the install" >&2; exit 2; }
+kit_list_file || { echo "own-terms: the list has no place: $LP_ERROR" >&2; exit 2; }
+read_leak_pattern "$KL_FILE" || { echo "own-terms: the list didn't load: $LP_ERROR" >&2; exit 2; }
+[[ -n "$LP_VALUE" ]] || { echo "own-terms: the list is empty" >&2; exit 2; }
+added=$(git diff --cached -U0 --no-color | sed -n 's/^+//p')
+# The gates' rule: a match under LC_ALL=C or in the caller's locale counts.
+if printf '%s\n' "$added" | LC_ALL=C grep -q -a -i -E -e "$LP_VALUE" || printf '%s\n' "$added" | grep -q -a -i -E -e "$LP_VALUE"; then
+    echo "own-terms: a staged line holds a listed term" >&2; exit 1
+fi
+touch "$(git rev-parse --git-dir)/d9-ran"
+exit 0
+EOF
+chmod +x "$XC/10-own-terms"
+d9c() { (cd "$P" && env KIT_INSTALL="$D9I" git commit -q -m d9 2>&1); }
+# P's list as this suite's one row for these cases, its list and pin put back after.
+cp -p "$(lp "$P")" "$TMP/d9-list.kept"; cp -p "$P/.git/leak-pattern.pin" "$TMP/d9-pin.kept"; tlist "$P" "$MARK"
+rm -f "$P/.git/d9-ran"; echo "plain d9" > "$P/d9.txt"; git -C "$P" add d9.txt; out=$(d9c); rc=$?; [[ -f "$P/.git/d9-ran" ]] || rc=1
+                                               want_ok      "D90 a project's check reading the list through KIT_INSTALL's reader runs and passes a clean commit" $rc "$out"
+echo "names $MARK" > "$P/d9b.txt"; git -C "$P" add d9b.txt; out=$(d9c)
+                                               want_refused "D91 that check refuses a staged listed term" $? "$out" "10-own-terms exited 1"
+mv "$(lp "$P")" "$TMP/d9-list.aside"; out=$(d9c); rc=$?; mv "$TMP/d9-list.aside" "$(lp "$P")"
+                                               want_refused "D92 with the list unable to load, that check refuses, never passes" $rc "$out" "10-own-terms exited 2"
+# D93: the same check without its own empty-value line relies on the reader alone, which refuses a list file that
+# isn't there (it returned 0 with an empty value before, so such a check passed).
+sed '/^\[\[ -n "\$LP_VALUE" \]\] ||/d' "$XC/10-own-terms" > "$XC/10-own-terms.new" && mv "$XC/10-own-terms.new" "$XC/10-own-terms" && chmod +x "$XC/10-own-terms"
+mv "$(lp "$P")" "$TMP/d9-list.aside"; out=$(d9c); rc=$?; mv "$TMP/d9-list.aside" "$(lp "$P")"
+[[ "$(cat "$XC/10-own-terms")" == *'LP_VALUE" ]] ||'* ]] && rc=0   # the plant took, or the case can't pass
+                                               want_refused "D93 a check with no empty-value line of its own still refuses a missing list, the reader refusing it" $rc "$out" "10-own-terms exited 2"
+git -C "$P" reset -q; rm -f "$P/d9b.txt" "$P/.git/d9-ran"; rm -rf "$XC"
+cp -p "$TMP/d9-list.kept" "$(lp "$P")"; cp -p "$TMP/d9-pin.kept" "$P/.git/leak-pattern.pin"
 mkdir -p "$P/hook-checks"; : > "$XC"; echo e6 > "$P/e6.txt"; git -C "$P" add e6.txt
 out=$(pc);                                     want_refused "X6 pre-commit: hook-checks/pre-commit that is not a folder refuses" $? "$out" "not a folder"
 git -C "$P" reset -q; rm -rf "$P/hook-checks" "$P/e6.txt"
@@ -1895,6 +2041,13 @@ out=$(har "$d" --remote none);                 want_refused "HA31 history audit:
                                                no_leak      "HA31b history audit: and that refusal doesn't print the list" "$out"
 d="$TMP/ha-twice"; ha_repo "$d"; printf '%s\n' "LEAK_PATTERN='zqone'" "LEAK_PATTERN='$MARK'" > "$(lp "$d")"
 out=$(har "$d" --remote none);                 want_refused "HA32 history audit: a list that sets LEAK_PATTERN twice refuses" $? "$out" "not in a shape"
+# HA33: the audit's guard: an exit 0 right after the guard is set refuses as stopped-early, so a stop before it has read
+# the history never passes as a clean result ("what it hadn't reached was never read").
+hx="$TMP/ha-early"; mkdir -p "$hx/bin"
+awk '!done && index($0, "refuse() {") == 1 {print "exit 0"; done = 1} {print}' "$HA" > "$hx/bin/kit-history-audit"
+hxn=$(( $(wc -l < "$hx/bin/kit-history-audit") - $(wc -l < "$HA") ))
+out=$("$BASH_BIN" "$hx/bin/kit-history-audit" --control "$TMP/ha-clean" 2>&1); rc=$?; (( hxn == 1 )) || rc=0
+                                               want_refused "HA33 history audit: an exit 0 right after its guard is set refuses, never passing what it hadn't read" $rc "$out" "stopped before it finished"
 # The control: a term made from the project's own list, never printed, in all ten fields of a throwaway repository.
 out=$(har --control "$TMP/ha-clean");          want_ok      "HC1 history control: the project's own list goes red on 10 of 10 fields" $? "$out" "control: 10 of 10 fields red"
                                                no_leak_at   "HC1b and it prints no term" "$out" ""
@@ -2049,7 +2202,7 @@ fi
 out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
         && env -u LEAK_PATTERN PATH="$TMP/nopy" "$BASH_BIN" "$HKP/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
 want_says "MS41 pre-push with no python3: the list's place can't be found, the home unread; install python3, or ask IT" $rc "$out" \
-    "pre-push: REFUSING -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
+    "pre-push: REFUSING [pre-push/list-place-unknown] -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
     "  You can: install python3 where you may, then push again." "  If IT manages this machine: ask IT for python3."
 [[ $rc -ne 0 && "$out" != *move-list* ]]
                                                result       "MS41b and it sends no one to move-list" $? "exit $rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
@@ -2060,7 +2213,7 @@ chmod 0755 "$TMP/stubpy/python3"
 out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
         && env -u LEAK_PATTERN PATH="$TMP/stubpy:$TMP/nopy" "$BASH_BIN" "$HKU/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
 want_says "MS44 pre-push where python3 is on PATH but doesn't run: install python3, or ask IT, as with none" $rc "$out" \
-    "pre-push: REFUSING -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
+    "pre-push: REFUSING [pre-push/list-place-unknown] -- the do-not-publish list's place can't be found: the home folder can't be read from the user database (python3 reads it)." \
     "  You can: install python3 where you may, then push again." "  If IT manages this machine: ask IT for python3."
 # Where python3 runs but the user database gives this user no usable home (no entry for the user's id, or a home that
 # isn't an absolute path on one line: kit_list_home's checks), installing python3 wouldn't help: a refusal of its own
@@ -2069,7 +2222,7 @@ if command -v python3 >/dev/null 2>&1 && python3 -I -c pass >/dev/null 2>&1; the
     out=$( (cd "$LH" && printf 'refs/heads/main %s refs/heads/main %s\n' "$LH_CLEAN" "$LHB" > "$TMP/pp.in" \
             && env -u LEAK_PATTERN "$BASH_BIN" "$HKU/pre-push" r "$TMP/lh.git" < "$TMP/pp.in") 2>&1 ); rc=$?
     want_says "MS43 pre-push where python3 runs but the user database gives no usable home: a refusal naming that cause" $rc "$out" \
-        "pre-push: REFUSING -- the do-not-publish list's place can't be found: python3 runs, but the user database gives this user no home folder the kit can use (no entry for this user's id, or a home that isn't an absolute path on one line)." \
+        "pre-push: REFUSING [pre-push/no-home] -- the do-not-publish list's place can't be found: python3 runs, but the user database gives this user no home folder the kit can use (no entry for this user's id, or a home that isn't an absolute path on one line)." \
         "  You can: push from an account the user database lists, with an absolute home folder (in a container, give its user a line in /etc/passwd); the kit takes the home only from there, never from HOME." \
         "  If IT manages this machine: ask IT to give your account an entry in the user database with an absolute home folder."
     [[ $rc -ne 0 && "$out" != *"install python3"* && "$out" != *"ask IT for python3"* && "$out" != *move-list* ]]

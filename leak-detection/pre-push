@@ -61,8 +61,9 @@
 # exactly this reason; none may be silenced with `2>/dev/null` or `|| true`.
 #
 # Bypass (deliberate escape hatch):  git push --no-verify   -- it skips BOTH layers and every project check.
-# A fresh `git clone` runs no hook. A pinned project gets its stubs from bin/kit-pin (to or migrate; restore rebuilds
-# only the install); the kit itself points core.hooksPath at leak-detection (leak-detection/README.md, Setup).
+# A fresh `git clone` runs no hook. A pinned project gets its stubs from bin/kit-pin (to or migrate; restore writes
+# them too where no hooks path is set); the kit itself points core.hooksPath at leak-detection (leak-detection/README.md,
+# Setup).
 #
 set -uo pipefail
 # Text handling runs byte-wise, matching in the caller's locale. In a UTF-8 locale BSD's
@@ -79,7 +80,7 @@ kit_passed=0
 kit_guard() {
     local rc=$?
     if [[ $rc -eq 0 && "${kit_passed:-0}" != 1 ]]; then
-        echo "pre-push: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+        echo "pre-push: REFUSING [pre-push/stopped-early] -- the check stopped before it finished, so what it had not reached was never checked." >&2
         exit 1
     fi
 }
@@ -165,13 +166,13 @@ elif ! read_leak_pattern_selftest; then
     reader_fault="it failed its selftest"
 fi
 if [[ -n "$reader_fault" ]]; then
-    echo "pre-push: REFUSING -- the list reader leak-detection/read-leak-pattern.sh can't be used: $reader_fault." >&2
+    echo "pre-push: REFUSING [pre-push/reader-unusable] -- the list reader leak-detection/read-leak-pattern.sh can't be used: $reader_fault." >&2
     echo "  It travels beside this hook; restore it from the kit's release this project took." >&2
     exit 1
 fi
 
 if ! command -v git >/dev/null 2>&1; then
-    echo "pre-push: REFUSING -- git was not found, so nothing this push sends can be read." >&2
+    echo "pre-push: REFUSING [pre-push/no-git] -- git was not found, so nothing this push sends can be read." >&2
     exit 1
 fi
 
@@ -181,13 +182,13 @@ fi
 # old, or one whose version can't be read, is refused by name (hooks_test OG2, OG4).
 gv=$(git --version 2>/dev/null); gv=${gv#git version }; gv=${gv%% *}; gmaj=${gv%%.*}; gmin=${gv#*.}; gmin=${gmin%%[!0-9]*}
 if [[ ! "$gmaj" =~ ^[0-9]+$ || ! "$gmin" =~ ^[0-9]+$ || "$gv" != *.* ]]; then
-    echo "pre-push: REFUSING -- could not read git's version, and this hook needs git 2.31 or later." >&2
+    echo "pre-push: REFUSING [pre-push/git-version-unknown] -- could not read git's version, and this hook needs git 2.31 or later." >&2
     echo "  You can: install git 2.31 or later where you may, then push again." >&2
     echo "  If IT manages this machine: ask IT for git 2.31 or later." >&2
     exit 1
 fi
 if (( gmaj < 2 || (gmaj == 2 && gmin < 31) )); then
-    echo "pre-push: REFUSING -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can't read merges and can colour the log gitleaks reads." >&2
+    echo "pre-push: REFUSING [pre-push/git-too-old] -- git $gv is older than 2.31, the oldest this hook can read correctly: an older git can't read merges and can colour the log gitleaks reads." >&2
     echo "  You can: install git 2.31 or later where you may, then push again." >&2
     echo "  If IT manages this machine: ask IT for git 2.31 or later." >&2
     exit 1
@@ -201,7 +202,7 @@ fi
 export GIT_NO_REPLACE_OBJECTS=1
 grafts=$(git rev-parse --git-path info/grafts 2>/dev/null) || grafts=""
 if [[ -n "$grafts" && -s "$grafts" ]]; then
-    echo "pre-push: REFUSING -- this repository has grafts, which change the history git shows, so what this push sends can't be read as it is." >&2
+    echo "pre-push: REFUSING [pre-push/grafts] -- this repository has grafts, which change the history git shows, so what this push sends can't be read as it is." >&2
     echo "  Remove them (info/grafts, or the file GIT_GRAFT_FILE names); git replace --convert-graft-file turns them into replace refs, which this hook ignores." >&2
     exit 1
 fi
@@ -244,12 +245,12 @@ if ! kit_list_file; then
     # python3 on PATH that doesn't run counts as none.
     if [[ "$LP_ERROR" == *"the home folder can't be read from the user database"* ]] \
        && command -v python3 >/dev/null 2>&1 && python3 -I -c pass >/dev/null 2>&1; then
-        echo "pre-push: REFUSING -- the do-not-publish list's place can't be found: python3 runs, but the user database gives this user no home folder the kit can use (no entry for this user's id, or a home that isn't an absolute path on one line)." >&2
+        echo "pre-push: REFUSING [pre-push/no-home] -- the do-not-publish list's place can't be found: python3 runs, but the user database gives this user no home folder the kit can use (no entry for this user's id, or a home that isn't an absolute path on one line)." >&2
         echo "  You can: push from an account the user database lists, with an absolute home folder (in a container, give its user a line in /etc/passwd); the kit takes the home only from there, never from HOME." >&2
         echo "  If IT manages this machine: ask IT to give your account an entry in the user database with an absolute home folder." >&2
         exit 1
     fi
-    echo "pre-push: REFUSING -- the do-not-publish list's place can't be found: $LP_ERROR." >&2
+    echo "pre-push: REFUSING [pre-push/list-place-unknown] -- the do-not-publish list's place can't be found: $LP_ERROR." >&2
     if [[ "$LP_ERROR" == *"the home folder can't be read from the user database"* ]]; then
         echo "  You can: install python3 where you may, then push again." >&2
         echo "  If IT manages this machine: ask IT for python3." >&2
@@ -261,26 +262,26 @@ fi
 LIST_FROM=$KL_SHOW
 if [[ -e "$KL_FILE" || -L "$KL_FILE" ]]; then
     if [[ ! -f "$KL_FILE" || ! -r "$KL_FILE" ]]; then
-        echo "pre-push: REFUSING -- $KL_SHOW exists but can't be read (not a readable file), so the do-not-publish list can't be checked." >&2
+        echo "pre-push: REFUSING [pre-push/list-unreadable] -- $KL_SHOW exists but can't be read (not a readable file), so the do-not-publish list can't be checked." >&2
         echo "  You can: make it a file this user can read (chmod 600 on the file), or put the list back; if a sandbox read block you set yourself blocks the list's folder, add ~/.config/morrowcairn/lists to sandbox.filesystem.allowRead in your user settings." >&2
         echo "  If IT manages this machine: a sandbox read policy may block the do-not-publish list's folder, ~/.config/morrowcairn/lists/, so that a list there looks missing or unreadable here: ask IT to allow reading that folder rather than changing it in your own settings." >&2
         exit 1
     fi
     if ! read_leak_pattern "$KL_FILE"; then
-        echo "pre-push: REFUSING -- $KL_SHOW is not in a shape this hook reads: $LP_ERROR." >&2
+        echo "pre-push: REFUSING [pre-push/list-shape] -- $KL_SHOW is not in a shape this hook reads: $LP_ERROR." >&2
         echo "  You can: give it the shape this hook reads: blank lines, full-line comments and one LEAK_PATTERN='...' line (leak-detection/README.md, Setup)." >&2
         exit 1
     fi
     LEAK_PATTERN="$LP_VALUE"
     [[ -z "$LP_EXPORT" ]] || export LEAK_PATTERN    # as sourcing the export form did, for a project's own checks
     if [[ -z "$LEAK_PATTERN" ]]; then
-        echo "pre-push: REFUSING -- LEAK_PATTERN is not configured: $KL_SHOW sets no list." >&2
+        echo "pre-push: REFUSING [pre-push/list-empty] -- LEAK_PATTERN is not configured: $KL_SHOW sets no list." >&2
         no_list_help
         exit 1
     fi
 fi
 if [[ -z "${LEAK_PATTERN:-}" ]]; then
-    echo "pre-push: REFUSING -- LEAK_PATTERN is not configured: this project has no list at $KL_SHOW." >&2
+    echo "pre-push: REFUSING [pre-push/no-list] -- LEAK_PATTERN is not configured: this project has no list at $KL_SHOW." >&2
     if [[ -e "$GITDIR/leak-pattern" || -L "$GITDIR/leak-pattern" ]]; then
         echo "  This clone still holds one at .git/leak-pattern, the list's old place, which no hook reads now: move it with $kp_cmd move-list (a copy; the old file stays for you to delete)." >&2
     fi
@@ -292,11 +293,11 @@ fi
 # passing. The pin sits in the clone's .git, untracked: .git/leak-pattern.pin, in the shared git folder (PINDIR) from
 # every worktree, which bin/kit-pin repin writes. A refusal gives rows, never a term or a hash.
 if why=$(kit_no_sha256); then
-    echo "pre-push: REFUSING -- $why, so the do-not-publish list can't be checked against its pin." >&2
+    echo "pre-push: REFUSING [pre-push/no-hasher] -- $why, so the do-not-publish list can't be checked against its pin." >&2
     exit 1
 fi
 if ! kit_pin_check "$LEAK_PATTERN" "$PINDIR/leak-pattern.pin"; then
-    echo "pre-push: REFUSING -- the do-not-publish list (from $LIST_FROM) doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." >&2
+    echo "pre-push: REFUSING [pre-push/list-pin-mismatch] -- the do-not-publish list (from $LIST_FROM) doesn't match its pin, .git/leak-pattern.pin: $KP_ERROR." >&2
     echo "  You can: if the list changed on purpose, record why and repin it ($kp_cmd repin local; leak-detection/README.md," >&2
     echo "  Changing the list); if it didn't, put the list back." >&2
     echo "  The project's owner: whether the change to the list was meant." >&2
@@ -360,7 +361,7 @@ for line in ${refs[@]+"${refs[@]}"}; do
         else
             why="LEAK_PATTERN did not compile as an extended regex, or git grep failed"
         fi
-        echo "pre-push: REFUSING -- the do-not-publish scan did not run (git grep exit $rc): $why." >&2
+        echo "pre-push: REFUSING [pre-push/scan-failed] -- the do-not-publish scan did not run (git grep exit $rc): $why." >&2
         echo "  A scan that could not run examined nothing; that is not a clean result." >&2
         status=1
         continue
@@ -379,7 +380,7 @@ for line in ${refs[@]+"${refs[@]}"}; do
         rc=$?
     fi
     if (( rc > 1 )); then
-        echo "pre-push: REFUSING -- allowlist filter did not run (grep exit $rc): ALLOW is malformed, or grep is missing." >&2
+        echo "pre-push: REFUSING [pre-push/allowlist-failed] -- allowlist filter did not run (grep exit $rc): ALLOW is malformed, or grep is missing." >&2
         echo "  Markers were found in ${local_sha:0:12} and could not be filtered." >&2
         status=1
         continue
@@ -391,7 +392,7 @@ for line in ${refs[@]+"${refs[@]}"}; do
     # file name is printed only when grep says it does not match the list (exit 1); otherwise it is
     # withheld, as is anything grep could not decide. A hit that can't be named still blocks, counted.
     if (( nhit > 0 )); then
-        echo "pre-push: BLOCKED -- listed terms in the tree of ${local_sha:0:12} (file and line; matched text not shown):" >&2
+        echo "pre-push: BLOCKED [pre-push/listed-terms-tree] -- listed terms in the tree of ${local_sha:0:12} (file and line; matched text not shown):" >&2
         names=$(printf '%s\n' "$hits" \
             | awk -v p="$local_sha:" '
                 index($0, p) == 1 { s = substr($0, length(p) + 1)
@@ -455,13 +456,13 @@ if (( ${#scan_refs[@]} > 0 )); then
     # Under Claude Code's sandbox read block a gitleaks in a hidden folder looks missing, as the install does to the
     # stub, so the refusal names both causes and what to let sandboxed commands read.
     if ! command -v gitleaks >/dev/null 2>&1; then
-        echo "pre-push: REFUSING -- gitleaks was not found (missing, or hidden from this process), so the commits being pushed cannot be scanned for credentials." >&2
+        echo "pre-push: REFUSING [pre-push/no-gitleaks] -- gitleaks was not found (missing, or hidden from this process), so the commits being pushed cannot be scanned for credentials." >&2
         echo "  You can: install gitleaks 8.30.1 if it is missing (the kit's ci/gitleaks.yml names each platform's archive and its sha256), then push again; if it is hidden by a sandbox read block you set yourself (one that blocks reading the home folder makes its folder look missing), add its folder to sandbox.filesystem.allowRead in your user settings." >&2
         echo "  If IT manages this machine: ask IT to install or allow gitleaks 8.30.1. A sandbox read policy may block its folder: ask IT to allow reading it rather than changing it in your own settings." >&2
         exit 1
     fi
     if [[ -z "$REMOTE_URL" ]]; then
-        echo "pre-push: REFUSING -- no remote URL was passed to the hook, so the new commits cannot be determined." >&2
+        echo "pre-push: REFUSING [pre-push/no-remote-url] -- no remote URL was passed to the hook, so the new commits cannot be determined." >&2
         exit 1
     fi
 
@@ -469,7 +470,7 @@ if (( ${#scan_refs[@]} > 0 )); then
     advertised=$(git ls-remote "$REMOTE_URL" 2>/dev/null)
     rc=$?
     if (( rc != 0 )); then
-        echo "pre-push: REFUSING -- could not list the remote's refs (git ls-remote exit $rc)." >&2
+        echo "pre-push: REFUSING [pre-push/remote-refs-unread] -- could not list the remote's refs (git ls-remote exit $rc)." >&2
         echo "  Without them the hook cannot tell which commits are new, so it cannot scan them." >&2
         exit 1
     fi
@@ -545,11 +546,11 @@ if (( ${#scan_refs[@]} > 0 )); then
         done
 
         if [[ -n "$broken" ]]; then
-            echo "pre-push: REFUSING -- the metadata scan did not run for $label: $broken." >&2
+            echo "pre-push: REFUSING [pre-push/metadata-scan-failed] -- the metadata scan did not run for $label: $broken." >&2
             echo "  A scan that could not run examined nothing; that is not a clean result." >&2
             status=1
         elif (( ${#found[@]} > 0 )); then
-            echo "pre-push: BLOCKED -- listed terms in the metadata $label adds (matched text not shown):" >&2
+            echo "pre-push: BLOCKED [pre-push/listed-terms-metadata] -- listed terms in the metadata $label adds (matched text not shown):" >&2
             printf '  %s\n' "${found[@]}" >&2
             echo "  Rewrite what is named before pushing: the commit identity or message (git commit --amend," >&2
             echo "  or a rebase for a commit below the tip), the tag (delete and recreate it), or the ref's name." >&2
@@ -571,7 +572,7 @@ if (( ${#scan_refs[@]} > 0 )); then
         stats=$(git log --no-color --diff-merges=first-parent --format='@%H' --numstat --diff-filter=ACMRT "${range[@]}" 2>/dev/null)
         rc_stats=$?
         if (( rc_total != 0 || rc_merges != 0 || rc_stats != 0 )); then
-            echo "pre-push: REFUSING -- could not compute the commits $label adds (git exits $rc_total/$rc_merges/$rc_stats)." >&2
+            echo "pre-push: REFUSING [pre-push/commits-uncounted] -- could not compute the commits $label adds (git exits $rc_total/$rc_merges/$rc_stats)." >&2
             status=1
             continue
         fi
@@ -599,7 +600,7 @@ if (( ${#scan_refs[@]} > 0 )); then
         # Binaries get their own scan, and it does not stand in for the text scan below: a push that
         # carries a binary still has its text scanned, whatever the binary verdict.
         if (( binaries > 0 )) && [[ $binscan == bad ]]; then
-            echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and kit.binaries at its tip isn't the one line scan=on, so whether to scan them can't be read." >&2
+            echo "pre-push: REFUSING [pre-push/binaries-not-on] -- $label adds or changes $binaries binary file(s), and kit.binaries at its tip isn't the one line scan=on, so whether to scan them can't be read." >&2
             echo "  You can: make kit.binaries the one line scan=on, or, to turn the scan off, remove kit.binaries and records/reviewed_binaries.txt (leak-detection/README.md, Binary files)." >&2
             echo "  The project's owner: whether this project scans binaries." >&2
             status=1
@@ -608,11 +609,11 @@ if (( ${#scan_refs[@]} > 0 )); then
         elif (( binaries > 0 )); then
             scanner="$hookdir/scan-binaries.py"
             if ! command -v python3 >/dev/null 2>&1; then
-                echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and python3 is not installed, so they cannot be checked." >&2
+                echo "pre-push: REFUSING [pre-push/binaries-no-python3] -- $label adds or changes $binaries binary file(s), and python3 is not installed, so they cannot be checked." >&2
                 echo "  You can: install python3 where you may, then push again." >&2
                 status=1
             elif [[ ! -f "$scanner" ]]; then
-                echo "pre-push: REFUSING -- $label adds or changes $binaries binary file(s), and $scanner is missing, so they cannot be checked." >&2
+                echo "pre-push: REFUSING [pre-push/binaries-no-scanner] -- $label adds or changes $binaries binary file(s), and $scanner is missing, so they cannot be checked." >&2
                 status=1
             else
                 echo "pre-push: binary scan $label: $binaries binary file change(s) in the new commits" >&2
@@ -621,12 +622,12 @@ if (( ${#scan_refs[@]} > 0 )); then
                 KIT_CALLER_LOCALE="$KIT_CALLER_LOCALE" LEAK_PATTERN="$LEAK_PATTERN" python3 -I "$scanner" "${range[@]}"
                 rc=$?
                 if (( rc == 1 )); then
-                    echo "pre-push: BLOCKED -- $label adds binary file(s) that are not cleared (above)." >&2
+                    echo "pre-push: BLOCKED [pre-push/binaries] -- $label adds binary file(s) that are not cleared (above)." >&2
                     echo "  You can: review each binary named above and clear what its line says (the line to add to records/reviewed_binaries.txt, or what to strip), or take it out of the push (leak-detection/README.md, Binary files)." >&2
                     echo "  The project's owner: whether this project scans binaries." >&2
                     status=1
                 elif (( rc != 0 )); then
-                    echo "pre-push: REFUSING -- the binary scan did not run for $label (exit $rc); nothing it did not examine is cleared." >&2
+                    echo "pre-push: REFUSING [pre-push/binary-scan-failed] -- the binary scan did not run for $label (exit $rc); nothing it did not examine is cleared." >&2
                     status=1
                 fi
             fi
@@ -642,7 +643,7 @@ if (( ${#scan_refs[@]} > 0 )); then
         fi
 
         if (( ${#cfg[@]} == 0 )); then
-            echo "pre-push: REFUSING -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan $label with." >&2
+            echo "pre-push: REFUSING [pre-push/no-credential-rules] -- this clone has no .gitleaks.toml and no spawn.gitleaks.toml sits beside this hook, so there are no credential rules to scan $label with." >&2
             echo "  Add the project's .gitleaks.toml, or rebuild the release's install, from this project ($kp_cmd restore \"\$KIT\")." >&2
             echo "  KIT is your clone of the kit's public repository." >&2
             status=1
@@ -654,19 +655,19 @@ if (( ${#scan_refs[@]} > 0 )); then
         scanned=$(printf '%s\n' "$out" | grep -oE '[0-9]+ commits scanned' | grep -oE '^[0-9]+' | head -n 1)
 
         if (( rc == 3 )); then
-            echo "pre-push: BLOCKED -- gitleaks found credential shapes in the commits $label adds." >&2
+            echo "pre-push: BLOCKED [pre-push/credentials] -- gitleaks found credential shapes in the commits $label adds." >&2
             printf '%s\n' "$out" | grep -oE 'leaks found: [0-9]+' >&2
             echo "  Details, values redacted:  gitleaks git -v --redact --log-opts=\"--no-color --diff-merges=first-parent ${range[*]}\"" >&2
             status=1
             continue
         fi
         if (( rc != 0 )); then
-            echo "pre-push: REFUSING -- gitleaks did not complete (exit $rc) for $label." >&2
+            echo "pre-push: REFUSING [pre-push/gitleaks-failed] -- gitleaks did not complete (exit $rc) for $label." >&2
             status=1
             continue
         fi
         if [[ "$scanned" != "$expected" ]]; then
-            echo "pre-push: REFUSING -- gitleaks scanned ${scanned:-an unknown number of} commit(s) for $label, but $expected add text; a partial scan is not a clean one." >&2
+            echo "pre-push: REFUSING [pre-push/partial-scan] -- gitleaks scanned ${scanned:-an unknown number of} commit(s) for $label, but $expected add text; a partial scan is not a clean one." >&2
             status=1
             continue
         fi
@@ -695,7 +696,7 @@ fi
 EXT=hook-checks/pre-push
 if [[ -e "$EXT" || -L "$EXT" ]]; then
     if [[ ! -d "$EXT" || ! -r "$EXT" || ! -x "$EXT" ]]; then
-        echo "pre-push: REFUSING -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
+        echo "pre-push: REFUSING [pre-push/checks-folder-unreadable] -- $EXT is not a folder this hook can read, so its checks cannot run." >&2
         exit 1
     fi
     LC_COLLATE=C
@@ -704,14 +705,14 @@ if [[ -e "$EXT" || -L "$EXT" ]]; then
     shopt -u nullglob dotglob
     for x in ${checks[@]+"${checks[@]}"}; do
         if [[ ! -f "$x" || ! -x "$x" ]]; then
-            echo "pre-push: REFUSING -- $x is not an executable file, so it cannot run." >&2
+            echo "pre-push: REFUSING [pre-push/check-not-executable] -- $x is not an executable file, so it cannot run." >&2
             echo "  Make it executable (git update-index --chmod=+x $x), or move it out of $EXT." >&2
             exit 1
         fi
         LC_ALL="$KIT_CALLER_LOCALE" "$x" "$@" < <(for line in ${refs[@]+"${refs[@]}"}; do printf '%s\n' "$line"; done)
         rc=$?
         if (( rc != 0 )); then
-            echo "pre-push: REFUSING -- $x exited $rc." >&2
+            echo "pre-push: REFUSING [pre-push/check-failed] -- $x exited $rc." >&2
             exit 1
         fi
     done

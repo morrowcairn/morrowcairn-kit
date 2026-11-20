@@ -19,6 +19,10 @@ A project on v0.11.0 or later moves straight to the release it takes, in one `to
 between. The kit's upgrade test, `tests/upgrade_test.sh`, moves a project from v0.11.0 to the current release in one
 step, as well as release by release.
 
+To try a move first, `"$INST/bin/kit-pin" to vX.Y.Z --rehearse` makes it in a copy of the clone, in a folder of
+its own, and says whether it passed; the clone, its hooks and its lists folder don't change, and the copy goes when
+it ends.
+
 `kit-pin to` refuses a release with no install or one that fails its own manifest, a work tree with
 uncommitted changes, a hooks path set in the clone itself, and a project with no `kit-pin.tests`. Under
 an org's hooks path, set at the system or global level, it sets the clone's own path to the stubs, which

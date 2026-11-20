@@ -11,7 +11,8 @@
 #          kit's own CLAUDE.md is the kit's sessions' file, and a spawn's comes from templates/; LICENSE covers
 #          the kit only, and a spawn chooses its own; kit.binaries turns the binary scan on for the kit's own
 #          pushes, and a project turns its own on; .github/secret_scanning.yml is the kit's repositories' GitHub
-#          setting for the kit's own fixture; kit.list-id names the kit's own do-not-publish list, and kit-pin
+#          setting for the kit's own fixture; .github/workflows/ is the kit's own CI, which a project doesn't
+#          run: a project's CI comes from ci/; kit.list-id names the kit's own do-not-publish list, and kit-pin
 #          gives each project its own)
 #   spawn  copied once, at spawn; the spawn owns it from then on, and an upgrade never overwrites it. A file
 #          under templates/ lands at the spawn's top level under its own name (templates/CLAUDE.md -> CLAUDE.md)
@@ -39,7 +40,7 @@ kit    CLAUDE.md
 kit    LICENSE
 kit    .github/leak-pattern.pin
 kit    .github/secret_scanning.yml
-kit    .github/workflows/upgrade.yml
+kit    .github/workflows/
 kit    kit.binaries
 kit    kit.list-id
 

@@ -105,8 +105,12 @@ What the kit's scripts and tests need, as measured. A version named is one that 
 - **Windows, inside WSL2:** passes on two machines, on v0.12.0's code. Ubuntu 26.04 (uutils coreutils 0.8.0 by default,
   git 2.53.0, Python 3.14.4): the setup end to end, the five suites green (hooks 535/0/13, install 376/0/37, kit_docs
   123/0/0, load_check 60/0/3, smoke 9/0/0), commits, pushes and both refusals as designed, modes and LF kept in the
-  Linux home. Ubuntu 24.04: the setup and the two Claude Code hooks' live tests. Under `/mnt/c` every file shows 777,
-  `chmod` does nothing, and commits and pushes run 3 to 5 times slower. A machine an organization manages: not measured.
+  Linux home. Ubuntu 24.04: the setup and the two Claude Code hooks' live tests. Later, the operator's own runs:
+  v0.13.0's code, the setup end to end and the five suites green as that run's own session reported them (hooks
+  544/0/13, install 413/0/37, kit_docs 179/0/0, load_check 64/0/5, smoke 9/0/0; not re-measured); v0.15.0's code on a
+  new Ubuntu 24.04, the setup end to end with the install's hook suite (543/0/14) and the daily load check once, not the
+  five suites. Under `/mnt/c` every file shows 777, `chmod` does nothing, and commits and pushes run 3 to 5 times
+  slower. A machine an organization manages: not measured.
 - **Native Windows:** not supported; on Windows the kit runs inside WSL2 (above). No CI job runs on a Windows runner.
 - git 2.31 or later: `bin/kit-pin` uses `git rev-parse --path-format` (git's release notes; the oldest
   git run here is 2.43).

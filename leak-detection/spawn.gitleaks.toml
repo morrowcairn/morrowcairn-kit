@@ -132,6 +132,32 @@ keywords = ["ping", "heartbeat", "healthcheck"]
 tags = ["credential", "capability-url"]
 
 # ---------------------------------------------------------------------------------------------
+# Supabase — a bare access token or secret key is a credential with no key name beside it, and
+# gitleaks 8.30.1's own rules have none for Supabase, while its generic rule needs a name and an
+# assignment. These two stand in until a gitleaks release covers the shapes; then they go. The
+# publishable key (sb_publishable_...) is public by design and isn't matched. A length floor keeps
+# a bare prefix named in prose out; the entropy floor keeps a one-character placeholder out.
+# ---------------------------------------------------------------------------------------------
+
+[[rules]]
+id = "supabase-access-token"
+description = "Supabase access token: sbp_, an optional version (v0_), then 20 or more letters and digits"
+regex = '''\b(sbp_(?:v[0-9]+_)?[A-Za-z0-9]{20,})'''
+secretGroup = 1
+entropy = 3
+keywords = ["sbp_"]
+tags = ["credential", "provider-token"]
+
+[[rules]]
+id = "supabase-secret-key"
+description = "Supabase secret API key: sb_secret_, then 16 or more letters, digits, - or _"
+regex = '''\b(sb_secret_[A-Za-z0-9_-]{16,})'''
+secretGroup = 1
+entropy = 3
+keywords = ["sb_secret_"]
+tags = ["credential", "provider-token"]
+
+# ---------------------------------------------------------------------------------------------
 # PROJECT-SPECIFIC RULES — add yours below this line.
 # Anchor on your own service names and variable conventions. Nothing here by default: a kit that
 # shipped one project's service list would leak that project's stack to every adopter, and would

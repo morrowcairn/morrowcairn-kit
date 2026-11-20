@@ -1,0 +1,279 @@
+# refusals.txt -- a name for each refusal the kit's gates print, one per line, tab-separated:
+#   NAME	EXIT	WHAT
+# NAME is <gate>/<reason>, and the refusal prints it in brackets after REFUSING or BLOCKED:
+#   pre-push: REFUSING [pre-push/no-list] -- LEAK_PATTERN is not configured: this project has no list at ...
+# <gate> is the file that refuses. The checked-copies layer, check-copies.sh, prints under the hook that runs it:
+#   pre-commit: REFUSING [check-copies/differs] -- kit-owned file(s) differ from release ...
+# The history audit's closing verdict carries its name the same way:
+#   REFUSING [kit-history-audit/hits]: 2 hit(s) outside the allow file, each named above; ...
+# EXIT is the gate's exit status when it refuses so: a number, or 1+ for 1 or another non-zero status that varies.
+# WHAT says it plainly.
+# A gate is listed once every refusal it prints carries a name (kit_docs RN0 to RN2 check this file against the gates).
+pre-commit/stopped-early	1	The hook stopped before it reached every check, so it refuses rather than pass what it didn't check.
+pre-commit/git-version-unknown	1	git's version can't be read, and the hook needs git 2.31 or later.
+pre-commit/git-too-old	1	git is older than 2.31, which this hook can't read correctly.
+pre-commit/grafts	1	The repository has grafts, which change the history git shows.
+pre-commit/genesis-identity	1	The commit identity is still the placeholder a new project starts with.
+pre-commit/first-commit-no-claude-md	1	A project's first commit must stage its CLAUDE.md.
+pre-commit/stakes-frame-todo	1	CLAUDE.md still holds the stakes frame's TODO, unwritten.
+pre-commit/staged-paths-unread	1	git couldn't list what the commit stages.
+pre-commit/local-staged	1	Something under .local/, which holds the operator notes, is staged.
+pre-commit/no-gitleaks	1	gitleaks isn't there, so staged content can't be scanned for credentials.
+pre-commit/no-credential-rules	1	There are no credential rules for gitleaks to run.
+pre-commit/no-temp-folder	1	The temporary folder gitleaks' git runs in couldn't be made.
+pre-commit/credentials	1	gitleaks found a credential shape in what the commit stages.
+pre-commit/adds-uncounted	1	git couldn't count the text the commit adds, so the scan can't be judged complete.
+pre-commit/partial-scan	1	gitleaks read none of the text the commit adds, so its clean result means nothing.
+pre-commit/checks-folder-unreadable	1	The project's hook-checks/pre-commit isn't a folder the hook can read.
+pre-commit/staged-tree-unrecorded	1	git couldn't record the staged tree, so the project's checks can't run.
+pre-commit/check-not-executable	1	A project's check isn't an executable file.
+pre-commit/check-failed	1	A project's own check refused.
+pre-commit/check-restaged	1	A project's check changed what is staged after the credential scan read it.
+pre-push/stopped-early	1	The hook stopped before it reached every check, so it refuses rather than pass what it didn't check.
+pre-push/reader-unusable	1	The do-not-publish list's reader beside the hook can't be used.
+pre-push/no-git	1	git isn't there, so nothing the push sends can be read.
+pre-push/git-version-unknown	1	git's version can't be read, and the hook needs git 2.31 or later.
+pre-push/git-too-old	1	git is older than 2.31, which this hook can't read correctly.
+pre-push/grafts	1	The repository has grafts, which change the history git shows.
+pre-push/no-home	1	The user database gives this user no home folder, so the list's place can't be found.
+pre-push/list-place-unknown	1	The do-not-publish list's place can't be found.
+pre-push/list-unreadable	1	The list file is there but can't be read.
+pre-push/list-shape	1	The list file isn't in the shape the hook reads.
+pre-push/list-empty	1	The list file sets no terms.
+pre-push/no-list	1	The project has no do-not-publish list at its place.
+pre-push/no-hasher	1	Neither sha256sum nor shasum is there, so the list can't be checked against its pin.
+pre-push/list-pin-mismatch	1	The list doesn't match its pin.
+pre-push/scan-failed	1	The do-not-publish scan of the pushed tree didn't run.
+pre-push/allowlist-failed	1	The allowlist filter didn't run.
+pre-push/listed-terms-tree	1	A listed term is in the tree the push sends.
+pre-push/no-gitleaks	1	gitleaks isn't there, so the pushed commits can't be scanned for credentials.
+pre-push/no-remote-url	1	git passed no remote URL, so the new commits can't be determined.
+pre-push/remote-refs-unread	1	The remote's refs couldn't be listed.
+pre-push/metadata-scan-failed	1	The scan of the pushed commits' metadata didn't run.
+pre-push/listed-terms-metadata	1	A listed term is in the metadata the push adds.
+pre-push/commits-uncounted	1	The commits the push adds couldn't be computed.
+pre-push/binaries-not-on	1	The push carries binaries and kit.binaries isn't set to scan them.
+pre-push/binaries-no-python3	1	The push carries binaries and python3 isn't there to scan them.
+pre-push/binaries-no-scanner	1	The push carries binaries and the binary scanner is missing.
+pre-push/binaries	1	The push adds binary files the scan didn't clear.
+pre-push/binary-scan-failed	1	The binary scan didn't run.
+pre-push/no-credential-rules	1	There are no credential rules for gitleaks to run.
+pre-push/credentials	1	gitleaks found a credential shape in the pushed commits.
+pre-push/gitleaks-failed	1	gitleaks didn't complete.
+pre-push/partial-scan	1	gitleaks scanned fewer commits than add text, so its clean result isn't complete.
+pre-push/checks-folder-unreadable	1	The project's hook-checks/pre-push isn't a folder the hook can read.
+pre-push/check-not-executable	1	A project's check isn't an executable file.
+pre-push/check-failed	1	A project's own check refused.
+stub-hook/stopped-early	1	The stub stopped before it handed over to the release's hook, so it refuses rather than pass what it didn't check.
+stub-hook/project-hook-not-executable	1	The project's own hook, which kit-pin kept beside the stub to run first, isn't an executable file.
+stub-hook/org-hook-refused	1	The hook in the hooks path IT set, which the stub runs first as git would, refused.
+stub-hook/project-hook-refused	1	The project's own hook, which the stub runs first, refused.
+stub-hook/wrong-hook	1	The stub was run as a hook other than pre-commit or pre-push.
+stub-hook/no-top-folder	1	git couldn't name the clone's top folder, so kit.pin can't be found.
+stub-hook/no-pin	1	The clone's top folder holds no kit.pin, so the stub can't tell which release to run.
+stub-hook/pin-malformed	1	kit.pin isn't its two lines, release=vX.Y.Z and manifest=sha256:<64 hex>.
+stub-hook/no-hasher	1	Neither sha256sum nor shasum is there, so the install can't be checked against kit.pin.
+stub-hook/install-missing	1	The pinned release's install is missing, or hidden from the hook (a sandbox read block makes it look missing).
+stub-hook/install-fails-pin	1	The pinned release's install doesn't match the manifest hash in kit.pin.
+stub-hook/stub-differs	1	This stub differs from the pinned release's copy of it.
+stub-hook/release-hook-not-executable	1	The pinned release's hook has lost its execute bit, so it can't run.
+stub-hook/hooks-path-changed	1	git now reads another hooks path than the one this clone relays.
+stub-hook/unrelayed-hooks	1	A hooks path this clone chains holds hooks it has no relay for, so git would skip them.
+check-copies/stopped-early	1	The checked-copies layer stopped before it finished, so it refuses rather than pass what it didn't check.
+check-copies/install-unreadable	1	The install's CLASSES, MANIFEST.sha256 or RELEASE can't be read, so the kit-owned copies can't be checked.
+check-copies/no-hasher	1	Neither sha256sum nor shasum is there, so the kit-owned copies can't be checked.
+check-copies/forks-unreadable	1	The project's kit.forks can't be read.
+check-copies/copy-unreadable	1	A kit-owned file the project holds can't be read from the commit.
+check-copies/differs	1	A kit-owned file differs from the pinned release's, and kit.forks doesn't declare it with its hash and §.
+org-hook/stopped-early	1	The relay stopped before it had run every hook, so it refuses rather than pass what it didn't run.
+org-hook/no-chain-record	1	The relay's record of the hooks paths this clone chains, .kit-hooks beside it, is missing, so it can't tell what it would skip.
+org-hook/project-hook-not-executable	1	The project's own hook that kit-pin kept beside the relay isn't an executable file.
+org-hook/org-hook-refused	1	The hook in the hooks path IT set, which the relay runs as git would, refused.
+org-hook/project-hook-refused	1	The project's own hook, from the clone's former hooks path or kept by kit-pin, which the relay runs as git would, refused.
+kit-pin/stopped-early	1	kit-pin stopped before it finished its checks, so it refuses rather than pass what it didn't check.
+kit-pin/not-a-release-name	1	The release named isn't of the form vX.Y.Z.
+kit-pin/not-a-clone	1	kit-pin isn't running inside a git clone.
+kit-pin/top-folder-unreadable	1	kit-pin couldn't enter the clone's top folder.
+kit-pin/no-pin	1	The clone's top folder holds no kit.pin.
+kit-pin/pin-malformed	1	kit.pin isn't its two lines, release=vX.Y.Z and manifest=sha256:<64 hex>.
+kit-pin/list-place-unknown	1	The do-not-publish list's place can't be found.
+kit-pin/list-place-not-a-file	1	What sits at the list's place isn't a plain file, so the list can't be moved there.
+kit-pin/list-place-differs	1	The list's place already holds a list that differs from .git/leak-pattern, and kit-pin never overwrites a list.
+kit-pin/back-list-unfound	1	The release moved to reads the list at .git/leak-pattern, and the project's list can't be found at its place to compare.
+kit-pin/back-list-missing	1	The release moved to reads the list at .git/leak-pattern, and the clone holds none there.
+kit-pin/back-list-differs	1	The release moved to reads the list at .git/leak-pattern, which differs from the project's list.
+kit-pin/no-install	1	There's no install of the release named.
+kit-pin/install-no-manifest	1	The release's install has no manifest kit-pin can read.
+kit-pin/install-fails-manifest	1	The release's install doesn't match its own manifest.
+kit-pin/verify-usage	1	verify takes a release and a manifest hash.
+kit-pin/install-unverified	1	The install doesn't match the release and manifest hash it's checked against.
+kit-pin/install-not-runnable	1	A file in the install that must run has lost its execute bit.
+kit-pin/check-usage	1	check takes no arguments.
+kit-pin/hooks-path-set	1	core.hooksPath is set in the clone to a folder other than the stubs'.
+kit-pin/hooks-path-outside	1	core.hooksPath is set outside the clone, so git runs that folder's hooks and no stub.
+kit-pin/project-hook-not-executable	1	The project's own hook that kit-pin kept isn't an executable file, so the kit refuses whenever git runs that hook.
+kit-pin/stub-missing	1	A stub is missing from the clone's hooks folder.
+kit-pin/stub-not-executable	1	A stub isn't executable, so git would skip it.
+kit-pin/stub-differs	1	A stub differs from the pinned release's.
+kit-pin/no-chain-record	1	The clone records no hooks path for its relays to run, so git runs none of its hooks but pre-commit and pre-push.
+kit-pin/hooks-path-changed	1	The clone relays one hooks path's hooks, but git now reads another.
+kit-pin/relay-not-executable	1	A relay isn't executable, so git would skip it.
+kit-pin/relay-differs	1	A relay differs from the pinned release's.
+kit-pin/unrelayed-hook	1	A hooks path the clone chains holds a hook it has no relay for, so git skips it and the stub refuses every commit.
+kit-pin/former-relay-differs	1	The relay that runs the former hooks path's hook isn't the pinned release's relay.
+kit-pin/to-usage	1	to takes one release, or one release and --rehearse to try the move in a copy first.
+kit-pin/uncommitted-changes	1	The work tree has uncommitted changes, so the move wouldn't be the only change to commit.
+kit-pin/no-relay-in-release	1	The release ships no relay (leak-detection/org-hook), so moving to it would stop running a chained hooks path's other hooks.
+kit-pin/project-hook-unrunnable	1	A project's own hook sits where a stub or a relay goes, and the kit can't run it in its place (a link, a folder, or not executable).
+kit-pin/project-hook-kept-already	1	A project's own hook sits where a stub or a relay goes, and its kept copy, <hook>.project, is already there.
+kit-pin/project-hook-in-relay-place	1	A project's own hook sits where the relay for a former hooks path's hook goes.
+kit-pin/no-tests-file	1	The clone holds no kit-pin.tests, the spawn's own test commands a move runs.
+kit-pin/no-save-folder	1	kit-pin couldn't make a folder it needs: one to keep what it would replace, or one for a rehearsal.
+kit-pin/list-move-failed	1	The do-not-publish list couldn't be moved to its place.
+kit-pin/list-id-unstaged	1	kit.list-id couldn't be staged.
+kit-pin/project-hook-not-kept	1	The project's own hook couldn't be kept as <hook>.project.
+kit-pin/hooks-path-not-written	1	kit-pin couldn't set the clone's own hooks path to the stubs' folder.
+kit-pin/stubs-unwritten	1	The stubs couldn't be written into the clone's hooks folder.
+kit-pin/relay-unwritten	1	A relay couldn't be written into the clone's hooks folder.
+kit-pin/relay-unremoved	1	A relay couldn't be removed from the clone's hooks folder.
+kit-pin/chain-unrecorded	1	The hooks paths the relays run couldn't be recorded beside the stubs.
+kit-pin/reader-selftest-failed	1	The release's list reader failed its selftest.
+kit-pin/ci-copy-unwritten	1	The release's CI copy couldn't be written into the project.
+kit-pin/tests-failed	1	A line of kit-pin.tests failed under the release moved to.
+kit-pin/migrate-usage	1	migrate takes one release.
+kit-pin/already-pinned	1	kit.pin already exists, so the spawn is pinned and moves with to.
+kit-pin/chain-file-there	1	A record of chained hooks paths from an earlier move is already beside the stubs.
+kit-pin/old-hooks-kept-already	1	A copy of the old hooks from an earlier migrate, <hook>.pre-kit-pin, is already there.
+kit-pin/hook-not-set-aside	1	A hook couldn't be moved aside.
+kit-pin/check-failed-after-switch	1	check failed after migrate's switch, so the hooks path, the old hooks and the clone are put back.
+kit-pin/move-list-usage	1	move-list takes no arguments.
+kit-pin/no-work-tree	1	kit-pin isn't running inside a git clone with a work tree.
+kit-pin/reader-unusable	1	The list reader beside this kit-pin is missing or fails its selftest.
+kit-pin/reader-too-old	1	The list reader beside this kit-pin names no place for the list: it is an older release's.
+kit-pin/stub-not-kept	1	A stub couldn't be kept before the stubs were written.
+kit-pin/restore-usage	1	restore takes the path of a clone of the kit.
+kit-pin/no-kit-clone	1	There's no kit repository at the path given.
+kit-pin/no-install-tool	1	The clone given has no tools/install-release.sh, so it can't build an install.
+kit-pin/install-not-set-aside	1	The damaged install couldn't be moved aside.
+kit-pin/rebuild-failed	1	install-release couldn't rebuild the pinned install.
+kit-pin/rebuild-fails-pin	1	The rebuilt install doesn't match the pin.
+kit-pin/rebuild-not-runnable	1	The rebuilt install still has a file that can't run.
+kit-pin/repin-usage	1	repin takes local or ci, then --first, --ruling §N or --row N.
+kit-pin/shared-git-folder-unnamed	1	The clone's shared git folder, where the list's pin and CI's record sit, can't be named.
+kit-pin/list-unreadable	1	The do-not-publish list can't be read as pre-push reads it.
+kit-pin/list-at-old-place	1	There's no list to pin at its place, and the clone still holds one at .git/leak-pattern, the old place.
+kit-pin/no-list	1	There's no list to pin at its place.
+kit-pin/no-ci-record	1	There's no record of CI's list, .git/leak-pattern.ci.
+kit-pin/list-empty	1	The list to pin is empty.
+kit-pin/list-unhashed	1	The list couldn't be hashed.
+kit-pin/no-pin-yet	1	There's no pin yet, and a first pin is written with --first.
+kit-pin/not-an-append	1	The list changed by more than an append, which needs a recorded ruling (--ruling §N).
+kit-pin/pin-folder-unmade	1	The pin's folder couldn't be made.
+kit-pin/pin-unwritten	1	The pin couldn't be written.
+kit-pin/user-usage	1	user takes one release.
+kit-pin/no-rules-in-release	1	The release ships no rules/morrowcairn.md, so it can't be the user level's.
+kit-pin/user-entry-elsewhere	1	A user-level entry is a link that points elsewhere than the kit, and kit-pin never replaces it.
+kit-pin/user-entry-not-kit	1	A user-level entry isn't the kit's own link, and kit-pin never replaces it.
+kit-pin/user-pin-not-a-file	1	The kit's user pin isn't a plain file, so kit-pin won't write through it.
+kit-pin/user-pin-unreadable	1	The kit's user pin can't be read.
+kit-pin/user-folder-unmade	1	A user-level folder couldn't be made.
+kit-pin/user-entry-unmoved	1	A user-level entry couldn't be moved.
+kit-pin/user-entry-unlinked	1	A user-level entry couldn't be linked.
+kit-pin/user-pin-unwritten	1	The kit's user pin couldn't be written.
+kit-pin/no-hasher	1	Neither sha256sum nor shasum is there, so no install can be checked.
+kit-pin/git-version-unknown	1	git's version can't be read, and kit-pin needs git 2.31 or later.
+kit-pin/git-too-old	1	git is older than 2.31, which kit-pin can't read correctly.
+kit-pin/grafts	1	The repository has grafts, which change the history git shows.
+kit-pin/unknown-mode	1	The mode named isn't one of kit-pin's.
+install-release/stopped-early	1	install-release stopped before it finished its checks, so it refuses, leaving nothing half-built, rather than pass what it didn't check.
+install-release/clone-unreadable	1	install-release couldn't enter the clone that holds it.
+install-release/not-a-clone	1	install-release isn't in a clone of the kit.
+install-release/not-a-release-name	1	The tag named isn't of the form vX.Y.Z.
+install-release/no-such-tag	1	The tag named isn't in this clone.
+install-release/lightweight-tag	1	The tag is a lightweight tag; a release is an annotated one.
+install-release/tag-no-commit	1	The tag names no commit.
+install-release/remote-unlisted	1	The remote's tags couldn't be listed.
+install-release/tag-not-on-remote	1	The tag isn't on the remote: a release is what the remote has.
+install-release/tag-moved-on-remote	1	The tag on the remote points at another commit than this clone's.
+install-release/no-hasher	1	Neither sha256sum nor shasum is there, so the install's manifest can't be written.
+install-release/no-python3	1	python3 can't run here, so the install can't be moved into place in one step.
+install-release/already-installed	1	The release's install folder already exists, and a release installs once.
+install-release/root-unmade	1	The folder installs go in couldn't be made.
+install-release/no-staging-folder	1	No staging folder could be made beside the installs.
+install-release/no-kit-manifest	1	The tag has no kit-manifest.txt, which says which files ship.
+install-release/files-unclassed	1	The tag's files couldn't be classed.
+install-release/no-files	1	The tag ships no files.
+install-release/archive-failed	1	The tag's files didn't unpack into the staging folder.
+install-release/classes-unwritten	1	The install's CLASSES couldn't be written.
+install-release/release-unwritten	1	The install's RELEASE couldn't be written.
+install-release/manifest-unwritten	1	The install's MANIFEST.sha256 couldn't be written.
+install-release/no-hook-suite	1	The tag has no tests/hooks_test.sh to run on the install.
+install-release/hook-suite-failed	1	The release's own hook suite failed on the staged install, so nothing was installed.
+install-release/not-read-only	1	The staged install couldn't be made read-only.
+install-release/not-moved-into-place	1	The staged install couldn't be moved into place.
+kit-history-audit/stopped-early	1	The audit stopped before it finished, so what it hadn't reached was never read.
+kit-history-audit/folder-unreadable	1	The folder the audit sits in can't be entered.
+kit-history-audit/reader-unusable	1	The list reader beside the audit can't be used.
+kit-history-audit/no-git	1	git isn't there, so no history can be read.
+kit-history-audit/no-python3	1	python3 isn't there, and the audit reads each commit's fields with it.
+kit-history-audit/git-version-unknown	1	git's version can't be read, and the audit needs git 2.31 or later.
+kit-history-audit/git-too-old	1	git is older than 2.31, the oldest the audit is built and tested for.
+kit-history-audit/repo-unreadable	1	The repository's folder can't be entered.
+kit-history-audit/git-folder-unknown	1	Where the repository's git folder is can't be read.
+kit-history-audit/no-temp-folder	1	No temporary folder could be made.
+kit-history-audit/list-place-unknown	1	The do-not-publish list's place can't be found.
+kit-history-audit/work-tree-unreadable	1	The repository's work tree can't be read.
+kit-history-audit/list-at-old-place	1	There's no list at its place, and the clone still holds one at .git/leak-pattern, the old place, which is no longer read.
+kit-history-audit/no-list	1	There's no do-not-publish list at its place, so there's nothing to read the history against.
+kit-history-audit/list-unreadable	1	The list file is there but can't be read.
+kit-history-audit/list-shape	1	The list file isn't in a shape the reader reads.
+kit-history-audit/list-empty	1	The list sets no pattern, so there's nothing to read the history against.
+kit-history-audit/no-hasher	1	Neither sha256sum nor shasum is there, so the list can't be checked against its pin.
+kit-history-audit/list-fails-pin	1	The list doesn't match its pin, .git/leak-pattern.pin.
+kit-history-audit/no-list-line	1	The project's list is the line saying it has none, and a project going public needs a real list.
+kit-history-audit/list-not-a-regex	1	The list doesn't compile as an extended regex, so nothing can be searched with it.
+kit-history-audit/control-terms-unmade	1	The control's terms couldn't be made from the list.
+kit-history-audit/control-no-full-row	1	No row of the list gives a term the control can plant in all ten fields.
+kit-history-audit/control-rows-unmade	1	Terms could be made from only some of the list's rows, so the control can't prove the rest.
+kit-history-audit/control-unbuilt	1	The control repository couldn't be built.
+kit-history-audit/control-unread	1	The control repository couldn't be read back.
+kit-history-audit/control-not-refused	1	The audit didn't refuse the control's planted hits with its 3.
+kit-history-audit/control-not-all-red	1	The control went red on fewer than all ten fields.
+kit-history-audit/control-rows-missed	1	The audit didn't refuse the term of a row the list matches, so that row went unread.
+kit-history-audit/grafts-unreadable	1	Where the repository's grafts would be can't be read.
+kit-history-audit/grafts	1	The repository has grafts, which change the history git shows.
+kit-history-audit/shallow	1	The clone is shallow, or its depth can't be read, so part of the history would go public unread.
+kit-history-audit/remote-unlisted	1	The remote's refs couldn't be listed, so what it holds can't be read.
+kit-history-audit/remote-objects-missing	1	Refs of the remote point at objects not here, so history it holds would go unread.
+kit-history-audit/commits-unlisted	1	The commits reachable from the repository's refs couldn't be listed.
+kit-history-audit/reflog-unlisted	1	The commits the reflog holds couldn't be listed.
+kit-history-audit/reflog-unsorted	1	The commits only the reflog holds couldn't be told apart.
+kit-history-audit/history-unread	1	The history couldn't be read in full.
+kit-history-audit/counts-unread	1	The history's counts couldn't be read.
+kit-history-audit/fields-unreadable	1	The field files can't be entered.
+kit-history-audit/search-failed	1	A search over the history couldn't run, so a clean result would be unproven.
+kit-history-audit/lines-unnumbered	1	A field file's matching lines couldn't be numbered.
+kit-history-audit/hit-path-unread	1	The path of a hit couldn't be read back to check it against the allow file.
+kit-history-audit/hit-unhashed	1	A hit's line couldn't be hashed.
+kit-history-audit/hits	3	The history holds hits outside the allow file. Each is listed above with its verdict, where it was found, its commit or tag object's first 12 characters, its field and how many lines match; the matched text and any path are never shown.
+kit-history-audit/engines-disagree	1	git grep and grep disagree on which field files match the list, so neither result can be trusted.
+kit-load-check-stub/stopped-early	1+	The stub stopped before it handed over to the load check, so it refuses and reports a failed run, exiting with the status it stopped on, or 1 if that was 0.
+kit-load-check-stub/no-user-pin	1	No kit user pin can be read; kit-pin user writes it.
+kit-load-check-stub/user-pin-malformed	1	The kit user pin isn't its two lines, release=vX.Y.Z and manifest=sha256:<64 hex>.
+kit-load-check-stub/user-claude-md-unreadable	1	The user-level CLAUDE.md can't be read.
+kit-load-check-stub/no-hasher	1	Neither sha256sum nor shasum is there, so the install can't be checked against the user pin.
+kit-load-check-stub/install-fails-pin	1	The install the user pin names doesn't match the pin.
+kit-load-check-stub/no-python3	1	python3 isn't there, so the load check can't run.
+kit-pin/row-edit-ci	1	A row edit was asked of CI's list, whose value is the forge's secret, which kit-pin can't write.
+kit-pin/row-not-a-number	1	--row was given something other than a row number, 1 or more.
+kit-pin/row-edit-unpinned	1	The list doesn't match its pin, and a row edit starts from the list its pin names.
+kit-pin/row-out-of-range	1	The list holds fewer rows than the row number given.
+kit-pin/row-edit-unruled	1	A row edit changes the list, which needs a recorded ruling (--ruling §N).
+kit-pin/row-empty	1	No new row came on standard input.
+kit-pin/row-lines	1	The new row on standard input is more than one line.
+kit-pin/row-apostrophe	1	The new row holds an apostrophe, which the list's shape can't hold.
+kit-pin/row-not-one	1	The new row holds more than one row, a | outside any group or bracket.
+kit-pin/row-not-a-regex	1	The list with the new row isn't an extended regex pre-push's tree scan can read.
+kit-pin/row-unwritten	1	The changed list couldn't be written and read back as pre-push reads it; nothing changed.
+kit-pin/rehearse-worktree	1	A rehearsal was asked of a linked worktree, whose git folder is its main clone's, so it can't be copied whole.
+kit-pin/rehearse-copy-failed	1	The clone couldn't be copied into the rehearsal's folder, the copy entered, or the copy's own hooks path set to its stubs' folder; nothing changed.

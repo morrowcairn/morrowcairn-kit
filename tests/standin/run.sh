@@ -11,8 +11,9 @@
 # .git stays out), the gitleaks binary first on this machine's PATH, entry.sh and the IT hook, all read-only. Nothing
 # else from the home folder: no do-not-publish list, no credentials, no keys. Each container runs with --rm.
 # Results: one folder a condition under STANDIN_OUT (default: a new temp folder, printed), holding facts.txt,
-# exits.txt and a log a suite. Exit 0 when every suite passed in every condition; 1 when any failed (failures are
-# findings: read the logs); 2 when an image, the snapshot or a container couldn't be made.
+# exits.txt and a log a suite. Exit 0 when every suite passed in every condition, old-git's refusals being what its
+# release's record says (below); 1 when any failed (failures are findings: read the logs); 2 when an image, the
+# snapshot or a container couldn't be made.
 #
 # The images stay in the local store under kit-standin:ubuntu and kit-standin:debian until removed; remove them, and
 # the two base images, when done (docker image rm), since this machine's Docker store is shared.
@@ -56,6 +57,11 @@ for c in "${conds[@]}"; do if [[ "$c" == old-git ]]; then need_debian=1; else ne
 (( need_debian )) && build kit-standin:debian "$DEBIAN" "$DEBIAN_SOURCES"
 
 echo "run.sh: $(git -C "$KIT" rev-parse --short "$commit"), results in $OUT"
+# Under old-git the kit refuses git below 2.31 by design, so that condition's suites fail by design, and not every such
+# failure names 2.31 (decisions log §768). It passes only when its lines equal those expected/<release>.txt records for
+# COMMIT's release tag, as the tester's criterion reads them; other lines, or no record, and the run doesn't pass, an
+# old-git run whose suites pass included (kit_docs SR1 to SR4). Every other condition passes when its container does.
+tag=$(git -C "$KIT" describe --exact-match --tags "$commit" 2>/dev/null) || tag=""
 rc=0
 for c in "${conds[@]}"; do
     img=kit-standin:ubuntu; [[ "$c" == old-git ]] && img=kit-standin:debian
@@ -65,14 +71,28 @@ for c in "${conds[@]}"; do
         -v "$HERE/it-hook:/opt/it-hook:ro" -v "$OUT/$c:/out" -e HOST_UID="$(id -u)" \
         "$img" bash /opt/entry.sh "$c" >/dev/null 2>"$OUT/$c/container.err"
     st=$?
-    (( st == 0 )) || rc=1
+    [[ "$c" == old-git ]] || (( st == 0 )) || rc=1
     if [[ ! -s "$OUT/$c/exits.txt" ]]; then
         echo "$c: the container did not run the suites (exit $st; $OUT/$c/container.err)"; rc=2; continue
     fi
     echo "$c: $(sed -n 's/^git: //p' "$OUT/$c/facts.txt")"
+    lines=""
     for s in hooks_test install_test smoke_test smoke_own_config; do
         LC_ALL=C grep -q "^$s " "$OUT/$c/exits.txt" || continue
-        printf '  %-13s %s; %s\n' "$s" "$(sed -n "s/^$s //p" "$OUT/$c/exits.txt")" "$(tail -n 1 "$OUT/$c/$s.log" 2>/dev/null)"
+        ex=$(sed -n "s/^$s //p" "$OUT/$c/exits.txt"); last=$(tail -n 1 "$OUT/$c/$s.log" 2>/dev/null)
+        printf '  %-13s %s; %s\n' "$s" "$ex" "$last"
+        lines+="$c: $s $ex; $last"$'\n'
     done
+    if [[ "$c" == old-git ]]; then
+        exp="$HERE/expected/$tag.txt"
+        if [[ -z "$tag" || ! -r "$exp" ]]; then
+            echo "  old-git: NOT PASSED: no expected lines for $(git -C "$KIT" rev-parse --short "$commit") (tests/standin/expected/<release>.txt), so its version refusals can't be told from failures"
+            rc=1
+        elif [[ "$lines" == "$(sed -n '/^old-git: /p' "$exp")"$'\n' ]]; then
+            echo "  old-git: refused by design: every line as expected/$tag.txt records"
+        else
+            echo "  old-git: NOT PASSED: its lines differ from expected/$tag.txt"; rc=1
+        fi
+    fi
 done
 exit "$rc"

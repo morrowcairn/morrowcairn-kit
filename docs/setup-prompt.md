@@ -1,22 +1,24 @@
 # The setup prompt
 
 A text you give your own Claude Code, once per machine, to set the kit up: start Claude Code in your home folder (on
-Windows, inside WSL, in your Linux home) and paste the block below. Claude Code leads: it asks you plain questions one
-at a time, each with a default you can take, and does each step itself with your approval at Claude Code's own prompts
-where its permission mode shows them. It hands you a command only where it can't, saying why. It checks what the kit
-needs, builds a release's install from this repository's tag, links the session rules at your user level, and, only when
-you say so, writes the kit's settings file and adds the two optional hooks to your Claude Code settings. It never edits
-a managed settings file. It makes no do-not-publish list: each project's list is made with the project, by
-[`patterns/local-spawn.md`](../patterns/local-spawn.md). On a machine your organization's IT manages,
-read [`for-it.md`](for-it.md) first, or give it to your IT: it says what the kit writes, runs and sends, and how to
-remove it.
+Windows, inside WSL, in your Linux home) and paste the block below. Claude Code has to be installed and signed in first:
+Anthropic's [quickstart](https://code.claude.com/docs/en/quickstart) says how, and which accounts run it; a sign-in to a
+Console account with no credit fails every request with "Credit balance too low". Claude Code leads: it asks you plain
+questions one at a time, each with a default you can take, and does each step itself with your approval at Claude Code's
+own prompts where its permission mode shows them. It hands you a command only where it can't, saying why. It checks what
+the kit needs, builds a release's install from this repository's tag, links the session rules at your user level, and,
+only when you say so, writes the kit's settings file and adds the two optional hooks to your Claude Code settings. It
+never edits a managed settings file. It makes no do-not-publish list: each project's list is made with the project, by
+[`patterns/local-spawn.md`](../patterns/local-spawn.md). On a machine your organization's IT manages, read
+[`for-it.md`](for-it.md) first, or give it to your IT: it says what the kit writes, runs and sends, and how to remove
+it.
 
 The prompt is written for both cases: Claude Code's hooks and skills open to your own settings, or locked by your
 organization's managed settings. Under a lock the kit's git hooks still run, since git runs them, and what the lock
 costs is said at the step it reaches.
 
 ```text
-Set up the Morrowcairn kit, release v1.0.0, on this machine, and lead me through it. Ask me one question at a time and
+Set up the Morrowcairn kit, release v1.1.0, on this machine, and lead me through it. Ask me one question at a time and
 wait for my answer: each question says in one plain sentence what it's for and what skipping it means, and gives a
 default in brackets; 'ok' takes it, 'skip' skips it. Drive the whole setup: after each step, go straight on to the
 next, through the last, without waiting for me to ask; I needn't read anything. Before anything else, check where this
@@ -50,10 +52,11 @@ waits for my say, in any form. The steps below, the clone and the install among 
    /etc/claude-code/managed-settings.json and each file in /etc/claude-code/managed-settings.d/, where they exist, and
    tell me only whether they set allowManagedHooksOnly (a lock on hooks), strictPluginOnlyCustomization (a lock on
    skills) or the sandbox's allowUnsandboxedCommands (step 5 needs to know), and to what; show me nothing else from
-   them. If the line names (remote), those settings come from the admin console and aren't in a file here: ask me to
-   get the policy from my IT. The same goes for any source but (file) or (drop-ins), such as a Windows policy standing
-   above WSL's files. If none of this settles it, say so and go on, giving me both cases wherever a step differs. Then
-   tell me which case we are in: no lock, a lock on hooks, a lock on skills, or both.
+   them. If the line names (remote), those settings come from the claude.ai admin console or a gateway and aren't in a
+   file here: ask me to get the policy from my IT. The same goes for any source but (file), (drop-ins) or
+   (file + drop-ins), such as a Windows policy standing above WSL's files. If none of this settles it, say so and go on,
+   giving me both cases wherever a step differs. Then tell me which case we are in: no lock, a lock on hooks, a lock on
+   skills, or both.
 
 3. Where things go: check whether this is WSL (uname -r names microsoft, or WSL_DISTRO_NAME is set). On WSL, keep
    code, projects, the kit's clone and its install in the Linux home, never under /mnt/c or another Windows drive, and
@@ -66,7 +69,7 @@ waits for my say, in any form. The steps below, the clone and the install among 
    kit's code, and ~/projects/<name> for each project (step 9). Ask me where to keep a clone of the kit
    [~/morrowcairn-kit], then clone it there and check out the release's tag:
    git clone https://github.com/morrowcairn/morrowcairn-kit <that folder>
-   git -C <that folder> checkout v1.0.0
+   git -C <that folder> checkout v1.1.0
 
 4. The install. If step 1 found gitleaks missing or too old, ask me, "May I download gitleaks 8.30.1 from its official
    releases on github.com and check it against the checksum the kit pins? If you say no, I'll tell you what to install
@@ -78,12 +81,14 @@ waits for my say, in any form. The steps below, the clone and the install among 
    macOS adds no folder in the home), and if there is none, give me the one line to add. On a no: tell me what to
    install and where to get it (gitleaks 8.30.1, the version the kit is tested with, from
    https://github.com/gitleaks/gitleaks/releases), wait until I say it's there, then check it with gitleaks version.
-   Then, in the clone, run tools/install-release.sh v1.0.0, with ~/.local/bin at the front of PATH for that command
+   Then, in the clone, run tools/install-release.sh v1.1.0, with ~/.local/bin at the front of PATH for that command
    where you put gitleaks there, so the install's own hook suite finds it.
    It runs the release's own hook suite on the staged install first, then puts the read-only install in
-   ~/.local/share/morrowcairn/releases/v1.0.0. Report its last lines as it printed them, without explaining them.
+   ~/.local/share/morrowcairn/releases/v1.1.0. It takes a few minutes, most of them the hook suite: tell me it has
+   started, and wait for it to finish, with a timeout of 10 minutes or more or in the background, never starting it a
+   second time while it runs. Report its last lines as it printed them, without explaining them.
 
-5. The session rules: ~/.local/share/morrowcairn/releases/v1.0.0/bin/kit-pin user v1.0.0. It writes into Claude
+5. The session rules: ~/.local/share/morrowcairn/releases/v1.1.0/bin/kit-pin user v1.1.0. It writes into Claude
    Code's own folder: it links the rules file, the kit's three skills and the two optional hooks' scripts there, and
    writes the kit's own pin for the user level; it changes no settings file, and replaces nothing that isn't its own
    link. Follow my answer at the start. If I said show me, hand me the command, saying that it writes into Claude
@@ -94,8 +99,11 @@ waits for my say, in any form. The steps below, the clone and the install among 
    "Bash command (unsandboxed)" prompt if its permission mode does. Only where unsandboxed commands are turned off
    (allowUnsandboxedCommands set false, often by IT; step 2 may have found it), hand me the command instead, saying why,
    in the same way. Either way, read back to me what it printed. Under a lock on skills, tell me that the three skills
-   (gates, record-stamps, session-close) won't load, and that Claude Code's documentation names no lock on rules files,
-   so the rules file should still load (not yet tested under a lock).
+   (gates, record-stamps, session-close) won't load, and that Claude Code's documentation of that lock doesn't name
+   rules files, so the rules file should still load (not yet tested under a lock). Separately, if a managed settings
+   file you read in step 2, or my own ~/.claude/settings.json, sets Project instructions (`instructionFiles`) to
+   `managed-only`, tell me that Claude Code's documentation says this leaves user rules files out at launch, the kit's
+   rules file among them (not tested here), and that if my organization set it, changing it is up to my IT.
 
 6. Relays: ask me, "Will you run work through relays, where a separate claude.ai chat writes numbered instructions that
    you paste into Claude Code and each session reports back? If you're not sure, the answer is no; you can add it
@@ -144,8 +152,8 @@ waits for my say, in any form. The steps below, the clone and the install among 
    and skip this step.
 
 8. The daily load check, a check once a day that the session rules still load from the install. Ask me whether I want
-   it, with [no] as its default, under a lock on skills too, telling me that it checks the rules file only: it sees
-   that the skills are linked, not whether they load, so a lock on skills goes unnoticed by it. Tell me that each run
+   it, with [no] as its default, under a lock on skills too, telling me what it checks: that the rules file loads,
+   and that Claude Code finds the kit's three skills, though not that a skill's body loads. Tell me that each run
    sends one headless Claude Code request (claude -p) on my account, and sends a ping only if I set a ping URL in
    KIT_LOAD_CHECK_PING, its result to that URL each run. On WSL, tell me plainly that it runs only while WSL is
    running, so a day WSL isn't started goes unchecked. If I want it, follow my answer at the start: if I said do it
@@ -219,6 +227,6 @@ waits for my say, in any form. The steps below, the clone and the install among 
 
 12. Finish with a short summary: the versions step 1 found, what was installed and where, what was linked, which
     settings I set and where their file is, which hooks I turned on and how, whether I set up the daily load check,
-    what step 11 found, which case of step 2 applies, any command left for me to run and why, and that docs/for-it.md
-    in the install is the document for my IT.
+    what a project made from this release starts with (step 9), what step 11 found, which case of step 2 applies, any
+    command left for me to run and why, and that docs/for-it.md in the install is the document for my IT.
 ```

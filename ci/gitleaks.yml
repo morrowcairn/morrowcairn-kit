@@ -44,11 +44,9 @@ jobs:
             Linux-X64)   asset=gitleaks_${ver}_linux_x64.tar.gz;   want=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
             macOS-ARM64) asset=gitleaks_${ver}_darwin_arm64.tar.gz; want=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
             macOS-X64)   asset=gitleaks_${ver}_darwin_x64.tar.gz;   want=dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 ;;
-            Windows-X64) asset=gitleaks_${ver}_windows_x64.zip;     want=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e ;;
             *) echo "::error::no gitleaks pinned for ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
           esac
           dir="${RUNNER_TEMP:?}/gitleaks-bin"
-          if command -v cygpath >/dev/null 2>&1; then dir=$(cygpath -u "$dir"); fi
           mkdir -p "$dir"
           curl -fsSL -o "$dir/$asset" "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/${asset}"
           if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum < "$dir/$asset"); else got=$(shasum -a 256 < "$dir/$asset"); fi
@@ -57,14 +55,10 @@ jobs:
             echo "::error::$asset hashes to $got, not the pinned $want: refused"
             exit 1
           fi
-          case "$asset" in
-            *.zip) if command -v unzip >/dev/null 2>&1; then unzip -o -q "$dir/$asset" gitleaks.exe -d "$dir"
-                   else 7z x -y -o"$dir" "$dir/$asset" gitleaks.exe >/dev/null; fi ;;
-            *)     tar -xzf "$dir/$asset" -C "$dir" gitleaks ;;
-          esac
+          tar -xzf "$dir/$asset" -C "$dir" gitleaks
           rm -f "$dir/$asset"
           "$dir/gitleaks" version
-          if command -v cygpath >/dev/null 2>&1; then cygpath -w "$dir" >> "${GITHUB_PATH:?}"; else echo "$dir" >> "${GITHUB_PATH:?}"; fi
+          echo "$dir" >> "${GITHUB_PATH:?}"
 
       - name: Scan working tree
         run: |

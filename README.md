@@ -2,6 +2,11 @@
 
 A cairn is a waymarker built for the next traveler.
 
+**Who it's for.** People who already use Claude Code. If you haven't installed it, signed in and used it yet, start with
+Anthropic's own guide, the [Claude Code quickstart](https://code.claude.com/docs/en/quickstart), and come back after.
+Past that, the kit's documents assume you know how to use Claude Code, and explain it only where one of the kit's own
+steps needs it.
+
 **Version 1.** From v1.0.0, the Versioning section below says what won't change without a 2.0. That is a promise of
 stability, not of support: no one is bound to answer a question or fix a problem, and the kit comes as is, under its
 license, which disclaims warranty and liability. It runs daily on one operator's Linux machine and projects; elsewhere
@@ -20,9 +25,11 @@ each part off or remove it.
 tested with python3 3.9.6 (Apple's, on a stock Mac), 3.9.25 and 3.12.3; nothing in the setup or the install checks its
 version. *Where it runs:* Linux, and macOS, where this release passed on a GitHub-hosted runner. On Windows, the kit
 runs inside WSL2; native Windows isn't supported. Under WSL2 the setup runs end to end on Ubuntu 24.04 and 26.04, and
-the five test suites pass on 26.04 (measured on two machines, on v0.12.0's code). Keep your projects in the Linux
-home: on the Windows side files lose their modes, and commits and pushes run 3 to 5 times slower. It hasn't been tried
-on a machine an organization manages.
+the five test suites pass on 26.04 (measured on two machines, on v0.12.0's code). The kit's operator made two later
+runs: on v0.13.0's code, the setup end to end and the five suites passing, as that run's own session reported them; and
+on v0.15.0's code, on a new Ubuntu 24.04, the setup end to end, with the install's hook suite and one run of the daily
+load check, not the five suites. Keep your projects in the Linux home: on the Windows side files lose their modes, and
+commits and pushes run 3 to 5 times slower. It hasn't been tried on a machine an organization manages.
 
 The usual way is the setup prompt: paste [`docs/setup-prompt.md`](docs/setup-prompt.md)'s prompt into Claude Code, and
 Claude Code leads. It asks you once whether it should do every step itself, your Claude Code settings and crontab
@@ -35,15 +42,15 @@ you'll run work through relays, it writes the kit's settings file, and adds the 
 settings only when you say so. By hand, the steps are:
 1. Clone this repository and check out the release's tag:
    `git clone https://github.com/morrowcairn/morrowcairn-kit morrowcairn`, then `cd morrowcairn` and
-   `git checkout v1.0.0`.
-2. Build the release's read-only install: `tools/install-release.sh v1.0.0`. It runs the release's own hook suite on the
-   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v1.0.0` (or under
+   `git checkout v1.1.0`.
+2. Build the release's read-only install: `tools/install-release.sh v1.1.0`. It runs the release's own hook suite on the
+   staged install first, and puts the install in `~/.local/share/morrowcairn/releases/v1.1.0` (or under
    `$KIT_INSTALL_ROOT`, to keep installs elsewhere).
 3. Make a project from it: follow the install's copy of [`patterns/local-spawn.md`](patterns/local-spawn.md), whose
    procedure pins the project to the release and puts its hooks in before commit one; then
    [`patterns/repo-genesis.md`](patterns/repo-genesis.md) for its identity and commit one. A new project starts with no
    do-not-publish list (the one line saying so, pinned) and no identity guard; local-spawn says how to turn on each.
-4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v1.0.0/bin/kit-pin user v1.0.0`
+4. Load the session rules on your machine, once: `~/.local/share/morrowcairn/releases/v1.1.0/bin/kit-pin user v1.1.0`
    links the rules file every session loads, `rules/morrowcairn.md`, the three triggered skills and the two optional
    hooks' scripts into Claude Code's folder, writes the kit's user pin, and changes no settings file.
    [`docs/rules-explained.md`](docs/rules-explained.md) says why each rule is there;
@@ -134,7 +141,7 @@ CLAUDE.md              the kit's own conventions for its sessions (it stays in t
 templates/             a project's CLAUDE.md template: standing conventions, TODO blocks for project specifics
 kit-manifest.txt       the class of every tracked file: stays in the kit, the spawn's once copied, or kit-owned
 records/               the native-doctrine machinery: decisions, incidents, followups, kit feedback
-patterns/              copy-paste skeletons that embody a rule structurally; claude-code-at-work.md, the note for an org's machine; practices.md, ten building practices, read on demand
+patterns/              copy-paste skeletons that embody a rule structurally; claude-code-at-work.md, the note for an org's machine; practices.md, ten building practices, read on demand; atomic_deploy.sh, dry_run_gated_runner.sh and counted_skip_loader.py, three example scripts a project copies and makes its own
 leak-detection/        pre-commit + pre-push hooks, their list reader, the stub a project runs, and the tree scan CI runs
 bin/                   kit-pin: pins a project to an installed release, moves the pin, checks it; the history check; the load check
 tools/                 install-release.sh: builds a release's read-only install, which projects run from
@@ -153,16 +160,17 @@ docs/                  for an organization's IT; why each rule is there; the dra
 **The daily load check is opt-in.** Nothing in an install schedules it. A machine that wants it copies
 `bin/kit-load-check-stub` to a folder of its own, outside the install, and gives it a daily line (cron, say). The
 stub verifies the whole install against the kit's user pin (`~/.config/morrowcairn/user.pin`, which `kit-pin user`
-writes), then runs `bin/kit-load-check`, which checks the user-level rules and skill entries and asks one headless
-`claude -p` for the rules file's canary; it reads no transcript. Under an org's `managed-mcp.json` it skips that probe
-and says so.
+writes), then runs `bin/kit-load-check`, which checks the user-level rules and skill entries, then asks one headless
+`claude -p` for the rules file's canary and checks that the session's start event lists the kit's three skills; it reads
+no transcript. Under an org's `managed-mcp.json` it skips that probe and says so.
 
 ## Leak detection, and one warning that matters
 
 Two layers, and they ship differently **by necessity**:
 
 - **Credential shapes ship complete** — `.gitleaks.toml` carries real rules and needs no
-  configuration.
+  configuration. Complete means ready to run, not that every credential is caught: the hooks refuse the shapes gitleaks'
+  built-in rules or the kit's own match, and a credential in a shape neither knows goes through.
 - **The do-not-publish list ships as mechanism only.** The do-not-publish list is one file per project outside every
   repository, `~/.config/morrowcairn/lists/<id>`, the id in the project's tracked `kit.list-id`; no clone holds it.
   It holds terms you've agreed or are required to
@@ -200,9 +208,16 @@ Hooks are per-clone and **do not survive `git clone`**. In a fresh clone of a pr
 `bin/kit-pin to` with the release its `kit.pin` names: it writes the two stubs, then prints the next
 step for the do-not-publish list, whose pin isn't cloned either (`bin/kit-pin repin local --first`, once
 the list is checked against its source; [`patterns/local-spawn.md`](patterns/local-spawn.md)).
-`bin/kit-pin restore` rebuilds a missing or damaged install, then checks; it writes no stub. A clone of
-the kit itself runs `git config core.hooksPath leak-detection`. The CI workflows are the only
-clone-surviving layer, and for the do-not-publish list's terms they check nothing.
+`bin/kit-pin restore` rebuilds a missing or damaged install (a file that differs, or one that can no longer
+run), writes the two stubs where no hooks path is set or chained and each stub's place is empty or holds a stub from any
+release, then checks. A clone of the kit itself runs `git config core.hooksPath leak-detection`. The CI workflows are
+the only clone-surviving layer, and for the do-not-publish list's terms they check nothing.
+
+Each stub checks the install, and itself, only when git runs it, so a stub removed from a clone, or changed so it no
+longer checks, goes unnoticed. To check a clone on a schedule (cron, say), run the install's `bin/kit-pin check` there:
+it changes nothing, and exits 0 when the pin, the install, both stubs and the hooks path pass, 1 when one doesn't, and 3
+when they pass but pre-push will refuse every push, because the project has no usable do-not-publish list, or one its
+pin doesn't name.
 
 ## Versioning
 

@@ -75,8 +75,8 @@ in `docs/rules-explained.md`, which also covers the chat document's lines that n
   a reply to another number doesn't answer.
 - **Main risk and runner-up go with the chat's own technical calls,** where the user may want to override one; not
   with every question put to them.
-- **Never ask them to type a command.** An action a session's permission check refused goes back as "approve it from
-  /permissions, Recently denied", with the command quoted.
+- **Never ask them to type a command.** An action auto mode refused goes back as "approve it from /permissions, Recently
+  blocked", with the command quoted; any other refusal, such as a deny rule's, goes back as a question on how to go on.
 - **A question waiting on them** reaches their queue through a session, when it is raised, never only in a chat.
 
 ## Recording the user's rulings

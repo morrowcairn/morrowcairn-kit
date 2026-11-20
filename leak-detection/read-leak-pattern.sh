@@ -25,7 +25,9 @@
 # blanks), and exactly one assignment in a shape the kit documents, LEAK_PATTERN='...' or
 # export LEAK_PATTERN='...', with nothing after the closing quote but blanks. Sets LP_VALUE (empty
 # when there is no assignment) and LP_EXPORT; on anything else returns 1 with LP_ERROR, which names
-# line numbers only, never a term.
+# line numbers only, never a term. A list file that isn't there, can't be read or is a folder returns 1
+# too: it once read as an empty list, returning 0, which a caller that didn't test the file first
+# would take for a list that sets nothing (hooks test D93).
 #
 # read_leak_pattern_selftest
 # Runs read_leak_pattern on built-in lists: returns 0 only if every must-refuse list refuses and every
@@ -36,6 +38,10 @@
 read_leak_pattern() {   # FILE
     local line n=0 at=0 re="^(export )?LEAK_PATTERN='([^']*)'[[:blank:]]*\$"
     LP_VALUE=""; LP_EXPORT=""; LP_ERROR=""
+    if [[ ! -r "$1" || -d "$1" ]]; then
+        LP_ERROR="the list file isn't there, or can't be read"
+        return 1
+    fi
     while IFS= read -r line || [[ -n "$line" ]]; do
         n=$((n + 1))
         [[ "$line" =~ ^[[:blank:]]*(#.*)?$ ]] && continue
@@ -60,6 +66,8 @@ read_leak_pattern_selftest() {
              "LEAK_PATTERN='zqa'"$'\n'"LEAK_PATTERN='zqb'" "LEAK_PATTERN='zqa'  # a note" "  LEAK_PATTERN='zqa'"; do
         read_leak_pattern <(printf '%s\n' "$t") && return 1
     done
+    # Must refuse: a list file that isn't there.
+    read_leak_pattern "" && return 1
     # Must pass, with the exact value: each documented shape, among comments and blank lines; and a file
     # that sets nothing, which reads as an empty value (the caller refuses that, not the reader).
     read_leak_pattern <(printf '%s\n' "# a note" "" "LEAK_PATTERN='zqa|zqb'" "	# a tabbed note") \

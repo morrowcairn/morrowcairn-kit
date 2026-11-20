@@ -119,9 +119,8 @@ folder for the project, and, only where `morrowcairn-local.md` names them, one l
 - The setup prompt, only where the person accepts its offer to fetch a missing gitleaks: one download of the release
   archive from github.com, checked against the sha256 the kit pins in `ci/gitleaks.yml` before it is unpacked. The
   person decides; on a no, the setup says what to install and where to get it, and waits.
-Nothing else in the code a project runs opens a network connection. The install also holds the kit's own CI workflows
-(`.github/workflows/`); they run only on GitHub, in the kit's own repository, never on the machine. The kit's
-repository, not the install, also holds a test container (`tests/standin/`), whose images are built from the network.
+Nothing else in the code a project runs opens a network connection. The kit's repository, not the install, also holds a
+test container (`tests/standin/`), whose images are built from the network.
 gitleaks scans locally (**not yet tested** here: it is gitleaks' own behaviour).
 
 ## Beside IT's own controls
@@ -219,7 +218,11 @@ and a desktop with Ubuntu 26.04 (uutils coreutils by default, git 2.53, Python 3
 end and the kit's five test suites passed; commits and pushes went through the hooks, and both refusals (a credential,
 a listed term) refused as designed; on the Linux side file modes and LF line endings were kept. On the Windows side
 (`/mnt/c`), every file showed mode 777, `chmod` had no effect, and commits and pushes ran 3 to 5 times slower; line
-endings stayed LF. **Not yet measured:** a machine an organization manages, with IT's settings in force.
+endings stayed LF. The kit's operator made two later runs: on a desktop, v0.13.0's code installed fresh, where the setup
+prompt ran end to end and the five suites passed, as that run's own session reported them (**not re-measured**); and on
+v0.15.0's code, on a new Ubuntu 24.04, where the setup prompt ran end to end, with the install's hook suite and one run
+of the daily load check, not the five suites. **Not yet measured:** a machine an organization manages, with IT's
+settings in force.
 - Install WSL2 (not WSL1) and a Linux distribution; inside it, the tools above and Claude Code.
 - Keep projects in WSL's own file system, under the Linux home, not under `/mnt/c`. The setup keeps code, projects,
   the kit's clone and its install there. Its defaults on the Windows side are the reply folder, for someone who runs
@@ -231,9 +234,9 @@ endings stayed LF. **Not yet measured:** a machine an organization manages, with
 - The list then lives in the Linux home's `~/.config/morrowcairn/lists/`, inside the distribution.
 - Inside WSL, Claude Code reads the Linux managed-settings location, unless the organization's Windows policy turns on
   `wslInheritsWindowsSettings` or it uses server-managed settings: check that the policy reaches WSL.
-- The two runs above confirmed the test suites, commits and pushes through the hooks, and file modes and line endings
-  on the Linux side. *Inferred, not checked on its own:* the home folder the kit reads is WSL's, since the listed-term
-  refusal worked from the list at its place.
+- The two v0.12.0 runs above confirmed the test suites, commits and pushes through the hooks, and file modes and line
+  endings on the Linux side. *Inferred, not checked on its own:* the home folder the kit reads is WSL's, since the
+  listed-term refusal worked from the list at its place.
 
 ## Open questions for IT
 
@@ -243,13 +246,18 @@ endings stayed LF. **Not yet measured:** a machine an organization manages, with
 - **Turning a check off.** An organization that forbids client-side hooks has to remove the stubs (above); the kit
   offers no quieter switch, by design.
 - **Managed settings.** Whether IT's Claude Code settings, set by device policy or in the Claude admin console, allow
-  user-level rules, skills and hooks is IT's. Claude Code's managed-settings documentation names two that reach the
-  kit. `allowManagedHooksOnly`, which restricts which hooks run, stops the kit's two Claude Code hooks, since the person
-  names them in their own settings.
+  user-level rules, skills and hooks is IT's. Claude Code's managed-settings documentation names two that reach the kit,
+  and its memory documentation a third. `allowManagedHooksOnly`, which restricts which hooks run, stops the kit's two
+  Claude Code hooks, since the person names them in their own settings.
   `strictPluginOnlyCustomization`, which blocks skills, agents, hooks and MCP servers from user and project sources,
   stops the kit's three skills where it locks skills, and its two hooks where it locks hooks; the kit has no agents or
-  MCP servers. The daily load check doesn't see a lock on skills: it checks that the skills are linked, not that they
-  load, since its probe asks only for the rules file's canary, so a lock on skills goes unnoticed by it. Neither
-  setting names rules files, so the rules file still loads under both (read from that documentation,
-  **not yet tested**). The kit ships no plugin. The git hooks are git's, and run under both.
+  MCP servers. The daily load check's probe fails, naming the skill, when its session's start event doesn't list one of
+  the kit's three skills; whether a lock on skills shows up that way is **not yet tested**. It doesn't check that a
+  skill's body loads. Neither setting names rules files, so the rules file still loads under both (read from that
+  documentation, **not yet tested**). The third is **Project instructions** (`instructionFiles` under `pluginConfigs`,
+  entry `cc-plugin-agents-md@builtin`): set to `managed-only`, it leaves out at launch every instruction file but the
+  organization's managed `CLAUDE.md`, `.claude/rules/` files included, so the kit's rules file, which isn't path-scoped,
+  doesn't load; set in managed settings, nothing in the person's own settings overrides it. To run the kit, leave it at
+  another value (read from Claude Code's memory and settings documentation, **not yet tested**). The kit ships no
+  plugin. The git hooks are git's, and run under both.
 - **Review before install.** Whether IT reviews the kit before it is installed is for the organization to decide.

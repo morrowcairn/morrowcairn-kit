@@ -51,10 +51,10 @@ report_fail() {  # REASON
         esac
     fi
 }
-refuse() {
-    echo "kit-load-check-stub: REFUSING -- $1." >&2
-    [[ -z "${2:-}" ]] || echo "  $2" >&2
-    report_fail "$1"
+refuse() {   # NAME REASON [LINE]: NAME from leak-detection/refusals.txt; the report and the ping take REASON alone
+    echo "kit-load-check-stub: REFUSING [$1] -- $2." >&2
+    [[ -z "${3:-}" ]] || echo "  $3" >&2
+    report_fail "$2"
     kit_reported=1
     exit 1
 }
@@ -67,7 +67,7 @@ kit_reported=0
 kit_guard() {
     local rc=$?
     [[ "${kit_reported:-0}" == 1 ]] && return
-    echo "kit-load-check-stub: REFUSING -- the check stopped before it finished, so what it had not reached was never checked." >&2
+    echo "kit-load-check-stub: REFUSING [kit-load-check-stub/stopped-early] -- the check stopped before it finished, so what it had not reached was never checked." >&2
     report_fail "the check stopped before it finished, so what it had not reached was never checked"
     (( rc != 0 )) || rc=1
     exit "$rc"
@@ -110,7 +110,7 @@ kit_verify_install() {   # DIR RELEASE MANIFEST-HASH: 0, or 1 with KV_ERROR sayi
 
 # The kit's user pin, a file of the kit's own, never a line in the person's CLAUDE.md.
 pinf=${KIT_USER_PIN:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/morrowcairn/user.pin}
-[[ -f "$pinf" && -r "$pinf" ]] || refuse "no kit user pin can be read" \
+[[ -f "$pinf" && -r "$pinf" ]] || refuse kit-load-check-stub/no-user-pin "no kit user pin can be read" \
     "kit-pin's user mode writes it, as it links the kit's rules file and skills: \"<install>/bin/kit-pin\" user vX.Y.Z"
 release=""; manifest=""; n=0
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -121,14 +121,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     esac
 done < "$pinf"
 [[ $n -eq 2 && "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$manifest" =~ ^sha256:[0-9a-f]{64}$ ]] \
-    || refuse "the kit user pin is malformed" "It holds two lines: release=vX.Y.Z and manifest=sha256:<64 hex>."
+    || refuse kit-load-check-stub/user-pin-malformed "the kit user pin is malformed" "It holds two lines: release=vX.Y.Z and manifest=sha256:<64 hex>."
 uf=${KIT_USER_CLAUDE_MD:-${HOME:-}/.claude/CLAUDE.md}
 ufarg=()
 if [[ -e "$uf" || -L "$uf" ]]; then
-    [[ -r "$uf" ]] || refuse "the user-level CLAUDE.md can't be read"
+    [[ -r "$uf" ]] || refuse kit-load-check-stub/user-claude-md-unreadable "the user-level CLAUDE.md can't be read"
     ufarg=(--user-file "$uf")
 fi
-if why=$(kit_no_sha256); then ping_why="$why, so the install can't be checked against the user pin"; refuse "$ping_why"; fi
+if why=$(kit_no_sha256); then ping_why="$why, so the install can't be checked against the user pin"; refuse kit-load-check-stub/no-hasher "$ping_why"; fi
 # The verifier's reason (one text in its three homes, LS9) can name what the kit didn't write: the tag an install's
 # RELEASE holds, a file someone put in the install, a path, the pinned release. The report on this machine keeps it;
 # the ping says only what kind of problem it is, in fixed words, and of unlisted files how many, so nothing read from
@@ -153,9 +153,9 @@ if ! kit_verify_install "$root/$release" "$release" "$manifest"; then
         "no install for "*)                                ping_why="no install for the pinned release" ;;
         *)                                                 ping_why="the install doesn't match the kit user pin" ;;
     esac
-    refuse "$KV_ERROR"
+    refuse kit-load-check-stub/install-fails-pin "$KV_ERROR"
 fi
-command -v python3 >/dev/null 2>&1 || refuse "python3 is not installed, so the load check can't run"
+command -v python3 >/dev/null 2>&1 || refuse kit-load-check-stub/no-python3 "python3 is not installed, so the load check can't run"
 
 export KIT_INSTALL="$root/$release"
 # Isolated (-I): no PYTHON* variable, no user site-packages, no script folder on its path, so no module the environment

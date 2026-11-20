@@ -34,7 +34,7 @@ squash() { printf '%s' "$1" | tr '\n' ' ' | cut -c1-300; }
 summary() { echo; echo "upgrade_test: $PASS passed, $FAIL failed, $SKIP skipped"; }
 
 # Every release from v0.11.0 on, oldest first. A release made later is added here when it is tagged.
-RELEASES=(v0.11.0 v0.11.1 v0.12.0 v0.12.1 v0.13.0 v0.13.1 v0.14.0 v0.15.0)
+RELEASES=(v0.11.0 v0.11.1 v0.12.0 v0.12.1 v0.13.0 v0.13.1 v0.14.0 v0.15.0 v1.0.0)
 CAND=v0.99.0                                   # the candidate's tag in this run's scratch kit: ROOT's staged tree
 
 # ============================== the release tags, from this repository alone ======================
@@ -134,11 +134,30 @@ exit 0
 EOF
     chmod 755 "$1/own-check.sh"; }
 WHY=""
+# The project holds the CI copies its release's ci/copies.txt names (a project path, then the release file it is held to),
+# as a project made from the kit does, so every move checks them: to takes a copy across only where it is the held
+# release's, the stubs' copies layer refuses one that is neither at the move's commit, and moved checks each is the
+# target's afterwards.
+ci_copies() {  # RELEASE: its ci/copies.txt's lines, "PROJECT-PATH RELEASE-FILE"
+    awk '$1 !~ /^#/ && $2 != "" {print $1, $2}' "$KIT_INSTALL_ROOT/$1/ci/copies.txt" 2>/dev/null; }
+take_copies() {  # DIR RELEASE: each copy RELEASE's ci/copies.txt names, from its install, writable
+    local d=$1 r=$2 p f
+    while read -r p f; do
+        [[ "$p" != */* ]] || mkdir -p "$d/${p%/*}" || return 1
+        cat "$KIT_INSTALL_ROOT/$r/$f" > "$d/$p" || return 1
+    done < <(ci_copies "$r")
+}
+copies_are() {  # DIR RELEASE: 0 when the project holds each copy RELEASE names, byte-equal to its release file; WHY names one that isn't
+    local d=$1 r=$2 p f n=0
+    while read -r p f; do n=$((n + 1)); cmp -s "$d/$p" "$KIT_INSTALL_ROOT/$r/$f" || { WHY="$p isn't release $r's $f"; return 1; }; done < <(ci_copies "$r")
+    (( n > 0 )) || { WHY="release $r's install names no CI copy"; return 1; }
+}
 mkproj() {  # DIR [TESTS-LINE...]: a project pinned at v0.11.0 by v0.11.0's own kit-pin, its list at .git/leak-pattern,
             # pinned, a bare remote holding its first push; kit-pin.tests the lines given, else the own-check line alone;
             # WHY says what failed
     local d=$1 out; shift; WHY=""
     git init -q -b main "$d"; ident "$d"; own1 "$d"; echo clean > "$d/clean.txt"
+    take_copies "$d" v0.11.0 || { WHY="v0.11.0's CI copies"; return 1; }
     if (( $# )); then printf '%s\n' "$@" > "$d/kit-pin.tests"; else printf '%s\n' "$OWNLINE" > "$d/kit-pin.tests"; fi
     git -C "$d" add -A && git -C "$d" commit -q --no-verify -m one || { WHY="commit one"; return 1; }
     (umask 077 && printf "LEAK_PATTERN='%s'\n" "$MARK" > "$d/.git/leak-pattern")
@@ -168,6 +187,7 @@ moved() {  # DIR RELEASE: to RELEASE with the candidate's kit-pin, kept, committ
     CHECK_OUT=$(kpc "$d" check); rc=$?
     (( rc == 0 )) || { WHY="check exit $rc: $(squash "$CHECK_OUT")"; return 1; }
     out=$(git -C "$d" push -q origin HEAD:refs/heads/main 2>&1) || { WHY="a clean push refused: $(squash "$out")"; return 1; }
+    copies_are "$d" "$t" || { WHY="after the move to $t: $WHY"; return 1; }
     planted "$d"
 }
 snap() { (cd "$1" && cat kit.pin .git/hooks/pre-commit .git/hooks/pre-push 2>/dev/null | sha256sum; git status --porcelain); }
@@ -247,6 +267,37 @@ if (( rc == 0 )); then
         && ! git -C "$Q2" ls-files --error-unmatch kit.list-id >/dev/null 2>&1
     result "U3b a red test after the move puts everything back: kit.list-id in neither the work tree nor the index" $? "exit $rc: $(squash "$out")"
 else result "U3b a red test after the move puts everything back: kit.list-id in neither the work tree nor the index" 1 "its project: $WHY"; fi
+
+# ============================== the CI copies across the last move ===============================
+# A project on v1.0.0 holding its copies moves to the candidate: each copy becomes the candidate's (ci/gitleaks.yml
+# among them, which changes where the candidate's differs), committed through the new stubs, whose copies layer passes.
+H="$TMP/h"; mkproj "$H" && moved "$H" v1.0.0; rc=$?
+if (( rc == 0 )); then
+    chg=no; cmp -s "$KIT_INSTALL_ROOT/v1.0.0/ci/gitleaks.yml" "$KIT_INSTALL_ROOT/$CAND/ci/gitleaks.yml" || chg=yes
+    moved "$H" "$CAND" && git -C "$H" log -1 --name-only --format= | grep -qx 'kit.pin'; rc=$?
+    echo "info  U10: the candidate's ci/gitleaks.yml differs from v1.0.0's: $chg"
+    if [[ $chg == yes ]] && (( rc == 0 )); then git -C "$H" log -1 --name-only --format= | grep -qx '.github/workflows/gitleaks.yml' || { rc=1; WHY="the move's commit doesn't carry the changed .github/workflows/gitleaks.yml"; }; fi
+    result "U10 a project on v1.0.0 holding its CI copies moves to the candidate: each copy the candidate's, committed through its stubs' copies layer" $rc "$WHY"
+else result "U10 a project on v1.0.0 holding its CI copies moves to the candidate: each copy the candidate's, committed through its stubs' copies layer" 1 "its project at v1.0.0: $WHY"; fi
+# Must refuse: a copy the project edited by hand, equal to neither release's, is refused at the move or at the commit
+# after it, naming it, never silently passed.
+E="$TMP/e"; mkproj "$E" && moved "$E" v1.0.0; rc=$?
+if (( rc == 0 )); then
+    echo "# a step of the project's own" >> "$E/.github/workflows/gitleaks.yml"
+    git -C "$E" add .github/workflows/gitleaks.yml && git -C "$E" commit -q --no-verify -m "hand edit"
+    before=$(snap "$E"); out=$(kpc "$E" to "$CAND"); rc=$?
+    if (( rc != 0 )); then
+        echo "info  U11: refused at the move (to exit $rc)"
+        [[ "$out" == *".github/workflows/gitleaks.yml"* && "$(snap "$E")" == "$before" ]]
+        result "U11 a CI copy edited by hand is refused at the move to the candidate, naming it, or at the commit after it" $? "to refused (exit $rc): $(squash "$out")"
+    else
+        git -C "$E" add kit.pin; cout=$(git -C "$E" commit -q -m "onto $CAND" 2>&1); crc=$?
+        echo "info  U11: to kept the move; the commit after it exited $crc"
+        [[ $crc -ne 0 && "$cout" == *".github/workflows/gitleaks.yml"* ]]
+        result "U11 a CI copy edited by hand is refused at the move to the candidate, naming it, or at the commit after it" $? \
+            "to kept the move (exit 0); the commit after it: exit $crc: $(squash "$cout")"
+    fi
+else result "U11 a CI copy edited by hand is refused at the move to the candidate, naming it, or at the commit after it" 1 "its project at v1.0.0: $WHY"; fi
 
 summary
 [[ $FAIL -eq 0 && $PASS -gt 0 ]]

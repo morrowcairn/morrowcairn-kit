@@ -118,7 +118,7 @@ ujob=$(awk '/^jobs:/ {j=1; next} j' "$UY" 2>/dev/null)
      && "$ujob" == *"runs-on: ubuntu-latest"* && "$ujob" != *"matrix"* && "$ujob" == *"fetch-depth: 0"* \
      && "$ujob" == *"run: tests/upgrade_test.sh"* ]] \
   && [[ -n "$(glstep "$UY")" && "$(glstep "$UY")" == "$(glstep "$ROOT/.github/workflows/gitleaks.yml")" ]] \
-  && grep -qE '^kit[[:space:]]+\.github/workflows/upgrade\.yml$' "$MANIFEST" && grep -qE '^kit[[:space:]]+tests/upgrade_test\.sh$' "$MANIFEST"; } 2>/dev/null
+  && grep -qE '^kit[[:space:]]+\.github/workflows/(upgrade\.yml)?$' "$MANIFEST" && grep -qE '^kit[[:space:]]+tests/upgrade_test\.sh$' "$MANIFEST"; } 2>/dev/null
                                                want_ok "UP1 upgrade.yml runs the upgrade test on pushes to main and by hand alone, on Linux, with every tag and the kit's gitleaks step, and neither file ships" $? "on: [$(printf '%s' "$uon" | tr '\n' ' ')]"
 ustep=$(awk '/- name: Upgrade test/ {f=1; next} f && /run:/ {sub(/^[[:space:]]*run:[[:space:]]*/, ""); print; exit}' "$UY" 2>/dev/null)
 U=$(mktemp -d); git init -q -b main "$U/r" && mkdir -p "$U/r/tests" && cp "$ROOT/tests/upgrade_test.sh" "$U/r/tests/" 2>/dev/null \
@@ -127,12 +127,27 @@ printf '%s\n' "$ustep" > "$U/step.sh"     # a program reaches the shell through 
 uout=$( cd "$U/r" && bash "$U/step.sh" 2>&1 ); urc=$?; rm -rf "${U:?}"
 [[ -n "$ustep" && $urc -ne 0 && "$uout" == *"FAIL  UT0"* && "$uout" != *"skip "* ]]
                                                want_ok "UP2 the upgrade job's step, in a repository missing the release tags, fails at UT0 and skips nothing" $? "exit $urc: $(printf '%s' "$uout" | tr '\n' ' ' | cut -c1-200)"
-# The upgrade test carries a project from every release, so its list names the newest release below CHANGELOG.md's top
-# heading: the one just tagged during development, or the one before at a release commit, whose own heading is on top.
+# The upgrade test carries a project from every release, so its list names the newest one tagged: CHANGELOG.md's top
+# heading once a tag of that name is in the clone (from the release's tag until the next release's heading goes on
+# top), else the newest release below it (a release commit before its tag, or a clone without the tags, as CI's
+# checkout is). Before A31 it read the second alone, so between a release and the next one the list lacked it.
+up3_want() {   # CHANGELOG REPO: the release the list must hold
+    local top below
+    top=$(awk '/^## / {print $2; exit}' "$1" 2>/dev/null)
+    below=$(awk '/^## / {n++; if (n > 1 && $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {print $2; exit}}' "$1" 2>/dev/null)
+    if [[ "$top" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && git -C "$2" rev-parse -q --verify "refs/tags/$top" >/dev/null 2>&1; then
+        printf '%s' "$top"
+    else printf '%s' "$below"; fi
+}
+U3=$(mktemp -d); git init -q -b main "$U3/r"; printf '## v9.9.1\n\n## v9.9.0\n' > "$U3/r/CHANGELOG.md"
+git -C "$U3/r" add -A && git -C "$U3/r" -c user.name=t -c user.email=t@invalid.local -c core.hooksPath=/dev/null commit -q -m one
+w1=$(up3_want "$U3/r/CHANGELOG.md" "$U3/r"); git -C "$U3/r" tag v9.9.1; w2=$(up3_want "$U3/r/CHANGELOG.md" "$U3/r"); rm -rf "${U3:?}"
+[[ "$w1" == v9.9.0 && "$w2" == v9.9.1 ]]
+                                               want_ok "UP3b the list must hold the release below an untagged top heading, and the top heading's once it is tagged" $? "untagged: ${w1:-none}; tagged: ${w2:-none}"
 urel=$(sed -n 's/^RELEASES=(\(.*\))$/\1/p' "$ROOT/tests/upgrade_test.sh" 2>/dev/null)
-unew=$(awk '/^## / {n++; if (n > 1 && $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {print $2; exit}}' "$ROOT/CHANGELOG.md" 2>/dev/null)
+unew=$(up3_want "$ROOT/CHANGELOG.md" "$ROOT")
 [[ -n "$urel" && -n "$unew" && " $urel " == *" $unew "* ]]
-                                               want_ok "UP3 the upgrade test's release list holds the newest release below CHANGELOG.md's top heading" $? "newest: ${unew:-none}; list: ${urel:-none}"
+                                               want_ok "UP3 the upgrade test's release list holds the newest release tagged, CHANGELOG.md's top heading once tagged" $? "newest: ${unew:-none}; list: ${urel:-none}"
 
 # ============================== the frame TODO: hook, template and test fixture agree ===========
 todo=$(sed -n "s/^FRAME_TODO=\"\(.*\)\"$/\1/p" "$H/pre-commit" 2>/dev/null)
@@ -425,7 +440,7 @@ ci_project() {  # DIR [FORK]
     local d=$1
     git init -q -b main "$d" && git -C "$d" config user.name t && git -C "$d" config user.email t@invalid.local \
     && mkdir -p "$d/.github/workflows" "$d/leak-detection" \
-    && install -m 0644 "$INST/.github/workflows/gitleaks.yml" "$INST/.github/workflows/leak-scan.yml" "$d/.github/workflows/" \
+    && install -m 0644 "$ROOT/.github/workflows/gitleaks.yml" "$ROOT/.github/workflows/leak-scan.yml" "$d/.github/workflows/" \
     && install -m 0644 "$INST/.gitleaks.toml" "$d/" && install -m 0755 "$INST/leak-detection/scan-tree.sh" "$INST/leak-detection/pre-commit" "$d/leak-detection/" \
     && printf '# a project with CI\n' > "$d/CLAUDE.md" && printf 'true\n' > "$d/kit-pin.tests" \
     && if [[ -n "${2:-}" ]]; then echo "      # a step of the project's own" >> "$d/.github/workflows/gitleaks.yml" \
@@ -842,12 +857,13 @@ SPF="$ROOT/docs/setup-prompt.md"
 { grep -qF 'kit-load-check-stub' "$SPF" && grep -qF 'headless' "$SPF" && grep -qF 'KIT_LOAD_CHECK_PING' "$SPF" \
   && grep -qiF 'once a day' "$SPF"; } 2>/dev/null
                                                want_ok "SP3 the setup prompt offers the daily load check, showing its line, its one request a day and its ping" $? ""
-# Under a lock on skills it still offers the daily load check, saying the check reads the rules file only: it sees the
-# skills linked, not loading, so a lock on skills goes unnoticed by it.
+# Under a lock on skills it still offers the daily load check, saying what the check sees: the rules file loading, and
+# Claude Code finding the kit's three skills, not a skill's body loading (B9).
 sp8=$(awk '/^8\. / {p=1} /^9\. / {p=0} p' "$SPF" 2>/dev/null | tr -s ' \n' '  ')
-[[ "$sp8" == *"under a lock on skills too"* && "$sp8" == *"checks the rules file only"* && "$sp8" == *"goes unnoticed by it"* \
+[[ "$sp8" == *"under a lock on skills too"* && "$sp8" == *"that the rules file loads"* \
+   && "$sp8" == *"Claude Code finds the kit's three skills"* && "$sp8" == *"not that a skill's body loads"* \
    && "$sp8" != *"don't offer it"* ]]
-                                               want_ok "SP4 under a lock on skills the setup prompt still offers the daily load check, saying it checks the rules file only" $? "${sp8:0:200}"
+                                               want_ok "SP4 under a lock on skills the setup prompt still offers the daily load check, saying it checks the rules file and that Claude Code finds the kit's skills" $? "${sp8:0:200}"
 # Step 5's kit-pin writes into Claude Code's own folder, which Claude Code's sandbox, where it is on, keeps a session's
 # commands out of (measured: the rules, skills and hooks folders). So the session runs it, and where the sandbox blocks
 # it, retries it outside the sandbox, which Claude Code asks the person to approve ("Bash command (unsandboxed)", in its
@@ -1343,7 +1359,7 @@ done
 rm -rf "${W:?}"
 # On Windows the kit runs inside WSL2, a Linux, and native Windows isn't supported, so the workflow has no Windows job:
 # its dispatch offers macos and linux alone, no job runs on a Windows runner, and no step is Windows' own. The gitleaks
-# step, the same text in every workflow (K26, UP1), keeps its archive table, which names every runner gitleaks ships for.
+# step, the same text in every workflow (K26, UP1), names an archive for each runner a job runs on (WF3, D4).
 wfw=""
 grep -qxE '[[:space:]]*options: \[macos, linux\]' "$WF" 2>/dev/null || wfw+=" [the dispatch's options]"
 grep -qiE 'windows-latest' "$WF" 2>/dev/null && wfw+=" [a windows-latest runner]"
@@ -1351,13 +1367,56 @@ grep -qE "runner\.os == 'Windows'" "$WF" 2>/dev/null && wfw+=" [a Windows-only s
 grep -qE '^[[:space:]]*MSYS:' "$WF" 2>/dev/null && wfw+=" [an MSYS setting]"
 grep -qiE 'git bash' "$WF" 2>/dev/null && wfw+=" [Git Bash named]"
 [[ -f "$WF" && -z "$wfw" ]];                   want_ok "WF1 cross-platform.yml runs no native-Windows job: macos and linux alone, no Windows runner, step or setting" $? "${wfw:-no file}"
+# Every gitleaks step refuses an archive whose sha256 isn't the one written beside it, on each runner a workflow reaches:
+# Linux-X64 by sha256sum, macOS-ARM64 and macOS-X64 by shasum, which a stock Mac has instead. Each step runs as written,
+# from a file, with a stand-in curl that writes a planted archive, and for the macOS rows a PATH holding no sha256sum.
+# The planted archive is a real one holding a stand-in gitleaks, so a step that went on past its refusal would unpack
+# it and put its folder on PATH, which the case reads.
+GLW=$(mktemp -d); gl_why=""; gl_n=0; mkdir -p "$GLW/bin" "$GLW/nosha" "$GLW/pl"
+printf '#!/bin/sh\necho "gitleaks version planted"\n' > "$GLW/pl/gitleaks"; chmod +x "$GLW/pl/gitleaks"
+tar -czf "$GLW/planted.tar.gz" -C "$GLW/pl" gitleaks
+printf '%s\n' '#!/bin/sh' '# a stand-in curl: the planted archive at its -o path' \
+    "while [ \$# -gt 0 ]; do case \"\$1\" in -o) shift; cat '$GLW/planted.tar.gz' > \"\$1\" ;; esac; shift; done" > "$GLW/bin/curl"
+chmod +x "$GLW/bin/curl"
+for t in bash sh env mkdir rm cat tar gzip shasum perl; do p=$(command -v "$t") && ln -s "$p" "$GLW/nosha/$t"; done
+gl_steps() {  # FILE OUTDIR: each "Install gitleaks" step's run block, dedented, as OUTDIR/N.sh; prints how many
+    awk -v out="$2" '/- name: Install gitleaks/ {want = 1; next}
+        want && /^[[:space:]]*run: \|[[:space:]]*$/ {match($0, /^[[:space:]]*/); base = RLENGTH; inb = 1; want = 0; n++; f = out "/" n ".sh"; ind = -1; next}
+        inb { if ($0 ~ /^[[:space:]]*$/) { print "" > f; next }
+              match($0, /^[[:space:]]*/)
+              if (RLENGTH <= base) { inb = 0; close(f) } else { if (ind < 0) ind = RLENGTH; print substr($0, ind + 1) > f } }
+        END { print n + 0 }' "$1"
+}
+for wf in .github/workflows/cross-platform.yml .github/workflows/gitleaks.yml .github/workflows/upgrade.yml ci/gitleaks.yml; do
+    d="$GLW/steps-${wf//\//_}"; mkdir -p "$d"; k=$(gl_steps "$ROOT/$wf" "$d")
+    [[ "$k" -ge 1 ]] || { gl_why+=" [no gitleaks step in $wf]"; continue; }
+    for s in "$d"/*.sh; do
+        for ra in Linux-X64 macOS-ARM64 macOS-X64; do
+            t="$GLW/run-$gl_n"; mkdir -p "$t"; : > "$t/path"; gl_n=$((gl_n + 1))
+            if [[ "$ra" == Linux-* ]]; then p="$GLW/bin:$PATH"; else p="$GLW/bin:$GLW/nosha"; fi
+            out=$(env -i PATH="$p" RUNNER_OS="${ra%-*}" RUNNER_ARCH="${ra#*-}" RUNNER_TEMP="$t" GITHUB_PATH="$t/path" bash "$s" 2>&1); rc=$?
+            [[ $rc -ne 0 && "$out" == *"not the pinned"*"refused"* && ! -s "$t/path" ]] || gl_why+=" [$wf step $(basename "$s" .sh), $ra: exit $rc]"
+        done
+    done
+done
+[[ -z "$gl_why" && $gl_n -eq 15 ]]
+                                               want_ok "WF2 every workflow's gitleaks step refuses an archive whose sha256 isn't its pin, on Linux-X64 and on both macOS runners by shasum" $? "runs $gl_n${gl_why}"
+rm -rf "${GLW:?}"
+# No runner the workflows reach is Windows, so no gitleaks step names a Windows archive (D4).
+n=$(cat "$ROOT/.github/workflows/cross-platform.yml" "$ROOT/.github/workflows/gitleaks.yml" "$ROOT/.github/workflows/upgrade.yml" \
+    "$ROOT/ci/gitleaks.yml" 2>/dev/null | grep -c -i -E 'windows-x64|windows_x64')
+[[ "$n" == 0 ]];                               want_ok "WF3 no gitleaks step names a Windows archive, since no job runs on a Windows runner" $? "$n line(s)"
+# Nor anything only a Windows runner reached: cygpath (Git Bash's path tool) or a branch for a .zip archive (D4).
+n=$(cat "$ROOT/.github/workflows/cross-platform.yml" "$ROOT/.github/workflows/gitleaks.yml" "$ROOT/.github/workflows/upgrade.yml" \
+    "$ROOT/ci/gitleaks.yml" 2>/dev/null | grep -c -E 'cygpath|\*\.zip\)|7z x|unzip ')
+[[ "$n" == 0 ]];                               want_ok "WF4 no gitleaks step holds a cygpath line or a .zip branch, which only a Windows runner reached" $? "$n line(s)"
 
 # ============================== the weekly run's ping ===========================================
 # A workflow that runs on a schedule ends with a job that pings a Healthchecks URL kept in the SCHEDULED_PING_URL
 # secret, so a check there alerts when a week passes with no green run: the job needs every other job, runs on the
-# schedule alone and only when nothing failed or was cancelled, and its step skips with no URL set. No CI copy a project
-# receives (ci/) pings. ping_ok FILE checks one workflow; PG0 is its control, a good workflow and copies each missing one
-# guard.
+# schedule alone and only when each needed job succeeded (PG3 and PG4 evaluate that below), and its step skips with no
+# URL set. No CI copy a project receives (ci/) pings. ping_ok FILE checks one workflow's form; PG0 is its control, a good
+# workflow and copies each missing one guard.
 ping_ok() {   # FILE: 0 when its last job is the ping job, with every guard
     python3 -I - "$1" <<'PY'
 import re, sys
@@ -1373,8 +1432,13 @@ jobs = re.findall(r"^  ([A-Za-z0-9_-]+):[ \t]*$", rest, re.M)
 if len(jobs) < 2:
     sys.exit(1)
 body = rest.split("\n  " + jobs[-1] + ":", 1)[-1]
+ifm = re.search(r"^    if:\s*(?:>-?\s*)?\$\{\{(.*?)\}\}", body, re.M | re.S)
+cond = " ".join(ifm.group(1).split()) if ifm else ""
+needs = [n for n in jobs[:-1]]
+if not ("github.event_name == 'schedule'" in cond and "!cancelled()" in cond
+        and all("needs.%s.result == 'success'" % n in cond for n in needs)):
+    sys.exit(1)
 want = ["    needs: [" + ", ".join(jobs[:-1]) + "]",
-        "    if: ${{ github.event_name == 'schedule' && !failure() && !cancelled() }}",
         "      PING_URL: ${{ secrets.SCHEDULED_PING_URL }}",
         "        if: ${{ env.PING_URL != '' }}",
         "curl -fsS"]
@@ -1393,7 +1457,7 @@ jobs:
     runs-on: ubuntu-latest
   ping:
     needs: [a, b]
-    if: ${{ github.event_name == 'schedule' && !failure() && !cancelled() }}
+    if: ${{ github.event_name == 'schedule' && !cancelled() && needs.a.result == 'success' && needs.b.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       PING_URL: ${{ secrets.SCHEDULED_PING_URL }}
@@ -1403,7 +1467,7 @@ jobs:
         run: curl -fsS -m 10 --retry 3 -o /dev/null "$PING_URL"
 YML
 sed "s/github.event_name == 'schedule' && //" "$PGD/good.yml" > "$PGD/no-schedule.yml"
-sed 's/ && !failure() && !cancelled()//' "$PGD/good.yml" > "$PGD/no-success.yml"
+sed "s/ \&\& needs.a.result == 'success' \&\& needs.b.result == 'success'//" "$PGD/good.yml" > "$PGD/no-success.yml"
 sed "/env.PING_URL != ''/d" "$PGD/good.yml" > "$PGD/no-skip.yml"
 sed 's/needs: \[a, b\]/needs: [a]/' "$PGD/good.yml" > "$PGD/not-all.yml"
 awk '/^  b:/ {hold=1} hold && /^  ping:/ {hold=0} hold {buf = buf $0 "\n"; next} {print} END {printf "%s", buf}' "$PGD/good.yml" > "$PGD/not-last.yml"
@@ -1421,6 +1485,77 @@ done
 [[ $pgn -ge 1 && -z "$pgw" ]];                 want_ok "PG1 each scheduled workflow ends with the ping job: every job before it, the schedule alone, nothing failed, no URL no ping" $? "scheduled: $pgn; without it:${pgw:- none}"
 pgc=$(LC_ALL=C grep -l -E 'SCHEDULED_PING_URL|PING_URL|hc-ping' "$ROOT"/ci/* 2>/dev/null | sed "s|^$ROOT/||" | tr '\n' ' ')
 [[ -d "$ROOT/ci" && -z "$pgc" ]];              want_ok "PG2 no CI copy a project receives (ci/) pings or names the ping's secret" $? "${pgc:-none}"
+# What the ping's condition does, not only what it says (PG3, PG4): ping_eval FILE EVENT RUN JOB=RESULT... evaluates the
+# ping job's if: expression, GitHub's subset the workflow uses (contexts, quoted strings, == != && || ! and parentheses,
+# and success() failure() cancelled() always() over the needed jobs' results, the run itself not cancelled), and prints
+# true or false. A cancelled or failed needed job must never ping; the private path, the gate saying run=false and the
+# macOS jobs skipped, still pings.
+ping_eval() {
+    python3 -I - "$@" <<'PY'
+import re, sys
+path, event, run = sys.argv[1], sys.argv[2], sys.argv[3]
+res = dict(a.split("=", 1) for a in sys.argv[4:])
+t = open(path, encoding="utf-8").read()
+m = re.search(r"^  ping:[ \t]*\n(.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*$|\Z)", t, re.M | re.S)
+body = m.group(1) if m else ""
+m = re.search(r"^    if:\s*(?:>-?\s*)?\$\{\{(.*?)\}\}", body, re.M | re.S)
+if not m:
+    print("no-if"); sys.exit(2)
+expr = m.group(1)
+toks = re.findall(r"'[^']*'|==|!=|&&|\|\||!|\(|\)|[A-Za-z_][A-Za-z0-9_.-]*\(\)|[A-Za-z_][A-Za-z0-9_.-]*", expr)
+pos = 0
+def peek(): return toks[pos] if pos < len(toks) else None
+def take():
+    global pos; pos += 1; return toks[pos - 1]
+def value(name):
+    if name == "github.event_name": return event
+    mm = re.fullmatch(r"needs\.([A-Za-z0-9_-]+)\.result", name)
+    if mm: return res.get(mm.group(1), "")
+    mm = re.fullmatch(r"needs\.([A-Za-z0-9_-]+)\.outputs\.run", name)
+    if mm: return run
+    raise SystemExit("unknown context " + name)
+def call(f):
+    r = list(res.values())
+    return {"success()": all(x == "success" for x in r), "failure()": any(x == "failure" for x in r),
+            "cancelled()": False, "always()": True}[f]
+def atom():
+    tk = take()
+    if tk == "!": return not atom()
+    if tk == "(":
+        v = disj(); take(); return v
+    if tk.startswith("'"): return tk[1:-1]
+    if tk.endswith("()"): return call(tk)
+    return value(tk)
+def cmp_():
+    v = atom()
+    while peek() in ("==", "!="):
+        op = take(); w = atom(); v = (v == w) if op == "==" else (v != w)
+    return v
+def conj():
+    v = cmp_()
+    while peek() == "&&":
+        take(); w = cmp_(); v = bool(v) and bool(w)
+    return v
+def disj():
+    v = conj()
+    while peek() == "||":
+        take(); w = conj(); v = bool(v) or bool(w)
+    return v
+print("true" if disj() else "false")
+PY
+}
+CPW="$ROOT/.github/workflows/cross-platform.yml"; pgx=""
+for c in "suites=cancelled smoke=success" "suites=success smoke=cancelled" "suites=failure smoke=success" "suites=cancelled smoke=cancelled"; do
+    v=$(ping_eval "$CPW" schedule true mac-gate=success $c); [[ "$v" == false ]] || pgx+=" [$c pinged: $v]"
+done
+v=$(ping_eval "$CPW" schedule true mac-gate=cancelled suites=skipped smoke=skipped); [[ "$v" == false ]] || pgx+=" [the gate cancelled pinged: $v]"
+v=$(ping_eval "$CPW" schedule true mac-gate=success suites=skipped smoke=skipped); [[ "$v" == false ]] || pgx+=" [Mac jobs skipped while the gate said run=true pinged: $v]"
+[[ -z "$pgx" ]];                               want_ok "PG3 the weekly ping never fires when a needed job was cancelled or failed, or the macOS jobs were skipped where the gate said run" $? "${pgx:-}"
+pgy=""
+v=$(ping_eval "$CPW" schedule false mac-gate=success suites=skipped smoke=skipped); [[ "$v" == true ]] || pgy+=" [the private path, run=false and the Mac jobs skipped: $v]"
+v=$(ping_eval "$CPW" schedule true mac-gate=success suites=success smoke=success); [[ "$v" == true ]] || pgy+=" [every job green: $v]"
+v=$(ping_eval "$CPW" push true mac-gate=success suites=success smoke=success); [[ "$v" == false ]] || pgy+=" [a push pinged: $v]"
+[[ -z "$pgy" ]];                               want_ok "PG4 the weekly ping fires when every job succeeded, or the gate said run=false and the macOS jobs were skipped, and on the schedule alone" $? "${pgy:-}"
 
 # ============================== the forge's scanning exclusion ==================================
 # The public copy runs GitHub's secret scanning and push protection; the credential fixture's dummy keys would set them
@@ -1474,6 +1609,197 @@ out=$(cd "$W" && env PATH="$W/bin:$PATH" TARGET="$W/live/app.txt" bash "$ROOT/pa
    && "$out" == *"smoke gate"* && "$out" == *"SUMMARY: deploy complete, smoke gate green"* ]]
                                                want_ok "DP1 the deploy pattern runs here through its headroom line and swap to a green smoke gate" $? "exit $rc: $out"
 rm -rf "${W:?}"
+
+# ============================== the stand-in runner's verdict ===================================
+# tests/standin/run.sh decides whether a stand-in run passed. Under old git (below 2.31) the kit refuses by design, so
+# that condition's suites fail by design: it passes only when its lines are the ones recorded for the release, as the
+# tester's criterion reads them (decisions log §768), and anything else fails. Each case runs the runner on a scratch
+# kit tagged v9.9.9, with a stand-in docker that copies prepared results into the container's /out and exits as the
+# container would, so no image or container is made.
+W=$(mktemp -d); mkdir -p "$W/bin" "$W/fx" "$W/k/tests/standin/expected"
+cp "$ROOT/tests/standin/run.sh" "$ROOT/tests/standin/entry.sh" "$ROOT/tests/standin/it-hook" "$ROOT/tests/standin/Containerfile" \
+    "$W/k/tests/standin/" 2>/dev/null
+printf '%s\n' '#!/bin/bash' '# a stand-in docker: build makes nothing; run copies the condition'"'"'s prepared results to /out' \
+    '[ "$1" = build ] && exit 0; [ "$1" = run ] || exit 9' \
+    'for a in "$@"; do case "$a" in *:/out) out=${a%:/out} ;; esac; last=$a; done' \
+    "cp -R \"$W/fx/\$last/.\" \"\$out/\" && exit \"\$(cat \"$W/fx/\$last/status\")\"" > "$W/bin/docker"
+chmod +x "$W/bin/docker"
+sr_fx() {   # CONDITION STATUS 'SUITE EXIT LAST-LINE'...: that condition's prepared results
+    local c=$1 st=$2 x; shift 2; rm -rf "${W:?}/fx/$c"; mkdir -p "$W/fx/$c"; : > "$W/fx/$c/exits.txt"; echo "$st" > "$W/fx/$c/status"
+    echo "git: git version 2.30.2" > "$W/fx/$c/facts.txt"
+    for x in "$@"; do set -- $x; echo "$1 exit $2" >> "$W/fx/$c/exits.txt"; echo "${x#* * }" > "$W/fx/$c/$1.log"; done
+}
+OG1='hooks_test 1 hooks_test: 143 passed, 401 failed, 13 skipped'; OG2='install_test 1 install_test: 133 passed, 267 failed, 67 skipped'
+OG3='smoke_test 1 smoke_test: 1 passed, 1 failed, 7 not run'
+printf '%s\n' "old-git: hooks_test exit 1; hooks_test: 143 passed, 401 failed, 13 skipped" \
+    "old-git: install_test exit 1; install_test: 133 passed, 267 failed, 67 skipped" \
+    "old-git: smoke_test exit 1; smoke_test: 1 passed, 1 failed, 7 not run" > "$W/k/tests/standin/expected/v9.9.9.txt"
+(cd "$W/k" && git init -q && git add -A && git -c user.name=t -c user.email=t@invalid.local -c core.hooksPath=/dev/null commit -q -m k \
+    && git tag v9.9.9) >/dev/null 2>&1
+sr() { rm -rf "${W:?}/out"; (cd "$W/k" && env PATH="$W/bin:$PATH" STANDIN_OUT="$W/out" bash tests/standin/run.sh "$@") 2>&1; }
+sr_fx no-sudo 0 'hooks_test 0 hooks_test: 1 passed, 0 failed, 0 skipped' 'install_test 0 install_test: 1 passed, 0 failed, 0 skipped' \
+    'smoke_test 0 smoke_test: 1 passed, 0 failed, 0 not run'
+out=$(sr v9.9.9 no-sudo); rc=$?
+[[ $rc -eq 0 ]];                               want_ok "SR0 a condition whose suites all pass passes (the stand-in docker's control)" $? "exit $rc: $out"
+sr_fx old-git 1 "$OG1" "$OG2" "$OG3"
+out=$(sr v9.9.9 old-git); rc=$?
+[[ $rc -eq 0 && "$out" == *"refused by design"* ]]
+                                               want_ok "SR1 an old-git run whose lines are the release's record reads as refused by design, and the run passes" $? "exit $rc: $out"
+sr_fx old-git 1 "$OG1" 'install_test 1 install_test: 132 passed, 268 failed, 67 skipped' "$OG3"
+out=$(sr v9.9.9 old-git); rc=$?
+[[ $rc -ne 0 ]];                               want_ok "SR2 one failure beside old-git's version refusals fails the run" $? "exit $rc: $out"
+sr_fx old-git 1 "$OG1" "$OG2" "$OG3"
+(cd "$W/k" && echo later > later.txt && git add later.txt \
+    && git -c user.name=t -c user.email=t@invalid.local -c core.hooksPath=/dev/null commit -q -m later && git tag v9.9.8) >/dev/null 2>&1
+out=$(sr v9.9.8 old-git); rc=$?
+[[ $rc -ne 0 ]];                               want_ok "SR3 an old-git run with no record for its release fails, however its lines read" $? "exit $rc: $out"
+sr_fx old-git 0 'hooks_test 0 hooks_test: 544 passed, 0 failed, 13 skipped' 'install_test 0 install_test: 400 passed, 0 failed, 67 skipped' \
+    'smoke_test 0 smoke_test: 9 passed, 0 failed, 0 not run'
+out=$(sr v9.9.9 old-git); rc=$?
+[[ $rc -ne 0 ]];                               want_ok "SR4 an old-git run whose suites pass fails: old git must be refused" $? "exit $rc: $out"
+sr_fx no-sudo 1 'hooks_test 1 hooks_test: 0 passed, 1 failed, 0 skipped' 'install_test 0 install_test: 1 passed, 0 failed, 0 skipped' \
+    'smoke_test 0 smoke_test: 1 passed, 0 failed, 0 not run'
+out=$(sr v9.9.9 no-sudo); rc=$?
+[[ $rc -ne 0 ]];                               want_ok "SR5 any other condition with a failing suite fails the run" $? "exit $rc: $out"
+rm -rf "${W:?}"
+
+# ============================== the refusal names (A2) ===========================================
+# leak-detection/refusals.txt names each refusal of the gates it lists (RL4's second half): NAME (<gate>/<reason>),
+# EXIT and WHAT. rn_check LIST ROOT reads each listed gate's file (leak-detection/<gate>, leak-detection/<gate>.sh,
+# bin/<gate> or tools/<gate>.sh, exactly one of them) and names each refusal site that doesn't carry a listed name of
+# that gate: a line that prints "<label>: REFUSING" or "BLOCKED" with no name, or another, in brackets after that word,
+# whatever its label (the checked-copies layer prints under the hook that ran it, and carries check-copies's names), or
+# that prints an audit's closing "REFUSING: ..." the same; and a call of the gate's refusal helper, refuse or abandon,
+# whose first word isn't one. The helper's own line, which prints the name its caller passes ([$1], [%s]), and a helper
+# handing its caller's words on ("$@") aren't sites. Comment lines are skipped. It names each listed name its gate
+# never carries, too. The name at the site is the whole tie between a refusal and its list line: nothing checks a name
+# against the message's words. EXIT is a number, or a number and one + (1+). RN0, RN0b and RN0c are its controls.
+rn_check() {
+    python3 -I - "$@" <<'PY'
+import os, re, sys
+lst, root = sys.argv[1], sys.argv[2]
+bad, names, by_gate = [], set(), {}
+for n, line in enumerate(open(lst, encoding="utf-8"), 1):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    f = line.split("\t")
+    if len(f) != 3 or not re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", f[0]) or not re.fullmatch(r"[0-9]+\+?", f[1]) or not f[2]:
+        bad.append("list line %d isn't NAME, EXIT and WHAT, tab-separated" % n); continue
+    if f[0] in names:
+        bad.append("list line %d names %s again" % (n, f[0])); continue
+    names.add(f[0]); by_gate.setdefault(f[0].split("/")[0], []).append(f[0])
+NAME = re.compile(r"[a-z0-9-]+/[a-z0-9-]+")
+PRINT = re.compile(r"""(?:echo|printf)\s+["'][^"']*?: (?:REFUSING|BLOCKED)( \[([^]]*)\])? -- """)
+VERDICT = re.compile(r"""(?:echo|printf)\s+["'](?:REFUSING|BLOCKED)( \[([^]]*)\])?: """)
+CALL = re.compile(r"(?:^\s*|[;&|{(]\s*|\)\s+|\b(?:then|else|do)\s+)(?:refuse|abandon)\s+(\S+)")
+for gate, gnames in sorted(by_gate.items()):
+    places = [p for p in ("leak-detection/" + gate, "leak-detection/%s.sh" % gate, "bin/" + gate, "tools/%s.sh" % gate)
+              if os.path.isfile(os.path.join(root, p))]
+    if len(places) != 1:
+        bad.append("%s: %s gate file at leak-detection/, bin/ or tools/" % (gate, "no" if not places else "more than one")); continue
+    src = open(os.path.join(root, places[0]), encoding="utf-8").read().split("\n")
+    used = set()
+    for i, l in enumerate(src, 1):
+        if l.lstrip().startswith("#"):
+            continue
+        sites = []
+        for m in list(PRINT.finditer(l)) + list(VERDICT.finditer(l)):
+            got = m.group(2)
+            if got is not None and got[:1] in ("$", "%"):
+                continue                              # the helper's own line: it prints the name its caller passes
+            sites.append(got)
+        for m in CALL.finditer(l):
+            tok = m.group(1).rstrip(";")
+            if tok == '"$@"':
+                continue                              # a helper handing its caller's name and words on
+            sites.append(tok if NAME.fullmatch(tok) else None)
+        for got in sites:
+            if got is None:
+                bad.append("%s:%d carries no name" % (gate, i))
+            elif got not in names:
+                bad.append("%s:%d carries %s, which the list doesn't name" % (gate, i, got))
+            elif got.split("/")[0] != gate:
+                bad.append("%s:%d carries %s, another gate's name" % (gate, i, got))
+            else:
+                used.add(got)
+    for x in gnames:
+        if x not in used:
+            bad.append("%s is listed but %s never prints it" % (x, gate))
+sys.stdout.write("".join(b + "\n" for b in bad))
+sys.exit(1 if bad else 0)
+PY
+}
+RNC="$E/rn"; mkdir -p "$RNC/leak-detection"
+printf '%s\t%s\t%s\n' zgate/one 1 "One." zgate/two 1 "Two." zgate/unused 1 "Never." ygate/one 1 "Y's." zgate/one 1 "Again." > "$RNC/list.txt"
+printf 'zgate/short\t1\n' >> "$RNC/list.txt"; printf 'zgate/four\t1\ta fragment\tFour.\n' >> "$RNC/list.txt"
+printf '%s\n' 'echo "zgate: REFUSING [zgate/one] -- the first thing went wrong." >&2' 'echo "zgate: REFUSING -- the second thing went wrong." >&2' \
+    'echo "zgate: BLOCKED [zgate/zz] -- the first thing again." >&2' 'echo "zgate: REFUSING [ygate/one] -- a borrowed name." >&2' \
+    'echo "zgate: not a refusal at all" >&2' 'echo "zgate: BLOCKED [zgate/two] -- the second thing." >&2' > "$RNC/leak-detection/zgate"
+printf '%s\n' 'echo "ygate: REFUSING [ygate/one] -- its own." >&2' > "$RNC/leak-detection/ygate"
+out=$(rn_check "$RNC/list.txt" "$RNC"); rc=$?
+[[ $rc -eq 1 && "$out" == *"zgate:2 carries no name"* && "$out" == *"zgate:3 carries zgate/zz, which the list doesn't name"* \
+   && "$out" == *"zgate:4 carries ygate/one, another gate's name"* && "$out" == *"zgate/unused is listed but zgate never prints it"* \
+   && "$out" == *"list line 5 names zgate/one again"* && "$out" == *"list line 6 isn't NAME, EXIT and WHAT"* \
+   && "$out" == *"list line 7 isn't NAME, EXIT and WHAT"* \
+   && "$out" != *"zgate:1 "* && "$out" != *"zgate:5"* && "$out" != *"zgate:6"* && "$out" != *"ygate:"* \
+   && "$out" != *"ygate/one is listed"* && "$out" != *"zgate/two is listed"* ]]
+                                               want_ok "RN0 the name check takes a named refusal and names one with no name, an unlisted name, another gate's name, a listed name never printed, a name listed twice and a malformed line, a FRAGMENT column's included" $? "exit $rc: $(echo $out)"
+# RN0b: the same check on a gate found under bin/, tools/ or as a .sh: its refusal helper's calls, a line printed under
+# another tool's label (the checked-copies layer's form) and an audit's closing "REFUSING [name]:" line are sites; the
+# helper's own line, a helper handing its caller's words on, a comment and the word in a message aren't.
+RNB="$E/rnb"; mkdir -p "$RNB/bin" "$RNB/tools" "$RNB/leak-detection"
+printf '%s\t%s\t%s\n' xgate/one 1 "One." xgate/two 1 "Two." xgate/three 1 "Never." xgate/hits 3 "Hits." wgate/one 1 "W's." \
+    vgate/one 2 "V's." > "$RNB/list.txt"
+cat > "$RNB/bin/xgate" <<'X'
+refuse() { echo "xgate: REFUSING [$1] -- $2." >&2; shift 2; exit 1; }
+[[ -f x ]] || refuse xgate/one "no x"
+[[ -f y ]] || refuse "no y, and no name"
+    refuse xgate/zz "an unlisted name"
+echo "nothing here; it will refuse pushes later"
+# refuse xgate/one, in a comment
+abandon() { rm -rf x; refuse "$@"; }
+case $a in *) abandon xgate/two "gone" ;; esac
+echo "$label: REFUSING -- printed under a caller's label, with no name." >&2
+if true; then refuse vgate/one "another gate's name"; fi
+echo "REFUSING [xgate/hits]: 2 hit(s) outside the allow file."
+echo "REFUSING: 2 hit(s), with no name."
+X
+cat > "$RNB/leak-detection/wgate.sh" <<'X'
+echo "$label: REFUSING [wgate/one] -- printed under a caller's label." >&2
+X
+cat > "$RNB/tools/vgate.sh" <<'X'
+refuse() { printf 'vgate: REFUSING [%s] -- %s\n' "$1" "$2" >&2; exit 2; }
+refuse vgate/one "v"
+X
+out=$(rn_check "$RNB/list.txt" "$RNB"); rc=$?
+[[ $rc -eq 1 && "$out" == *"xgate:3 carries no name"* && "$out" == *"xgate:4 carries xgate/zz, which the list doesn't name"* \
+   && "$out" == *"xgate:9 carries no name"* && "$out" == *"xgate:10 carries vgate/one, another gate's name"* \
+   && "$out" == *"xgate:12 carries no name"* && "$out" == *"xgate/three is listed but xgate never prints it"* \
+   && "$out" != *"xgate:1 "* && "$out" != *"xgate:2 "* && "$out" != *"xgate:5"* && "$out" != *"xgate:6"* && "$out" != *"xgate:7"* \
+   && "$out" != *"xgate:8"* && "$out" != *"xgate:11"* && "$out" != *"wgate"* && "$out" != *"vgate:"* && "$out" != *"vgate/one is"* \
+   && "$out" != *"xgate/two is"* && "$out" != *"xgate/hits is"* ]]
+                                               want_ok "RN0b the name check finds a gate under bin/, tools/ or as a .sh, and names a refusal helper's call, a line under another tool's label or an audit's closing line that carries no name, an unlisted name or another gate's" $? "exit $rc: $(echo $out)"
+# RN0c: EXIT is a number, or a number and one + (1+: 1, or another non-zero status that varies); +1, 1-, a word, 1++
+# and an empty EXIT are malformed lines.
+RNE="$E/rne"; mkdir -p "$RNE/leak-detection"
+printf '%s\t%s\t%s\n' ugate/a 1+ "A." ugate/b +1 "B." ugate/c 1- "C." ugate/d one "D." ugate/e 1++ "E." ugate/f "" "F." \
+    ugate/g 3 "G." > "$RNE/list.txt"
+printf '%s\n' 'echo "ugate: REFUSING [ugate/a] -- a." >&2' 'echo "ugate: REFUSING [ugate/g] -- g." >&2' > "$RNE/leak-detection/ugate"
+out=$(rn_check "$RNE/list.txt" "$RNE"); rc=$?
+[[ $rc -eq 1 && "$out" == *"list line 2 isn't"* && "$out" == *"list line 3 isn't"* && "$out" == *"list line 4 isn't"* \
+   && "$out" == *"list line 5 isn't"* && "$out" == *"list line 6 isn't"* && "$out" != *"list line 1 isn't"* \
+   && "$out" != *"list line 7 isn't"* && "$out" != *"ugate:"* && "$out" != *"is listed but"* ]]
+                                               want_ok "RN0c the name check takes an EXIT of a number, or a number and one + (1+), and names +1, 1-, a word, 1++ and an empty EXIT as malformed" $? "exit $rc: $(echo $out)"
+if [[ -f "$ROOT/leak-detection/refusals.txt" ]]; then
+    out=$(rn_check "$ROOT/leak-detection/refusals.txt" "$ROOT"); rc=$?
+    o1=$(printf '%s\n' "$out" | awk '/^[a-z0-9-]+:[0-9]+ /'); o2=$(printf '%s\n' "$out" | awk 'NF && !/^[a-z0-9-]+:[0-9]+ /')
+    [[ $rc -le 1 && -z "$o1" ]];               want_ok "RN1 every refusal of each gate refusals.txt lists carries a listed name of that gate" $? "$(echo $o1 | cut -c1-300)"
+    [[ $rc -le 1 && -z "$o2" ]];               want_ok "RN2 refusals.txt is well formed (NAME, EXIT and WHAT), names no refusal twice, and each name it lists its gate prints" $? "$(echo $o2 | cut -c1-300)"
+else
+    result "RN1 every refusal of each gate refusals.txt lists carries a listed name of that gate" 1 "no leak-detection/refusals.txt"
+    result "RN2 refusals.txt is well formed (NAME, EXIT and WHAT), names no refusal twice, and each name it lists its gate prints" 1 "no leak-detection/refusals.txt"
+fi
 
 echo
 echo "kit_docs_test: $PASS passed, $FAIL failed, $SKIP skipped"

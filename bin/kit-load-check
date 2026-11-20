@@ -8,13 +8,16 @@ machine that wants it places the stub and a daily line itself (README, under Lay
   - the user-level rules entry (--rules), the kit's link to the pinned install's rules/morrowcairn.md, or a byte-equal
     copy, as a skill entry may be: missing, linked into another release or elsewhere, or a copy that differs, it fails;
   - a user-level CLAUDE.md that still imports a kit file, from any release, fails: it would load the kit a second way;
-  - the user-level skill entries, each the pinned install's, by link target or by hash; whether a skill loads isn't
-    checked, so a lock on skills goes unnoticed (its report says so);
+  - the user-level skill entries, each the pinned install's, by link target or by hash;
   - a headless probe: `claude -p` from an empty folder, user settings on, tools, MCP servers, hooks and auto memory off,
     under a timeout, and KIT_LOAD_PROBE=1 in its environment alone. Its environment is the caller's without the
-    credentials this check holds (CREDENTIALS). It passes only on exit 0 and an answer holding the rules file's canary:
-    the canary is the check, so no transcript is read. Claude Code's updates lead: the probe doesn't turn the updater
-    off.
+    credentials this check holds (CREDENTIALS). It passes only on exit 0, an answer holding the rules file's canary,
+    and a start event (stream-json's system/init) whose skills list names each of the pinned install's skills: a
+    missing one fails, naming it, and a start event with no skills list fails as such, since then the probe can't see
+    skills. The list gives names alone, so a same-named skill from elsewhere would pass it; the link check above says
+    where each entry points. Whether a skill's body loads isn't checked. The canary and the start event are the check,
+    so no transcript is read, and the probe still makes one call with tools off. Claude Code's updates lead: the probe
+    doesn't turn the updater off.
 The user level is Claude Code's config folder, CLAUDE_CONFIG_DIR where it is set, else ~/.claude.
 Under an org's managed-mcp.json, where the probe's --strict-mcp-config makes Claude Code exit at startup
 (code.claude.com/docs/en/managed-mcp.md), the probe is skipped, saying so, and never reported as passing; --managed-mcp
@@ -53,7 +56,7 @@ PING_FIXED = {f"can't tell: the pinned install has no {RULES}", "the rules link 
               f"can't tell: {RULES} carries no canary", f"can't tell: {RULES} carries more than one canary",
               "probe: can't tell: a CLAUDE.md sits in or above its folder", "probe: can't tell: claude could not be started",
               "probe: timeout", "probe: auth", "probe: can't tell: its output was not the JSON it should be",
-              f"probe: missing from the answer: {RULES}"}
+              f"probe: missing from the answer: {RULES}", "probe: can't tell: the session's start event lists no skills"}
 PING_KINDS = ((r"skill .+: its link points elsewhere than the pinned install",
                "a skill's link points elsewhere than the pinned install"),
               (r"skill .+: its copy differs from the pinned install", "a skill's copy differs from the pinned install"),
@@ -62,7 +65,8 @@ PING_KINDS = ((r"skill .+: its link points elsewhere than the pinned install",
                "the rules link points into another release than the pin names"),
               (r"the user-level CLAUDE\.md still imports a kit file \(.+\); the kit's rules load from the rules folder",
                "the user-level CLAUDE.md still imports a kit file; the kit's rules load from the rules folder"),
-              (r"probe: non-zero exit \(-?[0-9]+\)", "probe: non-zero exit"))
+              (r"probe: non-zero exit \(-?[0-9]+\)", "probe: non-zero exit"),
+              (r"probe: skill .+ not seen by Claude Code", "probe: a skill of the kit's not seen by Claude Code"))
 PING_OTHER = "a check failed (the report on the machine says which)"
 
 
@@ -81,9 +85,15 @@ def real(path):
     return os.path.realpath(os.path.expanduser(path))
 
 
+def kit_skills(inst):
+    """The pinned install's skills, by name."""
+    src = os.path.join(inst, ".claude", "skills")
+    return sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n, "SKILL.md"))) if os.path.isdir(src) else []
+
+
 def check_skills(inst, skills_dir, fails):
     src = os.path.join(inst, ".claude", "skills")
-    names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n, "SKILL.md"))) if os.path.isdir(src) else []
+    names = kit_skills(inst)
     kinds = []
     for n in names:
         entry, theirs = os.path.join(skills_dir, n), os.path.join(src, n)
@@ -102,7 +112,7 @@ def check_skills(inst, skills_dir, fails):
     return kinds
 
 
-def probe(claude, probe_dir, timeout, imports, canaries):
+def probe(claude, probe_dir, timeout, imports, canaries, skills):
     """Fail reasons, empty on a pass."""
     os.makedirs(probe_dir, exist_ok=True)
     d = probe_dir
@@ -118,7 +128,7 @@ def probe(claude, probe_dir, timeout, imports, canaries):
     env = {k: v for k, v in os.environ.items() if k not in CREDENTIALS}         # load_check_test LC15
     env.update(CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", KIT_LOAD_PROBE="1")        # no DISABLE_AUTOUPDATER (LQ4)
     cmd = [claude, "-p", "--no-session-persistence", "--setting-sources", "user", "--tools", "", "--strict-mcp-config",
-           "--settings", json.dumps({"disableAllHooks": True}), "--output-format", "json", PROMPT]
+           "--settings", json.dumps({"disableAllHooks": True}), "--output-format", "stream-json", "--verbose", PROMPT]
     try:
         p = subprocess.Popen(cmd, cwd=probe_dir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
@@ -131,10 +141,16 @@ def probe(claude, probe_dir, timeout, imports, canaries):
         p.communicate()
         return ["probe: timeout"]
     text = out.decode(errors="replace") + err.decode(errors="replace")
-    try:
-        res = json.loads(out.decode(errors="replace").strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        res = None
+    events = []
+    for line in out.decode(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict):
+            events.append(e)
+    res = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    init = next((e for e in events if e.get("type") == "system" and e.get("subtype") == "init"), None)
     if p.returncode != 0 or (isinstance(res, dict) and res.get("is_error")):
         if re.search(r"(?i)\b(log ?in|auth\w*|api key|unauthori[sz]ed|401|credentials?)\b", text):
             return ["probe: auth"]
@@ -142,7 +158,11 @@ def probe(claude, probe_dir, timeout, imports, canaries):
     if not isinstance(res, dict):
         return ["probe: can't tell: its output was not the JSON it should be"]
     answer = str(res.get("result") or "")
-    return [f"probe: missing from the answer: {rel}" for rel in sorted(imports) if canaries.get(rel, "") not in answer]
+    fails = [f"probe: missing from the answer: {rel}" for rel in sorted(imports) if canaries.get(rel, "") not in answer]
+    seen = init.get("skills") if isinstance(init, dict) else None
+    if not isinstance(seen, list):
+        return fails + ["probe: can't tell: the session's start event lists no skills"]
+    return fails + [f"probe: skill {n} not seen by Claude Code" for n in skills if n not in seen]
 
 
 def check_rules(inst, root, release, entry, fails):
@@ -218,14 +238,15 @@ def main():
         notes.append("note: an org's managed-mcp.json is deployed, and under it the probe's --strict-mcp-config makes "
                      "Claude Code exit at startup, so the probe didn't run; the rules and skills checks stand alone")
     else:
-        probe_fails = probe(a.claude, probe_dir, a.timeout, imports, canaries)
+        probe_fails = probe(a.claude, probe_dir, a.timeout, imports, canaries, kit_skills(inst))
         fails += probe_fails
         probe_line = f"probe: {'fail' if probe_fails else 'pass'}"
 
     lines = [f"kit load check: {'FAIL' if fails else 'PASS'}",
              f"release {a.release}; rules: {rules_kind or 'fail'}",
              probe_line,
-             f"skills: {', '.join(kinds) or 'none'}; whether they load isn't checked"]
+             f"skills: {', '.join(kinds) or 'none'}; whether Claude Code lists them is the probe's, whether a body "
+             f"loads isn't checked"]
     body = "\n".join(lines + notes + [f"fail: {x}" for x in fails]) + "\n"
     print(body, end="")
     if os.environ.get("KIT_LOAD_CHECK_REPORT"):
